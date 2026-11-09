@@ -119,15 +119,29 @@ impl<'a, I: AeIndex> Shared<'a, I> {
     ) -> Option<(Coords, u8, u8)> {
         let t = self.t;
         let y = move_tables().apply(x, m);
-        let hc = decode(h_cb, t.cb.tab.get(CbTable::index(&y)));
-        if hc as usize > budget {
-            return None;
+        // The CB table (max 8) almost never prunes with 7+ moves left, so check AE first
+        // there; near the leaves CB is the cheaper and more selective test.
+        if budget >= 7 {
+            let ha = decode(h_ae, t.ae.get(t.ae_ix.index(&y)));
+            if ha as usize > budget {
+                return None;
+            }
+            let hc = decode(h_cb, t.cb.tab.get(CbTable::index(&y)));
+            if hc as usize > budget {
+                return None;
+            }
+            Some((y, ha, hc))
+        } else {
+            let hc = decode(h_cb, t.cb.tab.get(CbTable::index(&y)));
+            if hc as usize > budget {
+                return None;
+            }
+            let ha = decode(h_ae, t.ae.get(t.ae_ix.index(&y)));
+            if ha as usize > budget {
+                return None;
+            }
+            Some((y, ha, hc))
         }
-        let ha = decode(h_ae, t.ae.get(t.ae_ix.index(&y)));
-        if ha as usize > budget {
-            return None;
-        }
-        Some((y, ha, hc))
     }
 
     fn leaf(&self, v: usize, path: &[usize]) {
