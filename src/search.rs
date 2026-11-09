@@ -8,8 +8,8 @@
 //! Two variants run side by side: targeting class A, and targeting class B (by conjugating the
 //! position with a 90° rotation that swaps the classes).
 
-use crate::coord::*;
 use crate::cube::*;
+use crate::fast::*;
 use crate::geometry::{transpose, Mat, IDENTITY};
 use crate::notation::*;
 use crate::prune::decode;
@@ -67,7 +67,7 @@ pub struct Outcome {
 struct Variant {
     cube: Cube,
     sym: Mat,
-    root: Coords,
+    root: Fc,
     h_ae: u8,
     h_cb: u8,
 }
@@ -90,7 +90,7 @@ struct Shared<'a, I: AeIndex> {
 struct Task {
     v: usize,
     path: Vec<usize>,
-    x: Coords,
+    x: Fc,
     h_ae: u8,
     h_cb: u8,
 }
@@ -109,39 +109,19 @@ impl<'a, I: AeIndex> Shared<'a, I> {
     }
 
     #[inline(always)]
-    fn child(
-        &self,
-        x: &Coords,
-        h_ae: u8,
-        h_cb: u8,
-        m: usize,
-        budget: usize,
-    ) -> Option<(Coords, u8, u8)> {
+    fn child(&self, x: &Fc, h_ae: u8, h_cb: u8, m: usize, budget: usize) -> Option<(Fc, u8, u8)> {
         let t = self.t;
-        let y = move_tables().apply(x, m);
-        // The CB table (max 8) almost never prunes with 7+ moves left, so check AE first
-        // there; near the leaves CB is the cheaper and more selective test.
-        if budget >= 7 {
-            let ha = decode(h_ae, t.ae.get(t.ae_ix.index(&y)));
-            if ha as usize > budget {
-                return None;
-            }
-            let hc = decode(h_cb, t.cb.tab.get(CbTable::index(&y)));
-            if hc as usize > budget {
-                return None;
-            }
-            Some((y, ha, hc))
-        } else {
-            let hc = decode(h_cb, t.cb.tab.get(CbTable::index(&y)));
-            if hc as usize > budget {
-                return None;
-            }
-            let ha = decode(h_ae, t.ae.get(t.ae_ix.index(&y)));
-            if ha as usize > budget {
-                return None;
-            }
-            Some((y, ha, hc))
+        let f = fast();
+        let y = f.apply(x, &masks(&x.e), m);
+        let hc = decode(h_cb, t.cb.tab.get(CbTable::index_fast(f, &y)));
+        if hc as usize > budget {
+            return None;
         }
+        let ha = decode(h_ae, t.ae.get(t.ae_ix.index_fast(f, &y, f.a_rank(&y))));
+        if ha as usize > budget {
+            return None;
+        }
+        Some((y, ha, hc))
     }
 
     fn leaf(&self, v: usize, path: &[usize]) {
@@ -190,7 +170,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         &self,
         v: usize,
         path: &mut Vec<usize>,
-        x: &Coords,
+        x: &Fc,
         h_ae: u8,
         h_cb: u8,
         bound: usize,
@@ -209,7 +189,8 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         let last = path.last().copied().unwrap_or(usize::MAX);
         let budget = bound - g - 1;
         let t = self.t;
-        let mt = move_tables();
+        let f = fast();
+        let em = masks(&x.e);
         // Evaluate all children as a batch: every stage issues prefetches for all children
         // before reading any of them, so the cache misses of different children overlap.
         let mut ys = [*x; N_MOVES];
@@ -219,7 +200,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
             if !allowed_after(last, m) || (budget == 0 && is_a_move(m)) {
                 continue;
             }
-            ys[n] = mt.apply(x, m);
+            ys[n] = f.apply(x, &em, m);
             ms[n] = m as u8;
             n += 1;
         }
@@ -232,10 +213,11 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         let mut has = [0u8; N_MOVES];
         let mut hcs = [0u8; N_MOVES];
         let mut idx = [0usize; N_MOVES];
+        let mut cbi = [0usize; N_MOVES];
         // The CB table (max 8) prunes almost nothing with 7+ moves left: check AE first there.
         let ae_first = budget >= 7;
         if ae_first {
-            t.ae_ix.index_batch(&ys[..n], &mut idx[..n]);
+            t.ae_ix.index_batch_fast(f, &ys[..n], &mut idx[..n]);
             for &i in &idx[..n] {
                 prefetch(&t.ae.data[i >> 5]);
             }
@@ -246,13 +228,14 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                     ys[k] = ys[i];
                     ms[k] = ms[i];
                     has[k] = ha;
-                    prefetch(&t.cb.tab.data[CbTable::index(&ys[k]) >> 5]);
+                    cbi[k] = CbTable::index_fast(f, &ys[k]);
+                    prefetch(&t.cb.tab.data[cbi[k] >> 5]);
                     k += 1;
                 }
             }
             n = 0;
             for i in 0..k {
-                let hc = decode(h_cb, t.cb.tab.get(CbTable::index(&ys[i])));
+                let hc = decode(h_cb, t.cb.tab.get(cbi[i]));
                 if hc as usize <= budget {
                     ys[n] = ys[i];
                     ms[n] = ms[i];
@@ -262,12 +245,13 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                 }
             }
         } else {
-            for y in &ys[..n] {
-                prefetch(&t.cb.tab.data[CbTable::index(y) >> 5]);
+            for i in 0..n {
+                cbi[i] = CbTable::index_fast(f, &ys[i]);
+                prefetch(&t.cb.tab.data[cbi[i] >> 5]);
             }
             let mut k = 0;
             for i in 0..n {
-                let hc = decode(h_cb, t.cb.tab.get(CbTable::index(&ys[i])));
+                let hc = decode(h_cb, t.cb.tab.get(cbi[i]));
                 if hc as usize <= budget {
                     ys[k] = ys[i];
                     ms[k] = ms[i];
@@ -275,7 +259,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                     k += 1;
                 }
             }
-            t.ae_ix.index_batch(&ys[..k], &mut idx[..k]);
+            t.ae_ix.index_batch_fast(f, &ys[..k], &mut idx[..k]);
             for &i in &idx[..k] {
                 prefetch(&t.ae.data[i >> 5]);
             }
@@ -289,14 +273,6 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                     has[n] = ha;
                     n += 1;
                 }
-            }
-        }
-        if budget > 0 {
-            // the survivors' move-table rows are needed next
-            for y in &ys[..n] {
-                prefetch(&mt.a[y.a as usize]);
-                prefetch(&mt.b[y.b as usize]);
-                prefetch(&mt.e[y.e as usize]);
             }
         }
         for i in 0..n {
@@ -370,13 +346,14 @@ pub fn solve<I: AeIndex>(
             } else {
                 cube.conjugate(sym)
             };
-            let root = Coords::of(&c);
+            let root = fast().of(&c);
+            let (h_ae, h_cb) = t.exact_fast(&root);
             Variant {
                 cube: c,
                 sym: *sym,
                 root,
-                h_ae: t.ae_exact(&root),
-                h_cb: t.cb_exact(&root),
+                h_ae,
+                h_cb,
             }
         })
         .collect();

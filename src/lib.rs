@@ -7,6 +7,7 @@
 pub mod bench;
 pub mod coord;
 pub mod cube;
+pub mod fast;
 pub mod geometry;
 pub mod mem;
 pub mod notation;
