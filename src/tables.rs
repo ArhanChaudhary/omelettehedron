@@ -7,6 +7,7 @@
 
 use crate::coord::*;
 use crate::cube::*;
+use crate::fast::*;
 use crate::prune::*;
 use crate::sym::*;
 use std::collections::HashMap;
@@ -39,6 +40,23 @@ pub trait AeIndex: Send + Sync + 'static {
     fn index_batch(&self, xs: &[Coords], out: &mut [usize]) {
         for (x, o) in xs.iter().zip(out.iter_mut()) {
             *o = self.index(x);
+        }
+    }
+    /// Index of a fast-coordinate position, given its A rank.
+    fn index_fast(&self, f: &FastTables, x: &Fc, a_rank: u32) -> usize;
+    /// The symmetry-class table read first by `index_fast` (for prefetching).
+    fn class_entry(&self, a_rank: u32) -> &u32;
+    /// Pipelined `index_fast` over a batch.
+    #[inline(always)]
+    fn index_batch_fast(&self, f: &FastTables, xs: &[Fc], out: &mut [usize]) {
+        let n = xs.len();
+        let mut ar = [0u32; N_MOVES];
+        for i in 0..n {
+            ar[i] = f.a_rank(&xs[i]);
+            prefetch(self.class_entry(ar[i]));
+        }
+        for i in 0..n {
+            out[i] = self.index_fast(f, &xs[i], ar[i]);
         }
     }
 }
@@ -147,6 +165,23 @@ impl AeIndex for AeSym {
             (self.cls.rep[i / N_MSET], e, mt.eref[e as usize] << 3)
         }
     }
+    #[inline(always)]
+    fn index_fast(&self, f: &FastTables, x: &Fc, a_rank: u32) -> usize {
+        let s = syms();
+        let v = self.cls.sym[a_rank as usize];
+        let (g, t) = s.pairs[(v >> 16) as usize];
+        let (e, b) = f.sym_e(x, &masks(&x.e), g as usize, t as usize);
+        let c = (v & 0xffff) as usize;
+        if self.chiral {
+            c * N_ECOSET + e as usize * 8 + (b & 7) as usize
+        } else {
+            c * N_MSET + e as usize
+        }
+    }
+    #[inline(always)]
+    fn class_entry(&self, a_rank: u32) -> &u32 {
+        &self.cls.sym[a_rank as usize]
+    }
     fn name(&self) -> &'static str {
         if self.chiral {
             "ae-sym288-chiral"
@@ -232,6 +267,17 @@ impl AeIndex for AeRelabel {
         let b3 = (r % 8) as u8;
         let bit3 = mt.eref[e as usize] ^ (b3 ^ b3 >> 1 ^ b3 >> 2) & 1;
         (self.cls.rep[c], e, b3 | bit3 << 3)
+    }
+    #[inline(always)]
+    fn index_fast(&self, f: &FastTables, x: &Fc, a_rank: u32) -> usize {
+        let v = self.cls.sym[a_rank as usize];
+        let g = ROT_IDX[(v >> 16) as usize] as usize;
+        let (e, b) = f.relabel_e(x, g);
+        (v & 0xffff) as usize * N_ECOSET + e as usize * 8 + (b & 7) as usize
+    }
+    #[inline(always)]
+    fn class_entry(&self, a_rank: u32) -> &u32 {
+        &self.cls.sym[a_rank as usize]
     }
     fn name(&self) -> &'static str {
         "ae-relabel12-chiral"
@@ -423,6 +469,11 @@ impl CbTable {
     pub fn index(x: &Coords) -> usize {
         x.c as usize * N_MSET + x.b as usize
     }
+
+    #[inline(always)]
+    pub fn index_fast(f: &FastTables, x: &Fc) -> usize {
+        x.c as usize * N_MSET + f.b_rank(x) as usize
+    }
 }
 
 /// All indices of the solved AE class.
@@ -563,6 +614,33 @@ impl<I: AeIndex> Tables<I> {
                 .expect("AE table inconsistent");
             d += 1;
         }
+    }
+
+    /// Exact (AE, CB) distances of a fast-coordinate position.
+    pub fn exact_fast(&self, x: &Fc) -> (u8, u8) {
+        let f = fast();
+        let ae_val = |y: &Fc| self.ae.get(self.ae_ix.index_fast(f, y, f.a_rank(y)));
+        let cb_val = |y: &Fc| self.cb.tab.get(CbTable::index_fast(f, y));
+        let walk = |val: &dyn Fn(&Fc) -> u8, done: &dyn Fn(&Fc) -> bool| -> u8 {
+            let mut y = *x;
+            let mut d = 0;
+            while !done(&y) {
+                let want = (val(&y) + 2) % 3;
+                let em = masks(&y.e);
+                y = (0..N_MOVES)
+                    .map(|m| f.apply(&y, &em, m))
+                    .find(|z| val(z) == want)
+                    .expect("table inconsistent");
+                d += 1;
+            }
+            d
+        };
+        let ha = walk(&ae_val, &|y| {
+            self.ae_targets
+                .contains(&self.ae_ix.index_fast(f, y, f.a_rank(y)))
+        });
+        let hc = walk(&cb_val, &|y| self.cb.attach[y.c as usize] == f.b_rank(y));
+        (ha, hc)
     }
 
     /// Exact CB distance of a position.
