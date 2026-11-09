@@ -3,13 +3,14 @@
 //! A search tracks the exact distance of the parent; since one move changes the distance by at
 //! most one, the child's exact distance follows from its value mod 3.
 
+use crate::mem::HugeBuf;
 use rayon::prelude::*;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct Table2 {
-    pub data: Vec<u64>,
+    pub data: HugeBuf<u64>,
     pub n: usize,
     /// number of entries at each distance
     pub hist: Vec<u64>,
@@ -109,23 +110,9 @@ fn checksum(d: &[u64]) -> u64 {
         .reduce(|| 0, |a, b| a ^ b) // associative: rayon may combine in any order
 }
 
-/// Allocate a word buffer, asking the kernel for transparent huge pages.
-pub fn alloc_words(words: usize) -> Vec<u64> {
-    let mut v: Vec<u64> = Vec::with_capacity(words);
-    #[cfg(target_os = "linux")]
-    unsafe {
-        // SAFETY: advisory call on memory we own
-        libc::madvise(
-            v.as_mut_ptr() as *mut libc::c_void,
-            words * 8,
-            libc::MADV_HUGEPAGE,
-        );
-    }
-    // touch in parallel so pages are spread and zero-filled quickly
-    // SAFETY: capacity reserved above; every element is written by the par_iter below
-    unsafe { v.set_len(words) };
-    v.par_chunks_mut(1 << 16).for_each(|c| c.fill(0));
-    v
+/// Allocate a zeroed, huge-page backed word buffer.
+pub fn alloc_words(words: usize) -> HugeBuf<u64> {
+    HugeBuf::zeroed(words)
 }
 
 /// Breadth-first search over `n` indices. `nbrs(i, out)` appends the neighbours of `i` to
@@ -137,9 +124,10 @@ where
     let t0 = std::time::Instant::now();
     let words = n.div_ceil(32);
     let mut raw = alloc_words(words);
-    raw.par_iter_mut().for_each(|w| *w = u64::MAX);
-    // SAFETY: AtomicU64 has the same layout as u64
-    let tab: Vec<AtomicU64> = unsafe { std::mem::transmute::<Vec<u64>, Vec<AtomicU64>>(raw) };
+    raw.par_chunks_mut(1 << 16).for_each(|c| c.fill(u64::MAX));
+    // SAFETY: AtomicU64 has the same size and alignment as u64; `raw` outlives `tab`
+    let tab: &[AtomicU64] =
+        unsafe { std::slice::from_raw_parts(raw.as_ptr() as *const AtomicU64, raw.len()) };
     let get = |i: usize| ((tab[i >> 5].load(Ordering::Relaxed) >> ((i & 31) << 1)) & 3) as u8;
     let set_if_empty = |i: usize, v: u8| -> bool {
         let w = &tab[i >> 5];
@@ -242,9 +230,7 @@ where
             t0.elapsed().as_secs_f64()
         );
     }
-    // SAFETY: back to plain u64
-    let data: Vec<u64> = unsafe { std::mem::transmute::<Vec<AtomicU64>, Vec<u64>>(tab) };
-    Table2 { data, n, hist }
+    Table2 { data: raw, n, hist }
 }
 
 #[cfg(test)]

@@ -147,7 +147,7 @@ impl AeIndex for AeRelabel {
         let v = self.cls.sym[x.a as usize];
         // pair index == rotation index in the identity-first list of rotations
         let g = ROT_IDX[(v >> 16) as usize] as usize;
-        let e = s.relab_e[g][x.e as usize];
+        let e = s.relab_e[g * N_MSET + x.e as usize];
         let b = s.relab_bits[g][x.ebits as usize];
         (v & 0xffff) as usize * N_ECOSET + e as usize * 8 + (b & 7) as usize
     }

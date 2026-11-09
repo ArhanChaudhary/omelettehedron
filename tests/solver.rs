@@ -150,6 +150,7 @@ fn stopping_rules() {
         o.solutions_found
     );
     assert!(!o.optimal);
+    let l = o.length.expect("a solution after 5 completions");
     // time
     let o = solve(
         t,
@@ -162,8 +163,7 @@ fn stopping_rules() {
         Report::Quiet,
     );
     assert!(o.elapsed < 1.5, "{}", o.elapsed);
-    // target length: first find something, then ask for at most that length
-    let l = o.length.unwrap();
+    // target length: ask for at most a length already known to be reachable
     let o2 = solve(
         t,
         c,
