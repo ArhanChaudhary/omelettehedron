@@ -28,8 +28,8 @@ pub struct Summary {
     pub scrambles: usize,
     pub time_limit: Option<f64>,
     pub seed: u64,
-    /// mean best length at each checkpoint (seconds)
-    pub checkpoints: Vec<(f64, f64)>,
+    /// (seconds, mean best length over positions solved by then, number solved by then)
+    pub checkpoints: Vec<(f64, f64, usize)>,
     pub mean_length: f64,
     pub mean_first_time: f64,
     pub mean_first_length: f64,
@@ -105,9 +105,14 @@ pub fn run<I: AeIndex>(
     let checkpoints = cps
         .iter()
         .map(|&c| {
+            let solved = results
+                .iter()
+                .filter(|r| length_at(&r.events, c).is_some())
+                .count();
             (
                 c,
                 mean(&|r: &ScrambleResult| length_at(&r.events, c).map(|l| l as f64)),
+                solved,
             )
         })
         .collect();
@@ -139,8 +144,11 @@ pub fn print_summary(s: &Summary) {
         s.seed,
         s.time_limit.map_or("none".into(), |t| format!("{t}s"))
     );
-    for (c, l) in &s.checkpoints {
-        println!("  mean best length after {:>7}s: {:.3}", c, l);
+    for (c, l, k) in &s.checkpoints {
+        println!(
+            "  after {:>6}s: mean best length {:.3} ({}/{} solved)",
+            c, l, k, s.scrambles
+        );
     }
     println!("  mean final length:        {:.3}", s.mean_length);
     println!(

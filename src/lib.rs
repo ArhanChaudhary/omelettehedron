@@ -1,4 +1,8 @@
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments, clippy::new_without_default)]
+#![allow(
+    clippy::needless_range_loop,
+    clippy::too_many_arguments,
+    clippy::new_without_default
+)]
 //! Two-phase solver for the face-turning octahedron.
 pub mod bench;
 pub mod coord;

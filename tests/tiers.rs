@@ -21,7 +21,10 @@ fn medium_and_large_tables_agree() {
         assert_eq!(med.ae_exact(&x), large.ae_exact(&x));
         for m in 0..N_MOVES {
             let y = mt.apply(&x, m);
-            assert_eq!(med.ae.get(med.ae_ix.index(&y)), large.ae.get(large.ae_ix.index(&y)));
+            assert_eq!(
+                med.ae.get(med.ae_ix.index(&y)),
+                large.ae.get(large.ae_ix.index(&y))
+            );
         }
     }
 }

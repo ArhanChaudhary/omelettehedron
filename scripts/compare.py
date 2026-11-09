@@ -7,8 +7,9 @@ b, a = sys.argv[1], sys.argv[2]
 rows = []
 for kind, name in (("mt", "48 threads"), ("st", "1 thread")):
     x, y = load(b, kind), load(a, kind)
-    for (t, lx), (_, ly) in zip(x["checkpoints"], y["checkpoints"]):
-        rows.append((f"{name}: mean length after {t:g}s", f"{lx:.3f}", f"{ly:.3f}", f"{ly-lx:+.3f}"))
+    n = x["scrambles"]
+    for (t, lx, kx), (_, ly, ky) in zip(x["checkpoints"], y["checkpoints"]):
+        rows.append((f"{name}: mean length after {t:g}s (solved/{n})", f"{lx:.3f} ({kx})", f"{ly:.3f} ({ky})", f"{ly-lx:+.3f}"))
     rows.append((f"{name}: mean first-solution time (s)", f"{x['mean_first_time']:.4f}", f"{y['mean_first_time']:.4f}", f"{y['mean_first_time']/x['mean_first_time']:.2f}x"))
     rows.append((f"{name}: mean first-solution length", f"{x['mean_first_length']:.3f}", f"{y['mean_first_length']:.3f}", f"{y['mean_first_length']-x['mean_first_length']:+.3f}"))
     rows.append((f"{name}: nodes/s", f"{x['nodes_per_sec']:.3e}", f"{y['nodes_per_sec']:.3e}", f"{y['nodes_per_sec']/x['nodes_per_sec']:.2f}x"))
