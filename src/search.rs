@@ -208,22 +208,103 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         }
         let last = path.last().copied().unwrap_or(usize::MAX);
         let budget = bound - g - 1;
+        let t = self.t;
+        let mt = move_tables();
+        // Evaluate all children as a batch: every stage issues prefetches for all children
+        // before reading any of them, so the cache misses of different children overlap.
+        let mut ys = [*x; N_MOVES];
+        let mut ms = [0u8; N_MOVES];
+        let mut n = 0;
         for m in 0..N_MOVES {
             if !allowed_after(last, m) || (budget == 0 && is_a_move(m)) {
                 continue;
             }
-            // count every evaluated node; check the clock regularly
-            *nodes += 1;
-            if (*nodes).is_multiple_of(CHECK_EVERY) && self.time_up() {
-                return;
+            ys[n] = mt.apply(x, m);
+            ms[n] = m as u8;
+            n += 1;
+        }
+        // count every evaluated node; check the clock regularly
+        let before = *nodes;
+        *nodes += n as u64;
+        if before / CHECK_EVERY != *nodes / CHECK_EVERY && self.time_up() {
+            return;
+        }
+        let mut has = [0u8; N_MOVES];
+        let mut hcs = [0u8; N_MOVES];
+        let mut idx = [0usize; N_MOVES];
+        // The CB table (max 8) prunes almost nothing with 7+ moves left: check AE first there.
+        let ae_first = budget >= 7;
+        if ae_first {
+            t.ae_ix.index_batch(&ys[..n], &mut idx[..n]);
+            for &i in &idx[..n] {
+                prefetch(&t.ae.data[i >> 5]);
             }
-            if let Some((y, ha, hc)) = self.child(x, h_ae, h_cb, m, budget) {
-                path.push(m);
-                self.dfs(v, path, &y, ha, hc, bound, nodes);
-                path.pop();
-                if self.stop.load(Ordering::Relaxed) {
-                    return;
+            let mut k = 0;
+            for i in 0..n {
+                let ha = decode(h_ae, t.ae.get(idx[i]));
+                if ha as usize <= budget {
+                    ys[k] = ys[i];
+                    ms[k] = ms[i];
+                    has[k] = ha;
+                    prefetch(&t.cb.tab.data[CbTable::index(&ys[k]) >> 5]);
+                    k += 1;
                 }
+            }
+            n = 0;
+            for i in 0..k {
+                let hc = decode(h_cb, t.cb.tab.get(CbTable::index(&ys[i])));
+                if hc as usize <= budget {
+                    ys[n] = ys[i];
+                    ms[n] = ms[i];
+                    has[n] = has[i];
+                    hcs[n] = hc;
+                    n += 1;
+                }
+            }
+        } else {
+            for y in &ys[..n] {
+                prefetch(&t.cb.tab.data[CbTable::index(y) >> 5]);
+            }
+            let mut k = 0;
+            for i in 0..n {
+                let hc = decode(h_cb, t.cb.tab.get(CbTable::index(&ys[i])));
+                if hc as usize <= budget {
+                    ys[k] = ys[i];
+                    ms[k] = ms[i];
+                    hcs[k] = hc;
+                    k += 1;
+                }
+            }
+            t.ae_ix.index_batch(&ys[..k], &mut idx[..k]);
+            for &i in &idx[..k] {
+                prefetch(&t.ae.data[i >> 5]);
+            }
+            n = 0;
+            for i in 0..k {
+                let ha = decode(h_ae, t.ae.get(idx[i]));
+                if ha as usize <= budget {
+                    ys[n] = ys[i];
+                    ms[n] = ms[i];
+                    hcs[n] = hcs[i];
+                    has[n] = ha;
+                    n += 1;
+                }
+            }
+        }
+        if budget > 0 {
+            // the survivors' move-table rows are needed next
+            for y in &ys[..n] {
+                prefetch(&mt.a[y.a as usize]);
+                prefetch(&mt.b[y.b as usize]);
+                prefetch(&mt.e[y.e as usize]);
+            }
+        }
+        for i in 0..n {
+            path.push(ms[i] as usize);
+            self.dfs(v, path, &ys[i], has[i], hcs[i], bound, nodes);
+            path.pop();
+            if self.stop.load(Ordering::Relaxed) {
+                return;
             }
         }
     }

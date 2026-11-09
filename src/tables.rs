@@ -33,6 +33,27 @@ pub trait AeIndex: Send + Sync + 'static {
     fn name(&self) -> &'static str;
     /// Append every other index that denotes a position equivalent to index `i`.
     fn equivalents(&self, _i: usize, _out: &mut Vec<usize>) {}
+    /// `index` over a batch, software-pipelined so that the dependent table lookups of
+    /// different positions overlap.
+    #[inline(always)]
+    fn index_batch(&self, xs: &[Coords], out: &mut [usize]) {
+        for (x, o) in xs.iter().zip(out.iter_mut()) {
+            *o = self.index(x);
+        }
+    }
+}
+
+/// Hint that `p` will be read soon.
+#[inline(always)]
+pub fn prefetch<T>(p: &T) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: prefetch is a hint and never faults
+    unsafe {
+        core::arch::x86_64::_mm_prefetch(
+            p as *const T as *const i8,
+            core::arch::x86_64::_MM_HINT_T0,
+        );
+    }
 }
 
 pub struct AeSym {
@@ -78,6 +99,38 @@ impl AeIndex for AeSym {
             c * N_ECOSET + e as usize * 8 + (b & 7) as usize
         } else {
             c * N_MSET + e as usize
+        }
+    }
+    #[inline(always)]
+    fn index_batch(&self, xs: &[Coords], out: &mut [usize]) {
+        let s = syms();
+        let n = xs.len();
+        let mut v = [0u32; N_MOVES];
+        let mut e1 = [0u32; N_MOVES];
+        for i in 0..n {
+            prefetch(&self.cls.sym[xs[i].a as usize]);
+        }
+        for i in 0..n {
+            v[i] = self.cls.sym[xs[i].a as usize];
+            let (g, _) = s.pairs[(v[i] >> 16) as usize];
+            prefetch(&s.relab_e[g as usize * N_MSET + xs[i].e as usize]);
+        }
+        for i in 0..n {
+            let (g, t) = s.pairs[(v[i] >> 16) as usize];
+            e1[i] = s.relab_e[g as usize * N_MSET + xs[i].e as usize];
+            prefetch(&s.repos_e[t as usize * N_MSET + e1[i] as usize]);
+        }
+        for i in 0..n {
+            let (g, t) = s.pairs[(v[i] >> 16) as usize];
+            let b1 = s.relab_bits[g as usize][xs[i].ebits as usize];
+            let p = s.repos_e[t as usize * N_MSET + e1[i] as usize];
+            let (e, b) = (p & 0xfffff, b1 ^ (p >> 20) as u8);
+            let c = (v[i] & 0xffff) as usize;
+            out[i] = if self.chiral {
+                c * N_ECOSET + e as usize * 8 + (b & 7) as usize
+            } else {
+                c * N_MSET + e as usize
+            };
         }
     }
     fn decode(&self, i: usize) -> (u32, u32, u8) {
@@ -150,6 +203,26 @@ impl AeIndex for AeRelabel {
         let e = s.relab_e[g * N_MSET + x.e as usize];
         let b = s.relab_bits[g][x.ebits as usize];
         (v & 0xffff) as usize * N_ECOSET + e as usize * 8 + (b & 7) as usize
+    }
+    #[inline(always)]
+    fn index_batch(&self, xs: &[Coords], out: &mut [usize]) {
+        let s = syms();
+        let n = xs.len();
+        let mut v = [0u32; N_MOVES];
+        for i in 0..n {
+            prefetch(&self.cls.sym[xs[i].a as usize]);
+        }
+        for i in 0..n {
+            v[i] = self.cls.sym[xs[i].a as usize];
+            let g = ROT_IDX[(v[i] >> 16) as usize] as usize;
+            prefetch(&s.relab_e[g * N_MSET + xs[i].e as usize]);
+        }
+        for i in 0..n {
+            let g = ROT_IDX[(v[i] >> 16) as usize] as usize;
+            let e = s.relab_e[g * N_MSET + xs[i].e as usize];
+            let b = s.relab_bits[g][xs[i].ebits as usize];
+            out[i] = (v[i] & 0xffff) as usize * N_ECOSET + e as usize * 8 + (b & 7) as usize;
+        }
     }
     fn decode(&self, i: usize) -> (u32, u32, u8) {
         let mt = move_tables();
