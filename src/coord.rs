@@ -6,6 +6,7 @@
 //!   bits (parity of the arrangement of each triple's three edges)
 
 use crate::cube::*;
+use crate::mem::HugeBuf;
 use rayon::prelude::*;
 use std::sync::OnceLock;
 
@@ -293,9 +294,9 @@ impl Coords {
 /// Move tables. `e` entries pack the new triple rank (low 20 bits) and the chirality flip mask.
 pub struct MoveTables {
     pub c: Vec<[u16; N_MOVES]>,
-    pub a: Vec<[u32; N_MOVES]>,
-    pub b: Vec<[u32; N_MOVES]>,
-    pub e: Vec<[u32; N_MOVES]>,
+    pub a: HugeBuf<[u32; N_MOVES]>,
+    pub b: HugeBuf<[u32; N_MOVES]>,
+    pub e: HugeBuf<[u32; N_MOVES]>,
     /// reference parity of each triple labelling (bit 3 of the chirality is implied)
     pub eref: Vec<u8>,
 }
@@ -357,7 +358,13 @@ impl MoveTables {
             .into_par_iter()
             .map(|r| ref_parity(&ms.unrank(r)))
             .collect();
-        MoveTables { c, a, b, e, eref }
+        MoveTables {
+            c,
+            a: HugeBuf::from_slice(&a),
+            b: HugeBuf::from_slice(&b),
+            e: HugeBuf::from_slice(&e),
+            eref,
+        }
     }
 
     #[inline(always)]

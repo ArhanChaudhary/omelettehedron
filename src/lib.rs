@@ -8,6 +8,7 @@ pub mod bench;
 pub mod coord;
 pub mod cube;
 pub mod geometry;
+pub mod mem;
 pub mod notation;
 pub mod prune;
 pub mod search;

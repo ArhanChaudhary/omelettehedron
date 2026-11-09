@@ -11,6 +11,7 @@
 use crate::coord::*;
 use crate::cube::*;
 use crate::geometry::*;
+use crate::mem::HugeBuf;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -31,10 +32,10 @@ pub struct Syms {
     pub relab_bits: [[u8; 16]; N_GEO],
     /// the 288 (g, t) pairs
     pub pairs: Vec<(u8, u8)>,
-    /// relabelled triple labelling rank: relab_e[g][rank]
-    pub relab_e: Vec<Vec<u32>>,
-    /// repositioned triple labelling: repos_e[t][rank] = new rank | flip mask << 20
-    pub repos_e: Vec<Vec<u32>>,
+    /// relabelled triple labelling rank: relab_e[g * N_MSET + rank]
+    pub relab_e: HugeBuf<u32>,
+    /// repositioned triple labelling: repos_e[t * N_MSET + rank] = new rank | flip mask << 20
+    pub repos_e: HugeBuf<u32>,
 }
 
 fn build() -> Syms {
@@ -121,6 +122,8 @@ fn build() -> Syms {
                 .collect()
         })
         .collect();
+    let relab_e = HugeBuf::from_slice(&relab_e.concat());
+    let repos_e = HugeBuf::from_slice(&repos_e.concat());
     Syms {
         mats,
         a_col,
@@ -151,9 +154,9 @@ impl Syms {
     /// Apply (g, t) to the edge coordinate (triple rank, 4 chirality bits).
     #[inline(always)]
     pub fn apply_e(&self, g: usize, t: usize, e: u32, bits: u8) -> (u32, u8) {
-        let e1 = self.relab_e[g][e as usize];
+        let e1 = self.relab_e[g * N_MSET + e as usize];
         let b1 = self.relab_bits[g][bits as usize];
-        let p = self.repos_e[t][e1 as usize];
+        let p = self.repos_e[t * N_MSET + e1 as usize];
         (p & 0xfffff, b1 ^ (p >> 20) as u8)
     }
 }
@@ -161,7 +164,7 @@ impl Syms {
 /// Symmetry classes of A-centre colourings.
 pub struct AClasses {
     /// rank -> class id (low 16 bits) | symmetry pair index << 16
-    pub sym: Vec<u32>,
+    pub sym: HugeBuf<u32>,
     /// class id -> representative rank
     pub rep: Vec<u32>,
 }
@@ -197,7 +200,10 @@ impl AClasses {
             }
             sym[r] = c | (si as u32) << 16;
         }
-        AClasses { sym, rep }
+        AClasses {
+            sym: HugeBuf::from_slice(&sym),
+            rep,
+        }
     }
 }
 
