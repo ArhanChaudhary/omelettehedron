@@ -1,6 +1,6 @@
 # FTO two-phase solver — phase specification (for review)
 
-Status: **proposal, awaiting review. No solver code has been written yet** (only a throw-away prototype for measuring phase choices).
+Status: **approved (class-A split) and implemented.** Implementation notes are in §7.
 All numbers below were computed from a sticker-level model of the FTO (GAP
 Schreier–Sims for group orders, exhaustive BFS for the smaller spaces); numbers
 marked *model* are estimates from a counting argument and will be checked once
@@ -213,3 +213,23 @@ Notes:
    solutions of equal length.
 3. Is H_A (phase 2 = ⟨U, F, BR, BL⟩) acceptable as the phase choice, or do you
    want H₄ = ⟨U, R, F, L⟩ prototyped and benchmarked alongside it before I commit?
+
+## 7. Implementation notes (differences from the original proposal)
+
+* The internally fixed piece is the **front** corner (vertex shared by U, R, L, F). The 16
+  internal moves are therefore single and wide turns of the back faces B, BR, BL and D. A wide
+  turn of a back face is equivalent to a turn of the opposite front face plus a whole-puzzle
+  rotation. Output is always converted back to ordinary face turns.
+* **No inverse-scramble variants.** Same-coloured centres are indistinguishable, so the
+  "inverse" of a position is not well defined: a solution of the inverse scramble's position
+  does not invert into a solution. The search runs two variants: target class A, and target
+  class B (via conjugation by the 90° rotation about the fixed corner's axis).
+* The A-centre/edge table uses 288 symmetries:
+  - colour relabelling by a class-preserving symmetry,
+  - repositioning by a class-preserving symmetry,
+  - both proper or both improper.
+
+  Classes with non-trivial stabilisers occupy several indices. The BFS fills all of them, so
+  lookups need no extra canonicalisation. The medium (symmetry-reduced) and large
+  (relabel-only) tables were checked to agree on 3000 random positions and all their
+  neighbours.
