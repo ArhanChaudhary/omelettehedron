@@ -285,49 +285,63 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         }
     }
 
-    /// Nodes at depth `k` (or leaves before it) for parallel processing.
-    fn split(&self, v: usize, bound: usize, k: usize) -> Vec<Task> {
-        let var = &self.variants[v];
+    /// Children of a task that survive pruning under `bound`.
+    fn expand(&self, t: &Task, bound: usize) -> Vec<Task> {
+        let g = t.path.len();
+        let last = t.path.last().copied().unwrap_or(usize::MAX);
+        let budget = bound - g - 1;
         let mut out = vec![];
-        let root = Task {
-            v,
-            path: vec![],
-            x: var.root,
-            h_ae: var.h_ae,
-            h_cb: var.h_cb,
-        };
-        if (var.h_ae.max(var.h_cb) as usize) > bound {
-            return out;
-        }
-        let mut stack = vec![root];
-        while let Some(t) = stack.pop() {
-            let g = t.path.len();
-            if g == k || g == bound {
-                out.push(t);
+        for m in 0..N_MOVES {
+            if !allowed_after(last, m) || (budget == 0 && is_a_move(m)) {
                 continue;
             }
-            let last = t.path.last().copied().unwrap_or(usize::MAX);
-            let budget = bound - g - 1;
-            for m in (0..N_MOVES).rev() {
-                if !allowed_after(last, m) || (budget == 0 && is_a_move(m)) {
-                    continue;
-                }
-                if let Some((y, ha, hc)) = self.child(&t.x, t.h_ae, t.h_cb, m, budget) {
-                    let mut p = t.path.clone();
-                    p.push(m);
-                    stack.push(Task {
-                        v,
-                        path: p,
-                        x: y,
-                        h_ae: ha,
-                        h_cb: hc,
-                    });
-                }
+            if let Some((y, ha, hc)) = self.child(&t.x, t.h_ae, t.h_cb, m, budget) {
+                let mut p = t.path.clone();
+                p.push(m);
+                out.push(Task {
+                    v: t.v,
+                    path: p,
+                    x: y,
+                    h_ae: ha,
+                    h_cb: hc,
+                });
             }
         }
         out
     }
+
+    /// Tasks for one iteration: the roots, expanded level by level (in parallel) until there
+    /// are enough tasks for the thread pool. The depth stays small because most of an IDA*
+    /// iteration's work lies in the middle levels, which must not be explored serially.
+    fn tasks(&self, bound: usize, threads: usize) -> Vec<Task> {
+        let mut tasks: Vec<Task> = self
+            .variants
+            .iter()
+            .enumerate()
+            .filter(|(_, var)| var.h_ae.max(var.h_cb) as usize <= bound)
+            .map(|(v, var)| Task {
+                v,
+                path: vec![],
+                x: var.root,
+                h_ae: var.h_ae,
+                h_cb: var.h_cb,
+            })
+            .collect();
+        let max_k = bound.saturating_sub(4).min(MAX_SPLIT);
+        let mut k = 0;
+        while threads > 1 && tasks.len() < 64 * threads && k < max_k {
+            tasks = tasks
+                .par_iter()
+                .flat_map_iter(|t| self.expand(t, bound))
+                .collect();
+            k += 1;
+        }
+        tasks
+    }
 }
+
+/// Deepest level at which an iteration is split into parallel tasks.
+const MAX_SPLIT: usize = 4;
 
 /// Solve one position. `frame` is the physical frame of the scrambled position.
 pub fn solve<I: AeIndex>(
@@ -384,17 +398,8 @@ pub fn solve<I: AeIndex>(
             optimal = true;
             break;
         }
-        // split just deep enough to give every thread plenty of tasks
-        let mut k = 0;
-        let mut tasks: Vec<Task> = (0..sh.variants.len())
-            .flat_map(|v| sh.split(v, depth, k))
-            .collect();
-        while threads > 1 && tasks.len() < 64 * threads && k < depth.saturating_sub(4) {
-            k += 1;
-            tasks = (0..sh.variants.len())
-                .flat_map(|v| sh.split(v, depth, k))
-                .collect();
-        }
+        let tasks = sh.tasks(depth, threads);
+        let t_split = start.elapsed().as_secs_f64();
         tasks.par_iter().for_each_init(
             || (Vec::with_capacity(64), 0u64),
             |(path, nodes), task| {
@@ -410,6 +415,7 @@ pub fn solve<I: AeIndex>(
             },
         );
         if std::env::var_os("FTO_DEBUG").is_some() {
+            eprintln!("  depth {depth}: split done at {t_split:.4}s");
             eprintln!(
                 "  depth {depth}: {} tasks, {} nodes, {} solutions, best {:?}, {:.3}s",
                 tasks.len(),
