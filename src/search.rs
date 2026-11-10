@@ -85,6 +85,9 @@ struct Side {
 
 /// Sides of a node, as a bit set: bit `s` = the node is in the search tree of side `s` (the
 /// tree the separate search for that side would visit). See [`Shared::dfs`].
+/// In the evaluation of a node (`expand`, `stage2`, `finish`) the bits are slots instead (see
+/// [`Scratch`]): a node is evaluated as `BOTH`, or as `SIDE_A`, alive on one side only, which
+/// is then held in slot 0.
 const SIDE_A: u8 = 1;
 const SIDE_B: u8 = 2;
 const BOTH: u8 = 3;
@@ -125,6 +128,8 @@ struct Shared<'a, I: AeIndex, const N: usize> {
     best: Mutex<(Option<Vec<PhysMove>>, Vec<Event>)>,
     /// the side-1 move of each move (`SWAP_AB` conjugation), indexed `& 31`
     mb: [usize; 32],
+    /// the move of each side for each move: `[0]` itself, `[1]` `mb`
+    mv: [[usize; 32]; 2],
     /// largest CB distance (8): with at least this many moves left CB cannot prune
     cb_max: u8,
 }
@@ -171,10 +176,12 @@ const AE_FIRST: usize = 6;
 /// No deferred CB lookup (see `finish`).
 const NO_CB: usize = usize::MAX;
 
-/// Scratch arrays of one node's evaluation: its children and their indices and bounds on both
-/// sides (`[s]`: side `s`; `N` moves; indices are reduced `% N`, which is `& 15` for 16 moves,
-/// so that the compiler sees them in bounds). A side's arrays are only filled where needed:
-/// on the sides the node is alive on, and with the class-B bound on the other side too.
+/// Scratch arrays of one node's evaluation: its children and their indices and bounds in two
+/// slots, one per side (`N` moves; indices are reduced `% N`, which is `& 15` for 16 moves,
+/// so that the compiler sees them in bounds). On a node alive on both sides slot `s` holds
+/// side `s`; on a node alive on one side, slot 0 holds that side (side `r` in the functions
+/// below) and slot 1 the other. A slot's arrays are only filled where needed: for the node's
+/// own sides, and with the class-B bound for the other side too.
 /// They live in a per-worker stack of frames, three per depth (see [`Shared::dfs`]), rather
 /// than on the call stack, so that they are not re-initialised at every node (~3 KB of stores
 /// per node; +1.3% nodes/s at 1T in optimal mode, when added).
@@ -317,11 +324,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
     /// Move `m` (of side 0's frame) in the frame of side `s`.
     #[inline(always)]
     fn side_move(&self, s: usize, m: u8) -> usize {
-        if s == 0 {
-            usize::from(m)
-        } else {
-            self.mb[usize::from(m) & 31]
-        }
+        self.mv[s & 1][usize::from(m) & 31]
     }
 
     /// A phase-1 leaf on side `s`: `path` (moves of side 0's frame) ends in the side's target
@@ -438,35 +441,43 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         };
         let last = path.last().copied().unwrap_or(usize::MAX);
         let budget = bound - g - 1;
-        let x = [&task.x[0], &task.x[1]];
-        self.expand_any(sides, x, last, budget, fr, ctr);
-        self.stage2_any::<B>(sides, x, task.h_ae, task.h_cb, [NO_CB; 2], budget, fr);
-        self.finish_any::<B>(sides, x, path, bound, ctr, stat, fr, frames);
+        // (a node alive on side 1 only has that side in slot 0)
+        let (a, b) = if sides == SIDE_B { (1, 0) } else { (0, 1) };
+        let r = usize::from(sides == SIDE_B);
+        let kind = if sides == BOTH { BOTH } else { SIDE_A };
+        let x = [&task.x[a], &task.x[b]];
+        let (ha, hc) = ([task.h_ae[a], task.h_ae[b]], [task.h_cb[a], task.h_cb[b]]);
+        self.expand_any(kind, r, x, last, budget, fr, ctr);
+        self.stage2_any::<B>(kind, r, x, ha, hc, [NO_CB; 2], budget, fr);
+        self.finish_any::<B>(kind, r, x, path, bound, ctr, stat, fr, frames);
     }
 
-    /// [`Self::expand`] for a node alive on `sides` (not inlined: one copy per side set).
+    /// [`Self::expand`] for a node of kind `sides` (`BOTH`, or `SIDE_A`: alive on side `r`
+    /// only, held in slot 0). Not inlined: one copy per kind.
     #[inline(never)]
     fn expand_any(
         &self,
         sides: u8,
+        r: usize,
         x: [&Fc; 2],
         last: usize,
         budget: usize,
         fr: &mut Scratch<N>,
         ctr: &mut Counter,
     ) {
-        match sides {
-            SIDE_A => self.expand::<SIDE_A>(x, last, budget, fr, ctr),
-            SIDE_B => self.expand::<SIDE_B>(x, last, budget, fr, ctr),
-            _ => self.expand::<BOTH>(x, last, budget, fr, ctr),
+        if sides == BOTH {
+            self.expand::<BOTH>(0, x, last, budget, fr, ctr);
+        } else {
+            self.expand::<SIDE_A>(r, x, last, budget, fr, ctr);
         }
     }
 
-    /// [`Self::stage2`] for a node alive on `sides`.
+    /// [`Self::stage2`] for a node of kind `sides` (see `expand_any`).
     #[inline(never)]
     fn stage2_any<const B: bool>(
         &self,
         sides: u8,
+        r: usize,
         x: [&Fc; 2],
         h_ae: [u8; 2],
         h_cb: [u8; 2],
@@ -474,18 +485,19 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         budget: usize,
         fr: &mut Scratch<N>,
     ) {
-        match sides {
-            SIDE_A => self.stage2::<SIDE_A, B>(x, h_ae, h_cb, cb_pend, budget, fr),
-            SIDE_B => self.stage2::<SIDE_B, B>(x, h_ae, h_cb, cb_pend, budget, fr),
-            _ => self.stage2::<BOTH, B>(x, h_ae, h_cb, cb_pend, budget, fr),
+        if sides == BOTH {
+            self.stage2::<BOTH, B>(0, x, h_ae, h_cb, cb_pend, budget, fr);
+        } else {
+            self.stage2::<SIDE_A, B>(r, x, h_ae, h_cb, cb_pend, budget, fr);
         }
     }
 
-    /// [`Self::finish`] for a node alive on `sides`.
+    /// [`Self::finish`] for a node of kind `sides` (see `expand_any`).
     #[inline(always)]
     fn finish_any<const B: bool>(
         &self,
         sides: u8,
+        r: usize,
         x: [&Fc; 2],
         path: &mut Vec<usize>,
         bound: usize,
@@ -494,14 +506,14 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         fr: &mut Scratch<N>,
         frames: &mut [[Scratch<N>; 3]],
     ) {
-        match sides {
-            SIDE_A => self.finish::<SIDE_A, B>(x, path, bound, ctr, stat, fr, frames),
-            SIDE_B => self.finish::<SIDE_B, B>(x, path, bound, ctr, stat, fr, frames),
-            _ => self.finish::<BOTH, B>(x, path, bound, ctr, stat, fr, frames),
+        if sides == BOTH {
+            self.finish::<BOTH, B>(0, x, path, bound, ctr, stat, fr, frames);
+        } else {
+            self.finish::<SIDE_A, B>(r, x, path, bound, ctr, stat, fr, frames);
         }
     }
 
-    /// First step of the evaluation of a node alive on sides `S` (positions `x`), with
+    /// First step of the evaluation of a node of kind `S` (positions `x` in its slots), with
     /// `budget` moves left after its children (`last`: the move leading to it): generate the
     /// children into `fr` on the node's sides, count them, and issue their first table
     /// lookups (AE with 6+ moves left, CB otherwise). Every stage issues the lookups of all
@@ -510,6 +522,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
     #[inline(always)]
     fn expand<const S: u8>(
         &self,
+        r: usize,
         x: [&Fc; 2],
         last: usize,
         budget: usize,
@@ -521,7 +534,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         let mut moves = ALLOWED[usize::from(N > N_MOVES)][last.min(MAX_MOVES)];
         // the children are leaves: only moves that end a phase-1 path on one of the sides
         let fin = if budget == 0 {
-            moves &= FINAL_MOVES[S as usize];
+            moves &= FINAL_MOVES[(S as usize) << r];
             &FINAL_SIDES
         } else {
             &ALL_SIDES
@@ -550,13 +563,14 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             let m = moves.trailing_zeros() as usize;
             moves &= moves - 1;
             if on(S, 0) {
-                fr.ys[0][n % N] = f.apply_any::<N>(x[0], fw0.0, fw0.1, m);
+                fr.ys[0][n % N] = f.apply_any::<N>(x[0], fw0.0, fw0.1, self.side_move(r, m as u8));
             }
             if on(S, 1) {
                 fr.ys[1][n % N] = f.apply_any::<N>(x[1], fw1.0, fw1.1, self.mb[m & 31]);
             }
             fr.ms[n % N] = m as u8;
-            fr.live[n % N] = S & fin[m & 31];
+            // (a node alive on one side has it in slot 0, and the moves are its leaf moves)
+            fr.live[n % N] = if S == BOTH { fin[m & 31] } else { SIDE_A };
             n += 1;
         }
         fr.n = n;
@@ -594,6 +608,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
     #[inline(always)]
     fn stage2<const S: u8, const B: bool>(
         &self,
+        r: usize,
         x: [&Fc; 2],
         h_ae: [u8; 2],
         h_cb: [u8; 2],
@@ -674,7 +689,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                 let (fw, fws) = Self::flip_words(f, x[o]);
                 for &i in &sel[..k] {
                     let i = usize::from(i) % N;
-                    ys[o][i] = f.apply_any::<N>(x[o], fw, fws, self.side_move(o, ms[i]));
+                    ys[o][i] = f.apply_any::<N>(x[o], fw, fws, self.side_move(o ^ r, ms[i]));
                 }
                 t.ae_ix
                     .index_sel_pf(f, &ys[o], &sel[..k], &mut idx[o], &t.ae.data);
@@ -729,11 +744,12 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         *fh_cb = h_cb;
     }
 
-    /// Last step of the evaluation of a node at depth `g = path.len()` alive on sides `S`
-    /// (positions `x`; see [`Self::dfs`]), after [`Self::expand`] and [`Self::stage2`] on
+    /// Last step of the evaluation of a node at depth `g = path.len()` of kind `S` (positions
+    /// `x` in its slots; see [`Self::dfs`]), after [`Self::expand`] and [`Self::stage2`] on
     /// `fr`, and the search below it.
     fn finish<const S: u8, const B: bool>(
         &self,
+        r: usize,
         x: [&Fc; 2],
         path: &mut Vec<usize>,
         bound: usize,
@@ -915,7 +931,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                 let (fw, fws) = Self::flip_words(f, x[o]);
                 for &i in &sel[..n] {
                     let i = usize::from(i) % N;
-                    ys[o][i] = f.apply_any::<N>(x[o], fw, fws, self.side_move(o, ms[i]));
+                    ys[o][i] = f.apply_any::<N>(x[o], fw, fws, self.side_move(o ^ r, ms[i]));
                 }
                 t.ae_ix
                     .index_sel_pf(f, &ys[o], &sel[..n], &mut idx[o], &t.ae.data);
@@ -965,7 +981,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                 for s in 0..2 {
                     if on(S, s) && on(live[i], s) && has[s][i] == 0 && hcs[s][i] == 0 {
                         path.push(m);
-                        self.leaf(s, path);
+                        self.leaf(s ^ r, path);
                         path.pop();
                     }
                 }
@@ -986,40 +1002,65 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         let cb = budget - 1;
         let sel = *sel;
         let child = |j: usize| usize::from(sel[j % N]) % N;
-        let xs = |i: usize| [&ys[0][i], &ys[1][i]];
+        // A child alive on one side is evaluated by the one-side code with that side in slot 0
+        // (`r`: the side in slot 0), so a child alive on side 1 only of a node alive on both
+        // has its slots swapped: one copy of the one-side code instead of two (hot code
+        // 46 -> 31 KB; optimal mode neutral on identical trees, 1T 0.99x / 1.01x time without
+        // / with slices in three back-to-back runs; time-limited nodes/s 1.01x / 1.03x at
+        // 48T / 1T).
+        let kind = |i: usize| {
+            if S == BOTH && live[i] == BOTH {
+                BOTH
+            } else {
+                SIDE_A
+            }
+        };
+        let slots = |i: usize| -> (usize, usize, usize) {
+            if S == BOTH && live[i] == SIDE_B {
+                (1, 1, 0)
+            } else {
+                (r, 0, 1)
+            }
+        };
+        let xs = |i: usize| {
+            let (_, a, b) = slots(i);
+            [&ys[a][i], &ys[b][i]]
+        };
         let hs = |i: usize| {
+            let (_, a, b) = slots(i);
             (
-                [has[0][i], has[1][i]],
-                [hcs[0][i], hcs[1][i]],
-                [pend[0][i], pend[1][i]],
+                [has[a][i], has[b][i]],
+                [hcs[a][i], hcs[b][i]],
+                [pend[a][i], pend[b][i]],
             )
         };
         if n > 0 {
             let i = child(0);
-            self.expand_any(live[i], xs(i), ms[i] as usize, cb, f0, ctr);
+            self.expand_any(kind(i), slots(i).0, xs(i), ms[i] as usize, cb, f0, ctr);
         }
         if n > 1 {
             let i = child(1);
-            self.expand_any(live[i], xs(i), ms[i] as usize, cb, f1, ctr);
+            self.expand_any(kind(i), slots(i).0, xs(i), ms[i] as usize, cb, f1, ctr);
         }
         if n > 0 {
             let i = child(0);
             let (ha, hc, pd) = hs(i);
-            self.stage2_any::<B>(live[i], xs(i), ha, hc, pd, cb, f0);
+            self.stage2_any::<B>(kind(i), slots(i).0, xs(i), ha, hc, pd, cb, f0);
         }
         for j in 0..n {
             if j + 2 < n {
                 let i = child(j + 2);
-                self.expand_any(live[i], xs(i), ms[i] as usize, cb, f2, ctr);
+                self.expand_any(kind(i), slots(i).0, xs(i), ms[i] as usize, cb, f2, ctr);
             }
             if j + 1 < n {
                 let i = child(j + 1);
                 let (ha, hc, pd) = hs(i);
-                self.stage2_any::<B>(live[i], xs(i), ha, hc, pd, cb, f1);
+                self.stage2_any::<B>(kind(i), slots(i).0, xs(i), ha, hc, pd, cb, f1);
             }
             let i = child(j);
             path.push(ms[i] as usize);
-            self.finish_any::<B>(live[i], xs(i), path, bound, ctr, stat, f0, frames);
+            let r = slots(i).0;
+            self.finish_any::<B>(kind(i), r, xs(i), path, bound, ctr, stat, f0, frames);
             path.pop();
             if self.stop.load(Ordering::Relaxed) {
                 return;
@@ -1298,6 +1339,7 @@ fn solve_n<I: AeIndex, const N: usize>(
         stop: AtomicBool::new(false),
         best: Mutex::new((None, vec![])),
         mb: swap_moves::<N>(),
+        mv: [std::array::from_fn(|m| m), swap_moves::<N>()],
         cb_max: (t.cb.tab.hist.len() - 1) as u8,
     };
     let lo = (0..2)
