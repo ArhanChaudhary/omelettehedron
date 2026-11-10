@@ -19,8 +19,15 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | Joint corner x B-centre x edge-triple table (large tier) | `opt/cbe` | 2.05x fewer nodes; first solution 0.75x / 0.65x | yes |
 | Class-B bound against the best solution (from egg's two-sided bounds) | `opt/classb` | optimal mode 0.29x (48T) / 0.67x (1T) time | yes |
 | Task ordering by previous-iteration statistics (egg's job order) | `opt/order` | 5 s mean length -0.225 (48T); optimal 1T 0.69x | yes |
+| Staged child evaluation (earlier AE prefetch, AE from 6 left, CBE before CB) | `opt/stages` | +10% / +14% nodes/s; optimal 0.89x / 0.88x | yes |
+| Memoized split tree, per-node statistics, adaptive task count | `opt/split2` | 48T first solution 0.51x (17.8 -> 9.1 ms) | yes |
+| Class-B lookups issued with the CB/CBE stages | `opt/bpath` | +6% / +4% nodes/s; optimal 0.95x | yes |
+| Faster startup (parallel table read, orbit-based symmetry classes) | `opt/startup2` | large-tier startup 1.07 -> 0.33 s (48T), 7.9 -> 3.3 s (1T); search neutral | yes |
+| Cheaper per-node compute (pext where fast, padded tables, deferred CB reads) | `opt/micro-compute` | 1.29x / 1.28x nodes/s; optimal 0.78x | yes |
 | Lane-interleaved search (egg's lanes) | `opt/lanes` | slower (search is compute-bound) | no |
 | Sibling pruning in the AE stage | `opt/sibling` | slower (exposes a second DRAM latency) | no |
 
-Cumulative (48 threads, 40 random positions, 5 s): mean best length 21.60 -> 21.23; first
-solution 86 ms -> 19 ms. Optimal mode (19-move scrambles, 48 threads): 15.1 s -> 4.3 s mean.
+Cumulative (48 threads, 40 random positions, 5 s): mean best length 21.60 -> 21.20; first
+solution 86 ms -> 6.8 ms. Optimal mode (19-move scrambles, 48 threads): 15.1 s -> 2.76 s mean.
+Last round alone (main-r2 -> micro-compute): 1.52x nodes/s at 48T and 1T, first solution 0.36x
+(48T) / 0.64x (1T), optimal proofs 0.65x / 0.67x time.
