@@ -34,6 +34,8 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | Cross-check of the early proof (`FTO_FULL_PROOF`, `scripts/check-optimal.sh`) | `test/proofcheck` | all proven lengths agree on ten 19-move scrambles and a random position | yes |
 | Corner/B-centre table reduced by the 24 class-preserving symmetries | `opt/cbsym` | 89 MB -> 4.7 MB; speed unchanged (1.01x / 1.00x nodes/s, two interleaved rounds) | yes |
 | Greedy probe for a quick first solution | `neg/probe` | never finds a solution within 20000 nodes; 48T first solution 1.26x | no |
+| Sibling pipeline in the search (expand / stage2 / finish) | `opt/micro3` | 1.34x nodes/s (48T and 1T); optimal 0.74x / 0.77x; first solution 0.88x / 0.79x | yes |
+| Target-length passes in optimal mode (default with one thread) | `opt/target2` | optimal 1T 0.39x, 48T 0.98x | yes |
 | Faster table generation (egg-solver's techniques) | `opt/gen` | large tier 121 -> 30 s and peak 14.9 -> 8.1 GB; medium 16.0 -> 6.6 s (48T); tables byte-identical | yes |
 
 Cumulative (48 threads, 40 random positions, 5 s): mean best length 21.60 -> 21.20; first

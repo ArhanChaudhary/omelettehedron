@@ -8,7 +8,7 @@ Measured on a 48-core AMD EPYC VM (94 GB RAM, no hardware performance counters),
 (loading takes 0.33 s with 48 threads). Positions are seeded random states unless stated
 otherwise; the numbers below are from the standard suites (`scripts/bench.sh`,
 `scripts/bench-opt.sh`, `scripts/bench-randopt.sh`): means of two interleaved runs of main
-5a2deed unless stated otherwise.
+5a2deed (14551aa for the 1-thread optimal row) unless stated otherwise.
 
 ## Two-phase solving (time limit)
 
@@ -28,7 +28,7 @@ Mean best length, 40 random positions (48 threads) / 20 (1 thread):
 | set | threads | time to prove (total) | mean optimal length |
 |---|---|---|---|
 | 10 x 19-move scrambles | 48 | 12.5 s (1.25 s per position) | 18.1 |
-| 10 x 17-move scrambles | 1 | 9.3 s (0.93 s per position) | 16.5 |
+| 10 x 17-move scrambles | 1 | 3.6 s (0.36 s per position; target-length passes) | 16.5 |
 
 Random positions (48 threads, single runs; in brackets the same proof before the early proof end
 and the sibling pipeline):
