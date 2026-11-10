@@ -66,12 +66,15 @@ with a message if not.
 
 | `--tier` | Memory | Generation (48 cores) | Contents |
 |---|---|---|---|
-| `small` | ~260 MB | ~5 s | A-centre/edge table without edge chirality |
-| `medium` | ~1.2 GB | ~20 s | full A-centre/edge table (288-fold symmetry) |
-| `large` | ~8 GB | ~2.5 min | medium + joint corner/B-centre/edge-triple table (about 2x fewer nodes) |
-| `huge` | ~31 GB | ~5 min | relabel-only A-centre/edge table (cheaper lookups) + the joint table |
+| `small` | ~260 MB | ~1 s | A-centre/edge table without edge chirality |
+| `medium` | ~1.2 GB | ~7 s | full A-centre/edge table (288-fold symmetry) |
+| `large` | ~8 GB | ~30 s | medium + joint corner/B-centre/edge-triple table (about 2x fewer nodes) |
+| `huge` | ~31 GB | ~3 min | relabel-only A-centre/edge table (cheaper lookups) + the joint table |
 
 All tiers also use the 89 MB corner/B-centre table and the in-memory phase-2 table.
+Generation needs about the memory of the tier (peak 8.1 GB for `large`, 29 GB for `huge`); on
+one core it takes ~30 s for `small` and ~3 min for `medium`. Writing the 30 GB of `huge` to
+disk is a large part of its time.
 
 ## Benchmarks
 

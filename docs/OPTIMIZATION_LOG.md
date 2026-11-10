@@ -30,8 +30,36 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | Children visited in order of smallest bound | `neg/childorder2` | neutral (optimal 1.01x / 1.00x; 48T first solution 1.04x) | no |
 | Lane-interleaved search (egg's lanes) | `neg/lanes` | slower (search is compute-bound) | no |
 | Sibling pruning in the AE stage | `neg/sibling` | slower (exposes a second DRAM latency) | no |
+| Faster table generation (egg-solver's techniques) | `opt/gen` | large tier 121 -> 30 s and peak 14.9 -> 8.1 GB; medium 16.0 -> 6.6 s (48T); tables byte-identical | yes |
 
 Cumulative (48 threads, 40 random positions, 5 s): mean best length 21.60 -> 21.20; first
 solution 86 ms -> 6.8 ms. Optimal mode (19-move scrambles, 48 threads): 15.1 s -> 2.76 s mean.
 Last round alone (main-r2 -> micro-compute): 1.52x nodes/s at 48T and 1T, first solution 0.36x
 (48T) / 0.64x (1T), optimal proofs 0.65x / 0.67x time.
+
+## Table generation (`opt/gen`)
+
+Generation time and peak memory of `fto gen --tier T` into an empty directory (wall time and
+peak RSS from `/usr/bin/time -v`); every file byte-identical to the previous tables. Each
+step was measured on its own build, at 48 threads unless noted.
+
+| Step | small | medium | large (peak RSS) |
+|---|---|---|---|
+| main | 3.92 s | 16.04 s | 121.1 s (14.9 GB) |
+| 1. backward step stops at the first frontier hit, 16 interleaved lanes with prefetch, no equivalents | 2.27 s | 11.41 s | 64.9 s |
+| 2. forward writes: one `fetch_and` and a 32-entry prefetching write ring | 2.20 s | 10.22 s | 60.1 s |
+| 3. CBE saturating codes made directly (no second array, no copies) | | | 56.3 s (8.1 GB) |
+| 4. AE generation on the cache-resident coordinates of the search | 1.46 s | 8.66 s | 55.2 s |
+| 5. label table instead of `Mset::unrank` when decoding entries | 1.24 s | 8.13 s | 47.0 s |
+| 6. A part of the AE neighbours tabulated per class and move | 1.16 s | 6.69 s | 46.2 s |
+| 7. CBE neighbours made per group (corner class and B colouring shared) | 1.16 s | 6.91 s | 29.5 s |
+| 8. AE forward neighbours shared by the 8 entries that differ only in chirality | 1.24 s | 6.58 s | 29.7 s (8.1 GB) |
+
+One thread, main -> step 8: small 107.2 -> 27.4 s, medium 384.6 -> 167.0 s (step 8 alone:
+185.7 -> 167.0 s). Huge tier: 3 min 14 s, peak 29.4 GB, files identical (measured once, with
+the build of the rejected step below, which does not change this tier; not measured on main).
+
+Rejected: AE equivalents with the cache-resident symmetry transform (and `Mset::unrank` for the
+labels) instead of the 35 MB tables of `Syms::apply_e`: medium 6.58 -> 7.29 s at 48T (the
+unchanged CBE table was 6% slower in the same run too), 167.0 -> 216.7 s at 1T (AE depth 11
+118.5 -> 164.0 s).

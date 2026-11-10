@@ -10,6 +10,7 @@ use crate::cube::*;
 use crate::fast::*;
 use crate::prune::*;
 use crate::sym::*;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -45,7 +46,19 @@ pub trait AeIndex: Send + Sync + 'static {
         }
     }
     /// Index of a fast-coordinate position, given its A rank.
-    fn index_fast(&self, f: &FastTables, x: &Fc, a_rank: u32) -> usize;
+    #[inline(always)]
+    fn index_fast(&self, f: &FastTables, x: &Fc, a_rank: u32) -> usize {
+        self.index_entry(f, x, *self.class_entry(a_rank))
+    }
+    /// Index of a fast-coordinate position, given the symmetry-class table entry of its A
+    /// rank (only the edges of `x` are read).
+    fn index_entry(&self, f: &FastTables, x: &Fc, v: u32) -> usize;
+    /// Entries per A-centre class (the index is class * `class_size()` + edge part).
+    fn class_size(&self) -> usize;
+    /// [`AeIndex::index_entry`] in parts, for the generator: `(base, g, flips)` such that the
+    /// index is `base + (f.relab(g, x.ebits ^ flips) & 7)` whatever the chirality bits of `x`
+    /// are; `None` if the index holds no chirality bits.
+    fn entry_parts(&self, f: &FastTables, x: &Fc, v: u32) -> Option<(usize, usize, u8)>;
     /// The symmetry-class table read first by `index_fast` (for prefetching).
     fn class_entry(&self, a_rank: u32) -> &u32;
     /// Pipelined `index_fast` over a batch.
@@ -188,8 +201,7 @@ impl AeIndex for AeSym {
         }
     }
     #[inline(always)]
-    fn index_fast(&self, f: &FastTables, x: &Fc, a_rank: u32) -> usize {
-        let v = self.cls.sym[a_rank as usize];
+    fn index_entry(&self, f: &FastTables, x: &Fc, v: u32) -> usize {
         let (g, t) = (v >> 16 & 0xff, v >> 24);
         let (e, b) = f.sym_e(x, &masks(&x.e), g as usize, t as usize);
         let c = (v & 0xffff) as usize;
@@ -198,6 +210,22 @@ impl AeIndex for AeSym {
         } else {
             c * N_MSET + e as usize
         }
+    }
+    fn class_size(&self) -> usize {
+        if self.chiral {
+            N_ECOSET
+        } else {
+            N_MSET
+        }
+    }
+    #[inline(always)]
+    fn entry_parts(&self, f: &FastTables, x: &Fc, v: u32) -> Option<(usize, usize, u8)> {
+        if !self.chiral {
+            return None;
+        }
+        let (g, t) = ((v >> 16 & 0xff) as usize, (v >> 24) as usize);
+        let (e, flips) = f.sym_e_parts(x, &masks(&x.e), g, t);
+        Some(((v & 0xffff) as usize * N_ECOSET + e as usize * 8, g, flips))
     }
     #[inline(always)]
     fn class_entry(&self, a_rank: u32) -> &u32 {
@@ -290,11 +318,19 @@ impl AeIndex for AeRelabel {
         (self.cls.rep[c], e, b3 | bit3 << 3)
     }
     #[inline(always)]
-    fn index_fast(&self, f: &FastTables, x: &Fc, a_rank: u32) -> usize {
-        let v = self.cls.sym[a_rank as usize];
+    fn index_entry(&self, f: &FastTables, x: &Fc, v: u32) -> usize {
         let g = ROT_IDX[(v >> 16) as usize] as usize;
         let (e, b) = f.relabel_e(x, g);
         (v & 0xffff) as usize * N_ECOSET + e as usize * 8 + (b & 7) as usize
+    }
+    fn class_size(&self) -> usize {
+        N_ECOSET
+    }
+    #[inline(always)]
+    fn entry_parts(&self, f: &FastTables, x: &Fc, v: u32) -> Option<(usize, usize, u8)> {
+        let g = ROT_IDX[(v >> 16) as usize] as usize;
+        let base = (v & 0xffff) as usize * N_ECOSET + f.relabel_rank(x, g) as usize * 8;
+        Some((base, g, 0))
     }
     #[inline(always)]
     fn class_entry(&self, a_rank: u32) -> &u32 {
@@ -500,25 +536,11 @@ impl CbTable {
     }
 
     pub fn build(verbose: bool) -> Table2 {
-        let mt = move_tables();
         let attach = Self::attach_targets();
         let targets: Vec<usize> = (0..N_CORNER)
             .map(|c| c * N_MSET + attach[c] as usize)
             .collect();
-        bfs(
-            N_CB,
-            &targets,
-            |i, out| {
-                let (c, b) = (i / N_MSET, i % N_MSET);
-                let mc = &mt.c[c];
-                let mb = &mt.b[b];
-                for m in 0..N_MOVES {
-                    out.push(mc[m] as usize * N_MSET + mb[m] as usize);
-                }
-            },
-            "cb",
-            verbose,
-        )
+        bfs(&CbGraph(move_tables()), N_CB, &targets, "cb", verbose)
     }
 
     #[inline(always)]
@@ -542,26 +564,173 @@ pub fn ae_targets<I: AeIndex>(ix: &I) -> Vec<usize> {
     v
 }
 
+/// Moves between CB entries.
+struct CbGraph(&'static MoveTables);
+
+impl Graph for CbGraph {
+    const MOVES: usize = N_MOVES;
+    type Node = (usize, usize);
+    type Cache = ();
+    #[inline(always)]
+    fn node(&self, i: usize, (): &mut ()) -> (usize, usize) {
+        (i / N_MSET, i % N_MSET)
+    }
+    #[inline(always)]
+    fn step(&self, &(c, b): &(usize, usize), m: usize) -> usize {
+        self.0.c[c][m] as usize * N_MSET + self.0.b[b][m] as usize
+    }
+}
+
+/// Moves between AE entries, with the cache-resident coordinates of the search: a move is a
+/// byte shuffle and the index needs only small tables (the move and symmetry tables of
+/// [`Coords`] are megabytes each). An entry's A-centres are its class representative, so the
+/// A part of each neighbour (its class-table entry) is tabulated per class and move. (Fast
+/// coordinates: small tier 2.2 -> 1.5 s, AE medium generation 9.4 -> 8.1 s at 48T; the
+/// per-class table: AE medium 7.6 -> 6.1 s, medium tier 8.1 -> 6.7 s; when added, opt/gen.)
+struct AeGraph<'a, I: AeIndex> {
+    ix: &'a I,
+    f: &'static FastTables,
+    /// class-table entry of each class representative after each move
+    next: Vec<[u32; N_MOVES]>,
+    /// whether the index holds chirality bits (see [`AeIndex::entry_parts`])
+    chiral: bool,
+}
+
+/// The neighbours of the 8 entries that differ only in their chirality bits (same A class and
+/// edge labelling): the neighbour by move m of the entry with bits b is
+/// `base[m] + (relab(g[m], b ^ flips[m]) & 7)`.
+#[derive(Clone, Copy)]
+struct AeGroup {
+    base: [usize; N_MOVES],
+    g: [u8; N_MOVES],
+    flips: [u8; N_MOVES],
+}
+
+impl<'a, I: AeIndex> AeGraph<'a, I> {
+    fn new(ix: &'a I) -> Self {
+        let f = fast();
+        // `decode` reads the move tables; their lazy initialisation runs parallel work, so it
+        // must not start inside a rayon job (the initialising thread could steal a job that
+        // waits for it).
+        move_tables();
+        let cs = ix.class_size();
+        let next = (0..ix.size() / cs)
+            .into_par_iter()
+            .map(|c| {
+                let x = Fc {
+                    a: mset_labels()[ix.decode(c * cs).0 as usize],
+                    b: [0; 16],
+                    e: [0; 16],
+                    c: 0,
+                    ebits: 0,
+                };
+                std::array::from_fn(|m| *ix.class_entry(f.a_rank(&f.apply_w(&x, 0, m))))
+            })
+            .collect();
+        let zero = Fc {
+            a: [0; 16],
+            b: [0; 16],
+            e: [0; 16],
+            c: 0,
+            ebits: 0,
+        };
+        let chiral = ix.entry_parts(f, &zero, *ix.class_entry(0)).is_some();
+        AeGraph {
+            ix,
+            f,
+            next,
+            chiral,
+        }
+    }
+
+    /// The group of entries `8 * key .. 8 * key + 8` (chiral indices only).
+    fn group(&self, key: usize) -> AeGroup {
+        let i0 = key * 8;
+        let (_, e, _) = self.ix.decode(i0);
+        let c = i0 / self.ix.class_size();
+        let x = Fc {
+            a: [0; 16],
+            b: [0; 16],
+            e: mset_labels()[e as usize],
+            c: 0,
+            ebits: 0,
+        };
+        let fw = self.f.flip_word(&masks(&x.e));
+        let mut g = AeGroup {
+            base: [0; N_MOVES],
+            g: [0; N_MOVES],
+            flips: [0; N_MOVES],
+        };
+        for m in 0..N_MOVES {
+            // (x has no chirality bits, so y has the flips of the move)
+            let y = self.f.apply_w(&x, fw, m);
+            if let Some((base, gm, fl)) = self.ix.entry_parts(self.f, &y, self.next[c][m]) {
+                g.base[m] = base;
+                g.g[m] = gm as u8;
+                g.flips[m] = y.ebits ^ fl;
+            }
+        }
+        g
+    }
+}
+
+impl<I: AeIndex> Graph for AeGraph<'_, I> {
+    const MOVES: usize = N_MOVES;
+    /// edges (the A-centres are not needed), flip word and A class
+    type Node = (Fc, u64, usize);
+    /// the last group of a forward step and its key
+    type Cache = Option<(usize, AeGroup)>;
+    #[inline(always)]
+    fn node(&self, i: usize, _: &mut Option<(usize, AeGroup)>) -> (Fc, u64, usize) {
+        let (_, e, bits) = self.ix.decode(i);
+        let x = Fc {
+            a: [0; 16],
+            b: [0; 16],
+            e: mset_labels()[e as usize],
+            c: 0,
+            ebits: bits,
+        };
+        (x, self.f.flip_word(&masks(&x.e)), i / self.ix.class_size())
+    }
+    #[inline(always)]
+    fn step(&self, (x, fw, c): &(Fc, u64, usize), m: usize) -> usize {
+        let y = self.f.apply_w(x, *fw, m);
+        self.ix.index_entry(self.f, &y, self.next[*c][m])
+    }
+    fn equivalents(&self, j: usize, out: &mut Vec<usize>) {
+        self.ix.equivalents(j, out);
+    }
+    /// For chiral indices the neighbours are made per group of 8 entries (most of the work
+    /// is shared: only the chirality part differs). (Medium tier 6.9 -> 6.6 s at 48T, 185.7 ->
+    /// 167.0 s at 1T when added, opt/gen.)
+    #[inline(always)]
+    fn neighbours(&self, i: usize, cache: &mut Self::Cache, mut out: impl FnMut(usize)) {
+        if !self.chiral {
+            let x = self.node(i, cache);
+            for m in 0..N_MOVES {
+                out(self.step(&x, m));
+            }
+            return;
+        }
+        let key = i / 8;
+        if !matches!(cache, Some((k, _)) if *k == key) {
+            *cache = Some((key, self.group(key)));
+        }
+        let Some((_, g)) = cache else {
+            return;
+        };
+        let bits = self.ix.decode(i).2;
+        for m in 0..N_MOVES {
+            out(g.base[m] + (self.f.relab(g.g[m] as usize, bits ^ g.flips[m]) & 7) as usize);
+        }
+    }
+}
+
 pub fn build_ae<I: AeIndex>(ix: &I, verbose: bool) -> Table2 {
-    let mt = move_tables();
     bfs(
+        &AeGraph::new(ix),
         ix.size(),
         &ae_targets(ix),
-        |i, out| {
-            let (a, e, bits) = ix.decode(i);
-            let x = Coords {
-                c: 0,
-                a,
-                b: 0,
-                e,
-                ebits: bits,
-            };
-            for m in 0..N_MOVES {
-                let j = ix.index(&mt.apply(&x, m));
-                out.push(j);
-                ix.equivalents(j, out);
-            }
-        },
         ix.name(),
         verbose,
     )
@@ -658,26 +827,25 @@ impl<I: AeIndex> Tables<I> {
         let ae_path = dir.join(format!("{}.prun", ae_ix.name()));
         // Check all tables of the tier before generating any (a table that exists is loaded:
         // it only needs memory). 2 bits per entry.
-        let planned = |path: PathBuf, size: &dyn Fn() -> usize, working: bool| {
+        // (generation needs no memory beyond the tables themselves: the large tier peaks at
+        // 8.1 GB for 8.1 GB of tables)
+        let planned = |path: PathBuf, size: &dyn Fn() -> usize| {
             let bytes =
                 std::fs::metadata(&path).map_or_else(|_| size().div_ceil(4) as u64, |m| m.len());
             crate::preflight::Planned {
                 path,
                 bytes,
-                // (the joint table's build keeps a second array of raw distances)
-                working_set: if working { bytes } else { 0 },
+                working_set: 0,
             }
         };
         let mut plan = vec![
-            planned(ae_path.clone(), &|| ae_ix.size(), false),
-            planned(dir.join("cb.prun"), &|| N_CB, false),
+            planned(ae_path.clone(), &|| ae_ix.size()),
+            planned(dir.join("cb.prun"), &|| N_CB),
         ];
         if with_cbe {
-            plan.push(planned(
-                dir.join("cbe.prun"),
-                &|| crate::cbe::CbeIndex::new().size(),
-                true,
-            ));
+            plan.push(planned(dir.join("cbe.prun"), &|| {
+                crate::cbe::CbeIndex::new().size()
+            }));
         }
         crate::preflight::check_plan(&plan)?;
         let ae = load_or_build(&ae_path, ae_ix.size(), verbose, || {
@@ -806,5 +974,52 @@ impl<I: AeIndex> Tables<I> {
             x = next;
             d += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::{Rng, SeedableRng};
+
+    /// The generator's neighbour indices equal the index of each moved position.
+    fn check_graph<I: AeIndex>(ix: &I) {
+        let g = AeGraph::new(ix);
+        let mt = move_tables();
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(44);
+        for _ in 0..2000 {
+            let i = rng.gen_range(0..ix.size());
+            let (a, e, ebits) = ix.decode(i);
+            let x = Coords {
+                c: 0,
+                a,
+                b: 0,
+                e,
+                ebits,
+            };
+            let node = g.node(i, &mut None);
+            for m in 0..N_MOVES {
+                assert_eq!(g.step(&node, m), ix.index(&mt.apply(&x, m)), "{i} {m}");
+            }
+        }
+        // grouped neighbours of consecutive entries
+        let mut cache = None;
+        for _ in 0..200 {
+            let i0 = rng.gen_range(0..ix.size() - 20);
+            for i in i0..i0 + 20 {
+                let node = g.node(i, &mut None);
+                let mut v = vec![];
+                g.neighbours(i, &mut cache, |j| v.push(j));
+                let want: Vec<usize> = (0..N_MOVES).map(|m| g.step(&node, m)).collect();
+                assert_eq!(v, want, "{i}");
+            }
+        }
+    }
+
+    #[test]
+    fn ae_graph_steps_match_index() {
+        check_graph(&AeSym::new(false));
+        check_graph(&AeSym::new(true));
+        check_graph(&AeRelabel::new());
     }
 }
