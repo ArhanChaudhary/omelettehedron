@@ -20,7 +20,7 @@ use crate::geometry::*;
 use crate::mem::HugeBuf;
 use crate::prune::*;
 use crate::sym::*;
-use crate::tables::{prefetch, CbTable, Phase2};
+use crate::tables::{prefetch_at, CbTable, Phase2};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
@@ -488,14 +488,14 @@ impl CbeTable {
         let em = masks(&x.e);
         for k in 0..4 {
             out[k] = self.ix.index(f, x, &em, k);
-            prefetch(self.word(out[k]));
+            prefetch_at(&self.codes, out[k] >> 5);
         }
     }
 
+    /// (`CODE_LB` is increasing, so this is the bound of the largest code)
     #[inline(always)]
     pub fn bound(&self, idx: &[usize; 4]) -> u8 {
-        idx.iter()
-            .fold(0, |b, &i| b.max(CODE_LB[self.code(i) as usize]))
+        CODE_LB[idx.iter().fold(0, |b, &i| b.max(self.code(i))) as usize & 3]
     }
 }
 
