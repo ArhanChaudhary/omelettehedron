@@ -1201,7 +1201,18 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         let max_k = bound.saturating_sub(4).min(MAX_SPLIT);
         let mut k = 0;
         // (single-threaded runs are split too, so per-task decisions can change mid-iteration)
-        while front.len() < want && k < max_k {
+        // A node alive on both sides carries the work of two separate searches' tasks, so it
+        // counts twice: the split goes as deep as with separate searches (counted once, the
+        // smaller front split one level deeper, about 34000 instead of 5400 tasks at 48T, and
+        // the first solution took 1.28x the time of main at 48T; counted twice: 0.85x, but
+        // random-position proofs 0.83x / 0.94x / 0.94x against main instead of 0.79x / 0.90x /
+        // 0.93x).
+        let weight = |f: &[(u32, u8)]| {
+            f.iter()
+                .map(|&(_, s)| s.count_ones() as usize)
+                .sum::<usize>()
+        };
+        while weight(&front) < want && k < max_k {
             let need: Vec<u32> = front
                 .iter()
                 .map(|&(i, _)| i)
