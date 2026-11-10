@@ -110,9 +110,6 @@ fn swap_moves() -> [usize; N_MOVES] {
 }
 
 const CHECK_EVERY: u64 = 1 << 14;
-#[allow(non_snake_case)]
-#[inline(always)]
-fn EARLY_CB(b: usize) -> bool { b > 8 }
 
 /// Weight 8^-h of a surviving node with bound h in a task's ordering statistic.
 const STAT_W: [f32; 32] = {
@@ -247,7 +244,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
             t.ae_ix.index_batch_fast_pf(f, &ys[..n], &mut idx[..n], &t.ae.data);
             // Without a joint-table stage to hide the CB latency, fetch the CB words of all
             // children while the AE words are in flight.
-            let early = EARLY_CB(budget);
+            let early = budget > 8;
             if early {
                 for i in 0..n {
                     cbi[i] = CbTable::index_fast(f, &ys[i]);
