@@ -81,11 +81,12 @@ pub fn parse_moves(s: &str) -> Result<Vec<PhysMove>, String> {
             Some(i) => t.split_at(i),
             None => (t.as_str(), ""),
         };
-        // (no face name ends in w or s)
-        let (name, layer) = match name.char_indices().last() {
-            Some((i, 'w' | 'W')) => (&name[..i], Layer::Wide),
-            Some((i, 's' | 'S')) => (&name[..i], Layer::Slice),
-            _ => (name, Layer::Face),
+        // (no face name ends in w, s or v)
+        let (name, layer, rotation) = match name.char_indices().last() {
+            Some((i, 'w' | 'W')) => (&name[..i], Layer::Wide, false),
+            Some((i, 's' | 'S')) => (&name[..i], Layer::Slice, false),
+            Some((i, 'v' | 'V')) => (&name[..i], Layer::Wide, true),
+            _ => (name, Layer::Face, false),
         };
         let face = FACE_NAMES
             .iter()
@@ -100,6 +101,16 @@ pub fn parse_moves(s: &str) -> Result<Vec<PhysMove>, String> {
         };
         for _ in 0..n {
             out.push(PhysMove { face, layer, cw });
+            if rotation {
+                // `Xv` turns the whole puzzle like X: all three layers of X's axis, i.e. the
+                // wide turn Xw and the opposite face turned the other way (as seen from outside
+                // it), which commute
+                out.push(PhysMove {
+                    face: opposite(face),
+                    layer: Layer::Face,
+                    cw: !cw,
+                });
+            }
         }
     }
     Ok(out)
@@ -238,10 +249,63 @@ pub fn is_solved_physical(st: &Stickers) -> bool {
     })
 }
 
+/// The labelled sticker states of the whole-puzzle rotations a solution can end in (sticker i
+/// of the solved puzzle labelled i), found by closing `Uv`, `Rv` and `Fv`: the 12 rotations
+/// with an even corner permutation (face turns 3-cycle corners).
+fn rotation_labels() -> &'static Vec<Stickers> {
+    static R: std::sync::OnceLock<Vec<Stickers>> = std::sync::OnceLock::new();
+    R.get_or_init(|| {
+        let id: Stickers = std::array::from_fn(|i| i as u8);
+        let gens: Vec<Vec<PhysMove>> = ["Uv", "Rv", "Fv"]
+            .iter()
+            .filter_map(|g| parse_moves(g).ok())
+            .collect();
+        let mut seen = vec![id];
+        let mut i = 0;
+        while i < seen.len() {
+            for g in &gens {
+                let n = apply_physical(&seen[i], g);
+                if !seen.contains(&n) {
+                    seen.push(n);
+                }
+            }
+            i += 1;
+        }
+        seen
+    })
+}
+
+/// True if `solution` solves the position of `scramble` as a pure FTO, where every piece and
+/// every centre triangle is unique (not only up to colour), up to a whole-puzzle rotation.
+pub fn solves_pure(scramble: &[PhysMove], solution: &[PhysMove]) -> bool {
+    let id: Stickers = std::array::from_fn(|i| i as u8);
+    let end = apply_physical(&apply_physical(&id, scramble), solution);
+    rotation_labels().contains(&end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rand::{Rng, SeedableRng};
+
+    #[test]
+    fn pure_check() {
+        // the 12 rotations about face axes; the other 12 of the octahedron (quarter turns about
+        // a vertex) permute the corners oddly, which no sequence of face turns can do
+        assert_eq!(rotation_labels().len(), 12);
+        let scr = parse_moves("U R' BL F D").unwrap();
+        let inv: Vec<PhysMove> = scr
+            .iter()
+            .rev()
+            .map(|m| PhysMove { cw: !m.cw, ..*m })
+            .collect();
+        assert!(solves_pure(&scr, &inv));
+        let mut rot = inv.clone();
+        rot.extend(parse_moves("Lv").unwrap());
+        assert!(solves_pure(&scr, &rot));
+        // one move short: not solved at all
+        assert!(!solves_pure(&scr, &inv[..inv.len() - 1]));
+    }
 
     /// Random physical moves of every layer kind.
     fn random_moves(rng: &mut impl Rng, n: usize) -> Vec<PhysMove> {
@@ -292,6 +356,33 @@ mod tests {
     }
 
     #[test]
+    fn rotations_turn_the_whole_puzzle() {
+        let solved = solved_stickers(defs());
+        for name in FACE_NAMES {
+            for dir in ["", "'"] {
+                let one = parse_moves(&format!("{name}v{dir}")).unwrap();
+                let st = apply_physical(&solved, &one);
+                // a rotation: still solved up to a rotation, but not the identity
+                assert!(is_solved_physical(&st), "{name}v{dir}");
+                assert_ne!(st, solved, "{name}v{dir}");
+                // three of them are the identity, sticker for sticker
+                let three =
+                    parse_moves(&format!("{name}v{dir} {name}v{dir} {name}v{dir}")).unwrap();
+                assert_eq!(apply_physical(&solved, &three), solved, "{name}v{dir} x3");
+            }
+        }
+        // a rotation then a turn is the turn of the face that came to that place
+        let a = apply_physical(&solved, &parse_moves("Uv R").unwrap());
+        let (c, _) = scramble_to_cube(&parse_moves("Uv R").unwrap());
+        let (d, _) = scramble_to_cube(&parse_moves("Uv R Uv'").unwrap());
+        assert!(!is_solved_physical(&a));
+        assert_eq!(
+            c, d,
+            "a trailing rotation changes nothing up to orientation"
+        );
+    }
+
+    #[test]
     fn scramble_matches_physical_simulation() {
         let d = defs();
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(5);
@@ -308,6 +399,25 @@ mod tests {
             }
             assert_eq!(rotated, phys);
         }
+    }
+
+    /// The user's pure corner 6-flip position: the internal state must match the stickers.
+    #[test]
+    fn corner_six_flip_matches_physical_simulation() {
+        let d = defs();
+        let sc = parse_moves(
+            "U F' U' R' L' R L U F U' F' L' R' L R BL L F' L U F' R' U R' BR' U B BR' B BL BR' D' BL D'",
+        )
+        .unwrap();
+        let phys = apply_physical(&solved_stickers(d), &sc);
+        let (c, fr) = scramble_to_cube(&sc);
+        let st = c.to_stickers();
+        let perm = d.sm.whole(&fr.0);
+        let mut rotated = [0u8; 72];
+        for i in 0..72 {
+            rotated[perm[i]] = st[i];
+        }
+        assert_eq!(rotated, phys);
     }
 
     /// Internal -> physical -> internal gives the same move and frame, in every frame.
