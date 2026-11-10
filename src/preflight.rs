@@ -46,6 +46,7 @@ fn free_disk(dir: &Path) -> io::Result<u64> {
 
 /// Unknown elsewhere: do not block generation.
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // same signature as the Unix version
 fn free_disk(_dir: &Path) -> io::Result<u64> {
     Ok(u64::MAX)
 }
@@ -140,6 +141,9 @@ pub fn check_plan(tables: &[Planned]) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    // (without statvfs and /proc, e.g. on WebAssembly, the limits are unknown and nothing is
+    // refused)
+    #[cfg(unix)]
     #[test]
     fn rejects_tables_that_do_not_fit() {
         let dir = std::env::temp_dir().join("omelettehedron-preflight-test");

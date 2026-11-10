@@ -102,6 +102,29 @@ pub fn prefetch<T>(p: &T) {
             core::arch::x86_64::_MM_HINT_T0,
         );
     }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: PRFM is a hint and never faults, whatever the address
+    unsafe {
+        core::arch::asm!(
+            "prfm pldl1keep, [{0}]",
+            in(reg) std::ptr::from_ref(p),
+            options(nostack, preserves_flags, readonly)
+        );
+    }
+    // WebAssembly has no prefetch, but a load whose value is dropped starts the cache miss
+    // just the same while execution runs on (egg-solver measured +45-53% in V8 and wasmtime;
+    // src/prefetch.rs there). `p` is a reference, so the byte is always readable.
+    #[cfg(target_arch = "wasm32")]
+    // SAFETY: `p` is a valid reference, so its first byte can be read
+    unsafe {
+        std::ptr::read_volatile(std::ptr::from_ref(p).cast::<u8>());
+    }
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "wasm32"
+    )))]
+    let _ = p;
 }
 
 pub struct AeSym {
@@ -1079,7 +1102,11 @@ mod tests {
     #[test]
     fn ae_graph_steps_match_index() {
         check_graph(&AeSym::new(false));
-        check_graph(&AeSym::new(true));
-        check_graph(&AeRelabel::new());
+        // (the larger indices need 64-bit sizes: 4.1e9 and 9.1e10 entries)
+        #[cfg(target_pointer_width = "64")]
+        {
+            check_graph(&AeSym::new(true));
+            check_graph(&AeRelabel::new());
+        }
     }
 }

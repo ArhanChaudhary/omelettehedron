@@ -9,7 +9,6 @@ use rayon::prelude::*;
 use std::alloc::{alloc, dealloc, Layout};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 const HUGE: usize = 2 << 20;
 
@@ -25,7 +24,21 @@ unsafe impl<T: Copy + Send> Send for HugeBuf<T> {}
 // SAFETY: shared access only hands out &[T].
 unsafe impl<T: Copy + Sync> Sync for HugeBuf<T> {}
 
-static WARNED: AtomicBool = AtomicBool::new(false);
+/// Ask the kernel to back the `bytes` bytes at `p` with transparent huge pages.
+#[cfg(all(target_os = "linux", not(miri)))]
+fn advise_huge(p: *mut u8, bytes: usize) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    // SAFETY: advisory call on memory the caller owns; the range is 2 MiB aligned
+    let r = unsafe { libc::madvise(p.cast::<libc::c_void>(), bytes, libc::MADV_HUGEPAGE) };
+    if r != 0 && !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!("warning: madvise(MADV_HUGEPAGE) failed; tables use normal pages");
+    }
+}
+
+/// Elsewhere (and under Miri) the buffer simply uses the system's normal pages.
+#[cfg(not(all(target_os = "linux", not(miri))))]
+fn advise_huge(_p: *mut u8, _bytes: usize) {}
 
 /// Layout of a buffer of `len` elements of `T`, rounded up to whole huge pages and aligned to
 /// them. A size beyond the address space is handled like a failed allocation (the process
@@ -57,17 +70,15 @@ impl<T: Copy> HugeBuf<T> {
         let Some(ptr) = NonNull::new(p.cast::<T>()) else {
             std::alloc::handle_alloc_error(layout)
         };
-        #[cfg(target_os = "linux")]
-        {
-            // SAFETY: advisory call on memory we own; the range is 2 MiB aligned
-            let r = unsafe { libc::madvise(p.cast::<libc::c_void>(), bytes, libc::MADV_HUGEPAGE) };
-            if r != 0 && !WARNED.swap(true, Ordering::Relaxed) {
-                eprintln!("warning: madvise(MADV_HUGEPAGE) failed; tables use normal pages");
-            }
-        }
+        advise_huge(p, bytes);
         // SAFETY: the allocation is `bytes` long; zero bytes are valid for T (documented)
         let raw = unsafe { std::slice::from_raw_parts_mut(p, bytes) };
+        // (sequential under Miri: rayon's crossbeam-epoch uses a container-of cast that Stacked
+        // Borrows rejects, which would hide checks of this module's own unsafe code)
+        #[cfg(not(miri))]
         raw.par_chunks_mut(HUGE).for_each(|c| c.fill(0));
+        #[cfg(miri)]
+        raw.fill(0);
         HugeBuf {
             ptr,
             len,
@@ -85,14 +96,7 @@ impl<T: Copy> HugeBuf<T> {
         let Some(ptr) = NonNull::new(p.cast::<T>()) else {
             std::alloc::handle_alloc_error(layout)
         };
-        #[cfg(target_os = "linux")]
-        {
-            // SAFETY: advisory call on memory we own; the range is 2 MiB aligned
-            let r = unsafe { libc::madvise(p.cast::<libc::c_void>(), bytes, libc::MADV_HUGEPAGE) };
-            if r != 0 && !WARNED.swap(true, Ordering::Relaxed) {
-                eprintln!("warning: madvise(MADV_HUGEPAGE) failed; tables use normal pages");
-            }
-        }
+        advise_huge(p, bytes);
         HugeBuf {
             ptr,
             len,
@@ -131,5 +135,25 @@ impl<T: Copy> Drop for HugeBuf<T> {
             // SAFETY: allocated with exactly this layout in `zeroed`
             unsafe { dealloc(self.ptr.as_ptr().cast::<u8>(), l) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn huge_buf_contents() {
+        let z: HugeBuf<u64> = HugeBuf::zeroed(1000);
+        assert_eq!(z.len(), 1000);
+        assert!(z.iter().all(|&x| x == 0));
+        let v: Vec<u32> = (0..5000).collect();
+        let b = HugeBuf::from_slice(&v);
+        assert_eq!(&b[..], &v[..]);
+        let mut w: HugeBuf<u16> = HugeBuf::for_overwrite(300);
+        w.fill(7);
+        assert!(w.iter().all(|&x| x == 7));
+        let e: HugeBuf<u8> = HugeBuf::zeroed(0);
+        assert!(e.is_empty());
     }
 }
