@@ -243,3 +243,81 @@ Notes:
   lookups need no extra canonicalisation. The medium (symmetry-reduced) and large
   (relabel-only) tables were checked to agree on 3000 random positions and all their
   neighbours.
+
+## 8. Move sets (`--moves`)
+
+Face turns are always allowed; `--moves` adds wide and/or slice turns, each counting as one move
+(user decision: families only, no arbitrary subsets).
+
+**Wide turns** change nothing in the search. A wide turn of a face is a turn of the opposite face
+plus a whole-puzzle rotation, and every orientation counts as solved, so a solution never gets
+shorter by using them. Internally the 16 moves are already the single and wide turns of the four
+back faces; `wide` only changes how the internal wide turns are printed (as wide turns of the
+back face instead of a front-face turn plus a rotation, so the front corner stays still).
+
+**Slice turns** are new internal moves. A slice holds no corner, so it never moves the fixed front
+corner and needs no rotation: the internal slice of back face X is the middle layer of X's axis,
+turned like X (moves 16..24). In the sticker model the slice is the wide turn followed by the
+inverse single turn of the same face (`slice = Xw · X⁻¹`); both this identity and the cubie-level
+moves are checked against the sticker model. A physical slice `Ys` of a front face Y is the
+internal slice of the opposite back face, reversed.
+
+**Move order.** Count the layers of an axis from its back face (back layer, slice, front layer)
+in turns of X. The three layers commute, and modulo the free rotation about the axis the axis
+group is Z₃² = {(a, b)}: back layer a, slice b. X = (1, 0), Xw = (1, 1), Xs = (0, 1) and
+their inverses are the 6 one-move elements; (1, 2) and (2, 1) need two moves, each in three
+ways (e.g. (2, 1) = X Xw = X' Xs = Xw' Xs'), in either order. The canonical order keeps one
+pair per two-move element and forbids every same-axis pair whose product is a single move:
+
+| move set | same-axis pairs allowed | branching (canonical) |
+|---|---|---|
+| face turns (16 moves) | single then wide, any directions (4 pairs; X Xw' = Xs' needs two moves here) | 12.93 |
+| with slices (24 moves) | X Xw and X' Xw' only | about 18.3 |
+
+Both rules are checked against the axis group (every allowed pair is a two-move element, every
+two-move element has exactly one allowed pair) and against breadth-first search over the whole
+puzzle: up to length 4 the canonical sequences reach every position at exactly their length,
+each once (with slices 24, 440, 8064 and 147,792 sequences and positions; without, 16, 208, 2688
+and 34,752). At length 5 every position is still reached, and a few are reached twice (944 of
+448,336 without slices, 1,512 of 2,707,128 with), through relations of length 10 across three
+axes such as `BLw' B' BLw' BRw' BLw' = BRw' BLw' BRw' B' BRw'` (internal moves), which rules on
+consecutive moves cannot see.
+
+**Tables.** The phase-1 tables hold distances to `H_A` in the move metric, so slices have their
+own AE, CB and CBE tables (`*-slice.prun`, same sizes). The symmetry reductions stay valid: the
+8 slice moves are mapped to slice moves by all 48 symmetries. Slices are not in `H_A`, so phase 2
+(A-moves only) and its table are unchanged. The class-B variant conjugates by `SWAP_AB`, which
+fixes the front corner and maps back faces to back faces, so it maps slices to slices.
+
+**Optimality.** Every solution is still (longest prefix ending in a move outside `H_A`) +
+(A-moves), and slices are outside `H_A`: exhausting phase 1 up to depth best − 1 proves
+optimality. The early end of the proof (iteration best − 1 skipped, and the stop on a solution
+of length depth + 1) is switched off with slices: it relies on a solving phase-1 path of that
+length ending in a class-B move, so that the class-B variant finds the same solution in an
+earlier iteration, and a path ending in a slice is in neither class. The target-length passes
+(on by default with one thread) rest on the same argument: with slices pass T also runs depth T,
+and the passes start from the iterations completed so far without the extra move.
+`scripts/check-optimal.sh <tier> slice` checks the proven lengths against `FTO_FULL_PROOF=1`
+(with target passes on one thread), that without target passes the two searches are identical
+(same node counts on one thread), and runs the brute-force tests in the slice metric (also on
+one thread).
+
+**Measured** (large tier, the standard benchmark sets; 48 threads unless noted):
+
+| | face turns | with slices |
+|---|---|---|
+| optimal length, 10 × 19-move face-turn scrambles (mean) | 18.10 | 16.80 |
+| time to prove optimality (mean) | 1.29 s (full proof: 2.02 s) | 40.1 s |
+| random positions, best after 0.1 s / 1 s / 5 s (40 positions) | 21.75 / 21.50 / 21.10 | 19.78 / 19.15 / 18.93 |
+| random positions, 1 thread, best after 5 s (20 positions) | 22.00 | 19.80 |
+| first solution, random positions | 23.1 moves after 6.1 ms | 21.4 moves after 7.7 ms |
+| nodes/s (time-limited, 48 / 1 threads) | 1.67e9 / 3.72e7 | 1.84e9 / 4.26e7 |
+| generation of the large-tier tables | 30 s | 43 s (peak 8.1 GB) |
+
+Slices save 1.3 moves on the optimal solutions of these scrambles and about 2.2 moves on
+random positions after 5 s, but proving optimality costs about 20 times as long as the full
+proof without slices (31 times the default proof, which ends one iteration early): the
+canonical branching factor rises from 12.9 to about 18.3, and the slice-metric tables are
+shallower (entry means: AE 10.94 → 9.58, unreduced CB 6.12 → 5.71, CBE 7.72 → 6.95). The four
+positions whose optimum is 18 (the proof exhausts depth 17) took 86–106 s each; the 17-move
+set (optimal lengths 13–17) takes 1.8 s per position.

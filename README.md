@@ -39,8 +39,35 @@ Hold the puzzle with a corner pointing at you:
 `X` turns face X 120° clockwise as seen from outside, and `X'` turns it anticlockwise. `X2` is
 accepted as two turns. Opposite pairs: U–D, F–B, R–BL, L–BR.
 
+`Xw` turns face X together with the middle layer (a wide turn). `Xs` turns only the middle
+layer between X and its opposite face, in the sense of X, so `Us` = `Ds'` (a slice turn).
+Scrambles may always contain wide and slice turns; solutions name slices by their front face
+(`Us`, `Rs`, `Fs`, `Ls`).
+
 Face turns can rotate the whole puzzle, so a solution ends in the solved state in *some*
 orientation. Internally the front corner is held fixed.
+
+### Move sets
+
+Solutions use face turns, plus the families given with `--moves` (comma-separated). Every
+allowed move counts as one.
+
+| `--moves` | Solutions use | Effect |
+|---|---|---|
+| (none) | face turns | the face-turn metric |
+| `slice` | face and slice turns | shorter solutions; own pruning tables (`*-slice.prun`) |
+| `wide` | face and wide turns | same lengths and search; see below |
+| `wide,slice` | all three | as `slice`, printed as with `wide` |
+
+A wide turn is a turn of the opposite face plus a whole-puzzle rotation, and the solver treats
+every orientation as solved, so wide turns never shorten a solution. With `wide` the search is
+unchanged and only the output differs: the corner piece between U, R, F and L stays where the
+scramble left it, and turns of the faces around it are printed as wide turns of the opposite
+faces (`Dw` for `U` if the scramble left that piece in front).
+
+With `slice` the phase-1 search has 24 internal moves instead of 16, and slices are not
+phase-2 moves; see [docs/PHASES.md](docs/PHASES.md#8-move-sets---moves) for the move-order
+rules, the tables and why optimal mode stays exact.
 
 ## Usage
 
@@ -59,6 +86,9 @@ target/release/omelettehedron solve --tier large -n 1000 "..."
 
 # one scramble per line on stdin
 target/release/omelettehedron solve --tier large -t 1 < scrambles.txt
+
+# optimal solution with slice turns allowed (generates the slice tables on first use)
+target/release/omelettehedron solve --tier large --moves slice "U R' BL F D B' L BR"
 ```
 
 Stopping rules can be combined; the search stops when any of them triggers. `-j N` sets the
@@ -84,7 +114,9 @@ reserved them (`echo N > /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepag
 large tier needs 9): optimal proofs about 4% faster with the A-centre/edge table on a 1 GiB page.
 Without reserved pages the tables use transparent huge pages.
 
-All tiers also use the 89 MB corner/B-centre table and the in-memory phase-2 table.
+All tiers also use the 89 MB corner/B-centre table and the in-memory phase-2 table. With
+`--moves slice` every tier has its own set of tables of the same sizes (names ending in
+`-slice`); `gen --tier T --moves slice` generates them ahead of time.
 Generation needs about the memory of the tier (peak 8.1 GB for `large`, 29 GB for `huge`); on
 one core it takes ~30 s for `small` and ~3 min for `medium`. Writing the 30 GB of `huge` to
 disk is a large part of its time.
@@ -121,8 +153,12 @@ The tests cover:
 * notation and frame handling, via physical sticker simulation;
 * coordinates and symmetry reduction;
 * pruning-table consistency;
-* optimal mode, against a meet-in-the-middle brute force;
+* optimal mode, against a meet-in-the-middle brute force, with and without slice turns;
+* the move-order rules: per axis against the axis group, and the canonical sequences of each
+  length up to 5 (4 with slices) against breadth-first search (every position reached; exactly
+  once up to length 4);
 * search coverage: with every pruning table zeroed, each allowed phase-1 move sequence is
-  reached exactly once (checked against exact counts, at 1 and 8 threads);
+  reached exactly once (checked against exact counts, at 1 and 8 threads, with and without
+  slices);
 * phase-2 membership, including the centres;
 * every stopping rule.
