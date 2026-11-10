@@ -675,27 +675,33 @@ impl<I: AeIndex> Tables<I> {
     /// Exact (AE, CB) distances of a fast-coordinate position.
     pub fn exact_fast(&self, x: &Fc) -> (u8, u8) {
         let f = fast();
-        let ae_val = |y: &Fc| self.ae.get(self.ae_ix.index_fast(f, y, f.a_rank(y)));
-        let cb_val = |y: &Fc| self.cb.tab.get(CbTable::index_fast(f, y));
-        let walk = |val: &dyn Fn(&Fc) -> u8, done: &dyn Fn(&Fc) -> bool| -> u8 {
+        let ae_ix = |y: &Fc| self.ae_ix.index_fast(f, y, f.a_rank(y));
+        let cb_ix = |y: &Fc| CbTable::index_fast(f, y);
+        // Each step reads the values of all neighbours, with every lookup issued first.
+        let walk = |ix: &dyn Fn(&Fc) -> usize, tab: &Table2, done: &dyn Fn(&Fc) -> bool| -> u8 {
             let mut y = *x;
             let mut d = 0;
             while !done(&y) {
-                let want = (val(&y) + 2) % 3;
+                let want = (tab.get(ix(&y)) + 2) % 3;
                 let em = masks(&y.e);
-                y = (0..N_MOVES)
-                    .map(|m| f.apply(&y, &em, m))
-                    .find(|z| val(z) == want)
+                let zs: [Fc; N_MOVES] = std::array::from_fn(|m| f.apply(&y, &em, m));
+                let mut is = [0usize; N_MOVES];
+                for m in 0..N_MOVES {
+                    is[m] = ix(&zs[m]);
+                    prefetch(&tab.data[is[m] >> 5]);
+                }
+                let m = (0..N_MOVES)
+                    .find(|&m| tab.get(is[m]) == want)
                     .expect("table inconsistent");
+                y = zs[m];
                 d += 1;
             }
             d
         };
-        let ha = walk(&ae_val, &|y| {
-            self.ae_targets
-                .contains(&self.ae_ix.index_fast(f, y, f.a_rank(y)))
+        let ha = walk(&ae_ix, &self.ae, &|y| self.ae_targets.contains(&ae_ix(y)));
+        let hc = walk(&cb_ix, &self.cb.tab, &|y| {
+            self.cb.attach[y.c as usize] == f.b_rank(y)
         });
-        let hc = walk(&cb_val, &|y| self.cb.attach[y.c as usize] == f.b_rank(y));
         (ha, hc)
     }
 

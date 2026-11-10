@@ -183,14 +183,17 @@ pub fn edge_chirality(ep: &[u8; 12]) -> u8 {
 
 /// Per-triple parity change when the positions are mapped by `dest` (labels `l` before).
 pub fn triple_flip_mask(l: &[u8; 12], dest: &[u8; 12]) -> u8 {
+    // destinations of each triple's positions, in ascending position order (no allocation)
+    let mut q = [[0u8; 3]; 4];
+    let mut n = [0usize; 4];
+    for p in 0..12 {
+        let t = l[p] as usize;
+        q[t][n[t]] = dest[p];
+        n[t] += 1;
+    }
     let mut mask = 0;
-    for t in 0..4u8 {
-        let q: Vec<u8> = (0..12u8).filter(|&p| l[p as usize] == t).collect();
-        mask |= parity3(
-            dest[q[0] as usize],
-            dest[q[1] as usize],
-            dest[q[2] as usize],
-        ) << t;
+    for t in 0..4 {
+        mask |= parity3(q[t][0], q[t][1], q[t][2]) << t;
     }
     mask
 }
