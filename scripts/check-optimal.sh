@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 exec 9>/tmp/cube-bench.lock
 flock 9
 cargo build --release -q
-bin=${CARGO_TARGET_DIR:-target}/release/fto
+bin=${CARGO_TARGET_DIR:-target}/release/omelettehedron
 out=$(mktemp -d)
 run() { # name, extra bench arguments...
     local name=$1; shift
