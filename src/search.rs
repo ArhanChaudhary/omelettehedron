@@ -1444,7 +1444,12 @@ fn solve_n<I: AeIndex, const N: usize>(
     // traversal they gain there too: 19-move set 0.94x, random positions 1-3
     // 0.99x / 0.97x / 0.95x (two rounds each; gap 3: 0.96x, 0.98x / 0.97x / 0.96x).
     // FTO_TARGET_GAP overrides. Off with FTO_FULL_PROOF: the passes rest on the same argument
-    // as the early proof end.
+    // as the early proof end. Off under a time limit (a stopping rule: the caller wants the best
+    // solution by then): a pass finds nothing until it reaches the optimum, so when the proof
+    // does not fit in the limit the answer is worse (48T best after 5 s 21.45 -> 22.20, 1T
+    // 22.00 -> 22.55 with passes after the first solution), and no rule that switches them on
+    // only when the proof will fit won (neg/tlpasses). A cancellation deadline
+    // (`Limits::cancel_after`) is not a stopping rule and keeps them.
     // The argument of the early proof end below: a solving phase-1 path of length best - 1 that
     // ends in a class-B move is found earlier by the class-B side. It fails with slices: a
     // path can end in a slice, which is in neither class, so no side finds it earlier.
