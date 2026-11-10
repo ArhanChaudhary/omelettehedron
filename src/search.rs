@@ -110,6 +110,9 @@ fn swap_moves() -> [usize; N_MOVES] {
 }
 
 const CHECK_EVERY: u64 = 1 << 14;
+#[allow(non_snake_case)]
+#[inline(always)]
+fn EARLY_CB(b: usize) -> bool { b > 8 }
 
 /// Weight 8^-h of a surviving node with bound h in a task's ordering statistic.
 const STAT_W: [f32; 32] = {
@@ -270,6 +273,15 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         let mut cbe_done = false;
         if ae_first {
             t.ae_ix.index_batch_fast_pf(f, &ys[..n], &mut idx[..n], &t.ae.data);
+            // Without a joint-table stage to hide the CB latency, fetch the CB words of all
+            // children while the AE words are in flight.
+            let early = EARLY_CB(budget);
+            if early {
+                for i in 0..n {
+                    cbi[i] = CbTable::index_fast(f, &ys[i]);
+                    prefetch(&t.cb.tab.data[cbi[i] >> 5]);
+                }
+            }
             let mut k = 0;
             for i in 0..n {
                 let ha = decode(h_ae, t.ae.get(idx[i]));
@@ -277,8 +289,12 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                     ys[k] = ys[i];
                     ms[k] = ms[i];
                     has[k] = ha;
-                    cbi[k] = CbTable::index_fast(f, &ys[k]);
-                    prefetch(&t.cb.tab.data[cbi[k] >> 5]);
+                    if early {
+                        cbi[k] = cbi[i];
+                    } else {
+                        cbi[k] = CbTable::index_fast(f, &ys[k]);
+                        prefetch(&t.cb.tab.data[cbi[k] >> 5]);
+                    }
                     k += 1;
                 }
             }
