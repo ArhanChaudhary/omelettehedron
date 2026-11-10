@@ -90,6 +90,8 @@ struct Shared<'a, I: AeIndex> {
     stop: AtomicBool,
     best: Mutex<(Option<Vec<PhysMove>>, Vec<Event>)>,
     mb: [usize; N_MOVES],
+    /// largest CB distance (8): with at least this many moves left CB cannot prune
+    cb_max: u8,
 }
 
 #[derive(Clone)]
@@ -110,6 +112,9 @@ fn swap_moves() -> [usize; N_MOVES] {
 }
 
 const CHECK_EVERY: u64 = 1 << 14;
+
+/// No deferred CB lookup (see `dfs`).
+const NO_CB: usize = usize::MAX;
 
 /// Moves allowed after each move (index N_MOVES: no previous move), as bit masks.
 static ALLOWED: [u16; N_MOVES + 1] = {
@@ -216,6 +221,8 @@ impl<'a, I: AeIndex> Shared<'a, I> {
     /// Depth-first search below a node at depth `g` with bound `bound`.
     /// With `B`, children are also pruned when their class-B bound shows they cannot lead to
     /// a solution shorter than the best one found so far.
+    /// If `cb_pend` is not `NO_CB`, `h_cb` is the parent's CB distance and this node's CB
+    /// entry (already prefetched by the parent) is at `cb_pend`.
     fn dfs<const B: bool>(
         &self,
         v: usize,
@@ -223,6 +230,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         x: &Fc,
         h_ae: u8,
         h_cb: u8,
+        cb_pend: usize,
         xb: &Fc,
         hb_ae: u8,
         hb_cb: u8,
@@ -271,6 +279,9 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         let mut hcs = [0u8; N_MOVES];
         let mut idx = [0usize; N_MOVES];
         let mut cbi = [0usize; N_MOVES];
+        // CB entries of the children whose lookup is deferred to the child itself
+        let mut pend = [NO_CB; N_MOVES];
+        let mut h_cb = h_cb;
         // The CB table (max 8) prunes almost nothing with 6+ moves left: check AE first there.
         let ae_first = budget >= 6;
         let mut cbe_done = false;
@@ -283,30 +294,23 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         if ae_first {
             t.ae_ix
                 .index_batch_fast_pf(f, &ys[..n], &mut idx[..n], &t.ae.data);
-            // Without a joint-table stage to hide the CB latency, fetch the CB words of all
-            // children while the AE words are in flight.
-            let early = budget > 8;
-            if early {
-                for i in 0..n {
-                    cbi[i] = CbTable::index_fast(f, &ys[i]);
-                    prefetch(&t.cb.tab.data[cbi[i] >> 5]);
-                }
-            }
             let mut k = 0;
+            let mut min_ha = u8::MAX;
             for i in 0..n {
                 let ha = decode(h_ae, t.ae.get(idx[i]));
                 if ha as usize <= budget {
                     ys[k] = ys[i];
                     ms[k] = ms[i];
                     has[k] = ha;
-                    if early {
-                        cbi[k] = cbi[i];
-                    } else {
-                        cbi[k] = CbTable::index_fast(f, &ys[k]);
-                        prefetch(&t.cb.tab.data[cbi[k] >> 5]);
-                    }
+                    min_ha = min_ha.min(ha);
+                    cbi[k] = CbTable::index_fast(f, &ys[k]);
+                    prefetch(&t.cb.tab.data[cbi[k] >> 5]);
                     k += 1;
                 }
+            }
+            if k > 0 && cb_pend != NO_CB {
+                // this node's own CB entry was prefetched by the parent, before its AE stage
+                h_cb = decode(h_cb, t.cb.tab.get(cb_pend));
             }
             // The class-B lookups are issued here too, so that their latency overlaps the
             // CB and joint-table stages.
@@ -354,12 +358,22 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                     cbe_done = true;
                 }
             }
+            // Without a joint-table stage, CB values that can neither prune nor change the
+            // ordering statistic (max(ha, hc) = ha) are read by each child itself, after its
+            // own AE stage, when the prefetch issued here has completed.
+            let defer = !cbe_done && budget >= self.cb_max as usize && min_ha >= self.cb_max;
             n = 0;
             for i in 0..k {
-                let hc = decode(h_cb, t.cb.tab.get(cbi[i]));
+                // (a deferred child carries this node's distance, at most cb_max <= budget)
+                let hc = if defer {
+                    h_cb
+                } else {
+                    decode(h_cb, t.cb.tab.get(cbi[i]))
+                };
                 if hc as usize > budget {
                     continue;
                 }
+                pend[n] = if defer { cbi[i] } else { NO_CB };
                 if B {
                     let hba = decode(hb_ae, t.ae.get(bidx[i]));
                     let hbc = decode(hb_cb, t.cb.tab.get(bcbi[i]));
@@ -467,7 +481,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
             // (without B the class-B position is not tracked)
             let yb = if B { &ybs[i] } else { xb };
             self.dfs::<B>(
-                v, path, &ys[i], has[i], hcs[i], yb, hbas[i], hbcs[i], bound, nodes, stat,
+                v, path, &ys[i], has[i], hcs[i], pend[i], yb, hbas[i], hbcs[i], bound, nodes, stat,
             );
             path.pop();
             if self.stop.load(Ordering::Relaxed) {
@@ -679,6 +693,7 @@ pub fn solve<I: AeIndex>(
         stop: AtomicBool::new(false),
         best: Mutex::new((None, vec![])),
         mb: swap_moves(),
+        cb_max: (t.cb.tab.hist.len() - 1) as u8,
     };
     let lo = sh
         .variants
@@ -747,13 +762,13 @@ pub fn solve<I: AeIndex>(
                 let use_b = !count_mode && sh.best_len.load(Ordering::Relaxed) < usize::MAX;
                 if use_b {
                     sh.dfs::<true>(
-                        task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb, task.hb_ae,
-                        task.hb_cb, depth, &mut nodes, &mut stat,
+                        task.v, &mut path, &task.x, task.h_ae, task.h_cb, NO_CB, &task.xb,
+                        task.hb_ae, task.hb_cb, depth, &mut nodes, &mut stat,
                     );
                 } else {
                     sh.dfs::<false>(
-                        task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb, task.hb_ae,
-                        task.hb_cb, depth, &mut nodes, &mut stat,
+                        task.v, &mut path, &task.x, task.h_ae, task.h_cb, NO_CB, &task.xb,
+                        task.hb_ae, task.hb_cb, depth, &mut nodes, &mut stat,
                     );
                 }
                 stats[i].store(stat.to_bits(), Ordering::Relaxed);
