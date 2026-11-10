@@ -249,6 +249,16 @@ pub fn is_solved_physical(st: &Stickers) -> bool {
     })
 }
 
+/// The inverse of a move sequence: the moves reversed, each turned the other way. The position
+/// that a sequence solves is its inverse applied to the solved puzzle.
+pub fn invert_moves(moves: &[PhysMove]) -> Vec<PhysMove> {
+    moves
+        .iter()
+        .rev()
+        .map(|m| PhysMove { cw: !m.cw, ..*m })
+        .collect()
+}
+
 /// The labelled sticker states of the whole-puzzle rotations a solution can end in (sticker i
 /// of the solved puzzle labelled i), found by closing `Uv`, `Rv` and `Fv`: the 12 rotations
 /// with an even corner permutation (face turns 3-cycle corners).
@@ -287,6 +297,21 @@ pub fn solves_pure(scramble: &[PhysMove], solution: &[PhysMove]) -> bool {
 mod tests {
     use super::*;
     use rand::{Rng, SeedableRng};
+
+    #[test]
+    fn inverse_undoes() {
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(9);
+        let solved = solved_stickers(defs());
+        for _ in 0..20 {
+            let m = random_moves(&mut rng, 25);
+            let st = apply_physical(&apply_physical(&solved, &m), &invert_moves(&m));
+            assert_eq!(st, solved);
+        }
+        // a rotation token inverts too
+        let m = parse_moves("U F' Lv").unwrap();
+        let st = apply_physical(&apply_physical(&solved, &m), &invert_moves(&m));
+        assert_eq!(st, solved);
+    }
 
     #[test]
     fn pure_check() {
