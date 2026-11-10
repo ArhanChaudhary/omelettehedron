@@ -110,17 +110,19 @@ fn build_defs() -> Defs {
     let mut corner_slots = [[0usize; 4]; 6];
     let mut corner_cols = [[0u8; 4]; 6];
     for (v, &vv) in VERTS.iter().enumerate() {
-        let ax = (0..3).find(|&i| vv[i] != 0).unwrap();
+        // corner stickers at v (vv is a unit axis vector)
         let at_v: Vec<usize> = (0..72)
-            .filter(|&i| st[i].kind == Kind::Corner && st[i].p[ax] == 7 * vv[ax])
+            .filter(|&i| st[i].kind == Kind::Corner && dot(st[i].p, vv) == 7)
             .collect();
-        assert_eq!(at_v.len(), 4);
-        let r0 = *at_v
+        debug_assert_eq!(at_v.len(), 4);
+        // the reference slot is on the lowest-numbered A face (every vertex touches two)
+        let r0 = at_v
             .iter()
-            .filter(|&&i| is_a_face(st[i].face))
-            .min_by_key(|&&i| st[i].face)
-            .unwrap();
-        let mut cur = st[r0].p;
+            .copied()
+            .filter(|&i| is_a_face(st[i].face))
+            .min_by_key(|&i| st[i].face);
+        debug_assert!(r0.is_some());
+        let mut cur = st[r0.unwrap_or_default()].p;
         for j in 0..4 {
             corner_slots[v][j] = sm.index_of(cur);
             corner_cols[v][j] = st[corner_slots[v][j]].face as u8;
@@ -139,9 +141,9 @@ fn build_defs() -> Defs {
         .filter(|&i| st[i].kind == Kind::Edge)
         .map(|i| edir(st[i].p))
         .collect();
-    dirs.sort();
+    dirs.sort_unstable();
     dirs.dedup();
-    assert_eq!(dirs.len(), 12);
+    debug_assert_eq!(dirs.len(), 12);
     let mut edge_slots = [[0usize; 2]; 12];
     let mut edge_cols = [[0u8; 2]; 12];
     let mut edge_atri = [0u8; 12];
@@ -149,30 +151,21 @@ fn build_defs() -> Defs {
     for (e, d) in dirs.iter().enumerate() {
         for i in 0..72 {
             if st[i].kind == Kind::Edge && edir(st[i].p) == *d {
-                let k = if is_a_face(st[i].face) { 0 } else { 1 };
+                let k = usize::from(!is_a_face(st[i].face));
                 edge_slots[e][k] = i;
                 edge_cols[e][k] = st[i].face as u8;
             }
         }
-        edge_atri[e] = A_FACES
-            .iter()
-            .position(|&f| f == edge_cols[e][0] as usize)
-            .unwrap() as u8;
-        edge_btri[e] = B_FACES
-            .iter()
-            .position(|&f| f == edge_cols[e][1] as usize)
-            .unwrap() as u8;
+        edge_atri[e] = class_index(edge_cols[e][0] as usize) as u8;
+        edge_btri[e] = class_index(edge_cols[e][1] as usize) as u8;
     }
-    let a_pos: [usize; 12] = (0..72)
-        .filter(|&i| st[i].kind == Kind::Centre && is_a_face(st[i].face))
-        .collect::<Vec<_>>()
-        .try_into()
-        .unwrap();
-    let b_pos: [usize; 12] = (0..72)
-        .filter(|&i| st[i].kind == Kind::Centre && !is_a_face(st[i].face))
-        .collect::<Vec<_>>()
-        .try_into()
-        .unwrap();
+    // centre stickers of the A (B) faces in sticker order: stickers 6..9 of each face
+    let a_pos: [usize; 12] = std::array::from_fn(|i| 9 * A_FACES[i / 3] + 6 + i % 3);
+    let b_pos: [usize; 12] = std::array::from_fn(|i| 9 * B_FACES[i / 3] + 6 + i % 3);
+    debug_assert!(a_pos
+        .iter()
+        .chain(&b_pos)
+        .all(|&i| st[i].kind == Kind::Centre));
     let mut d = Defs {
         sm,
         corner_slots,
@@ -199,8 +192,16 @@ fn build_defs() -> Defs {
         }; N_MOVES],
         move_perms: vec![],
     };
+    // every piece at home; three centres per face, faces in class order
+    d.solved = Cube {
+        cp: std::array::from_fn(|v| v as u8),
+        co: [0; 6],
+        ep: std::array::from_fn(|e| e as u8),
+        xa: std::array::from_fn(|i| (i / 3) as u8),
+        xb: std::array::from_fn(|i| (i / 3) as u8),
+    };
     let solved_st = solved_stickers(&d);
-    d.solved = stickers_to_cube_with(&d, &solved_st).unwrap();
+    debug_assert_eq!(stickers_to_cube_with(&d, &solved_st), Some(d.solved));
     for m in 0..N_MOVES {
         let s = slot(m);
         let f = slot_face(s);
@@ -210,16 +211,29 @@ fn build_defs() -> Defs {
             d.sm.face_turn(f, move_cw(m))
         };
         let after = permute_stickers(&solved_st, &perm);
-        let mut mc = stickers_to_cube_with(&d, &after).expect("move breaks cube");
-        // centre sources from the sticker permutation (colours repeat, so they cannot be inferred)
+        // a turn of the solved puzzle is a valid position (the fallback is never taken)
+        let mc = stickers_to_cube_with(&d, &after);
+        debug_assert!(mc.is_some(), "move {m} breaks the cube");
+        let mut mc = mc.unwrap_or(d.solved);
+        // centre sources from the sticker permutation (colours repeat, so they cannot be
+        // inferred): the centre landing on position i came from the sticker src[a_pos[i]]
+        let mut src = [0usize; 72];
+        for (i, &p) in perm.iter().enumerate() {
+            src[p] = i;
+        }
         for i in 0..12 {
-            mc.xa[i] = (0..12).find(|&j| perm[d.a_pos[j]] == d.a_pos[i]).unwrap() as u8;
-            mc.xb[i] = (0..12).find(|&j| perm[d.b_pos[j]] == d.b_pos[i]).unwrap() as u8;
+            mc.xa[i] = centre_index(src[d.a_pos[i]]) as u8;
+            mc.xb[i] = centre_index(src[d.b_pos[i]]) as u8;
         }
         d.moves[m] = mc;
         d.move_perms.push(perm);
     }
     d
+}
+
+/// Index of a centre sticker within [`Defs::a_pos`] or [`Defs::b_pos`] (whichever holds it).
+pub fn centre_index(sticker: usize) -> usize {
+    3 * class_index(sticker / 9) + sticker % 3
 }
 
 pub type Stickers = [u8; 72];
@@ -291,6 +305,7 @@ impl Cube {
     }
 
     #[inline]
+    #[must_use]
     pub fn apply(&self, m: usize) -> Cube {
         let mv = &defs().moves[m];
         let mut n = *self;
@@ -307,6 +322,7 @@ impl Cube {
         n
     }
 
+    #[must_use]
     pub fn apply_seq(&self, seq: &[usize]) -> Cube {
         seq.iter().fold(*self, |c, &m| c.apply(m))
     }
@@ -345,8 +361,10 @@ impl Cube {
     }
 
     /// Conjugate by a whole-puzzle symmetry `m` that fixes the front corner position
-    /// (vertex 0): `m * self * m^-1`, i.e. the same position viewed through `m`.
-    pub fn conjugate(&self, m: &Mat) -> Cube {
+    /// (vertex 0): `m * self * m^-1`, i.e. the same position viewed through `m`. `None` if the
+    /// result is not a valid position in the fixed frame (only if `self` is not, or `m` moves
+    /// the front corner).
+    pub fn conjugate(&self, m: &Mat) -> Option<Cube> {
         let d = defs();
         let st = self.to_stickers();
         let perm = d.sm.whole(m);
@@ -355,7 +373,7 @@ impl Cube {
             let f = face_of_normal(mat_vec(m, FACES[st[i] as usize]));
             n[perm[i]] = f as u8;
         }
-        Cube::from_stickers(&n).expect("conjugate left the fixed frame")
+        Cube::from_stickers(&n)
     }
 
     /// Uniformly random reachable position (all four parts are independent).
@@ -392,7 +410,7 @@ impl Cube {
 }
 
 pub fn perm_parity(p: &[u8]) -> u8 {
-    let mut inv = 0;
+    let mut inv = 0u32;
     for i in 0..p.len() {
         for j in 0..i {
             if p[j] > p[i] {
@@ -413,13 +431,27 @@ pub fn conjugate_move(m: usize, sym: &Mat) -> usize {
     debug_assert!(f >= 4);
     let ns = (f - 4) + if slot_is_wide(s) { 4 } else { 0 };
     let cw = move_cw(m) == (det(sym) == 1);
-    2 * ns + if cw { 0 } else { 1 }
+    2 * ns + usize::from(!cw)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rand::SeedableRng;
+
+    #[test]
+    fn solved_matches_stickers() {
+        let d = defs();
+        assert_eq!(
+            Cube::from_stickers(&solved_stickers(d)),
+            Some(Cube::solved())
+        );
+        for v in 0..6 {
+            let at_v = (0..72)
+                .filter(|&i| d.sm.st[i].kind == Kind::Corner && dot(d.sm.st[i].p, VERTS[v]) == 7);
+            assert_eq!(at_v.count(), 4);
+        }
+    }
 
     #[test]
     fn moves_fix_corner_and_have_order_three() {
@@ -468,8 +500,11 @@ mod tests {
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(2);
         let c = Cube::random(&mut rng);
         for m in 0..N_MOVES {
-            let lhs = c.apply(m).conjugate(&SWAP_AB);
-            let rhs = c.conjugate(&SWAP_AB).apply(conjugate_move(m, &SWAP_AB));
+            let lhs = c.apply(m).conjugate(&SWAP_AB).unwrap();
+            let rhs = c
+                .conjugate(&SWAP_AB)
+                .unwrap()
+                .apply(conjugate_move(m, &SWAP_AB));
             assert_eq!(lhs, rhs);
             assert_ne!(is_a_move(m), is_a_move(conjugate_move(m, &SWAP_AB)));
         }

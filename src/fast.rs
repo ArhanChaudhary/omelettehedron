@@ -48,7 +48,7 @@ pub struct FastTables {
     pext: bool,
 }
 
-/// Whether `pext` is fast on this CPU (FTO_PEXT=0/1 overrides).
+/// Whether `pext` is fast on this CPU (`FTO_PEXT=0`/`1` overrides).
 fn fast_pext() -> bool {
     if let Some(v) = std::env::var_os("FTO_PEXT") {
         return v != "0";
@@ -72,18 +72,11 @@ fn fast_pext() -> bool {
     false
 }
 
-fn boxed<T: Copy, const N: usize>(v: &[T]) -> Box<[T; N]> {
-    v.to_vec()
-        .into_boxed_slice()
-        .try_into()
-        .ok()
-        .expect("table size")
-}
-
-fn comb_rank(n: usize) -> Vec<u16> {
-    // colex rank of 3-subsets of n positions, indexed by bitmask
-    let mut r = vec![0u16; 1 << n];
-    for m in 0..(1usize << n) {
+/// Colex rank of the 3-subsets of `N.trailing_zeros()` positions, indexed by bitmask.
+fn comb_rank<const N: usize>() -> Box<[u16; N]> {
+    let n = N.trailing_zeros() as usize;
+    let mut r = Box::new([0u16; N]);
+    for m in 0..N {
         if m.count_ones() == 3 {
             let mut x = 0usize;
             let mut k = 0;
@@ -151,7 +144,7 @@ impl FastTables {
                 bitset_flip(&dest)
             })
             .collect();
-        let mut cmp6 = vec![[0u8; 64]; 64];
+        let mut cmp6 = Box::new([[0u8; 64]; 64]);
         for mask in 0..64usize {
             for x in 0..64usize {
                 let mut r = 0;
@@ -185,21 +178,19 @@ impl FastTables {
             gth
         });
         let relab_bits = std::array::from_fn(|g| if g < N_GEO { s.relab_bits[g] } else { [0; 16] });
-        let flip_t: Vec<[u64; 64]> = (0..32)
-            .map(|t| {
-                if t < N_GEO {
-                    bitset_flip(&s.e_pos[t])
-                } else {
-                    [0; 64]
-                }
-            })
-            .collect();
-        let c12 = comb_rank(12);
-        let c9 = comb_rank(9);
-        let c6 = comb_rank(6);
-        let r12: Vec<u32> = c12.iter().map(|&x| x as u32).collect();
-        let r9: Vec<u32> = c9.iter().map(|&x| 220 * x as u32).collect();
-        let r6: Vec<u32> = c6.iter().map(|&x| 220 * 84 * x as u32).collect();
+        let flip_t = Box::new(std::array::from_fn(|t| {
+            if t < N_GEO {
+                bitset_flip(&s.e_pos[t])
+            } else {
+                [0; 64]
+            }
+        }));
+        let c12 = comb_rank::<4096>();
+        let c9 = comb_rank::<512>();
+        let c6 = comb_rank::<64>();
+        let r12 = Box::new(c12.map(u32::from));
+        let r9 = Box::new(c9.map(|x| 220 * u32::from(x)));
+        let r6 = c6.map(|x| 220 * 84 * u32::from(x));
         FastTables {
             shuf_a,
             shuf_b,
@@ -214,19 +205,20 @@ impl FastTables {
                 t
             },
             corner: {
+                #[allow(clippy::large_stack_arrays)] // 32 KB, once at startup
                 let mut c = Box::new([[0u16; N_MOVES]; 1024]);
                 c[..mt_c.len()].copy_from_slice(&mt_c);
                 c
             },
-            c12: boxed(&c12),
-            r12: boxed(&r12),
-            r9: boxed(&r9),
-            r6: r6.try_into().unwrap(),
-            cmp6: boxed(&cmp6),
+            c12,
+            r12,
+            r9,
+            r6,
+            cmp6,
             relab_map,
             repos_gather,
             relab_bits,
-            flip_t: boxed(&flip_t),
+            flip_t,
             pext: fast_pext(),
         }
     }
@@ -358,17 +350,18 @@ pub fn fast() -> &'static FastTables {
 
 /// Byte gather: out[i] = v[s[i]] (0 where s[i] has the high bit set).
 #[inline(always)]
+#[allow(clippy::cast_ptr_alignment)] // unaligned loads and stores
 pub fn shuffle(v: &[u8; 16], s: &[u8; 16]) -> [u8; 16] {
     #[cfg(all(target_arch = "x86_64", target_feature = "ssse3"))]
     // SAFETY: SSSE3 is enabled for this build; loads/stores are unaligned-safe
     unsafe {
         use core::arch::x86_64::*;
         let r = _mm_shuffle_epi8(
-            _mm_loadu_si128(v.as_ptr() as *const __m128i),
-            _mm_loadu_si128(s.as_ptr() as *const __m128i),
+            _mm_loadu_si128(v.as_ptr().cast::<__m128i>()),
+            _mm_loadu_si128(s.as_ptr().cast::<__m128i>()),
         );
         let mut o = [0u8; 16];
-        _mm_storeu_si128(o.as_mut_ptr() as *mut __m128i, r);
+        _mm_storeu_si128(o.as_mut_ptr().cast::<__m128i>(), r);
         o
     }
     #[cfg(not(all(target_arch = "x86_64", target_feature = "ssse3")))]
@@ -385,13 +378,15 @@ pub fn shuffle(v: &[u8; 16], s: &[u8; 16]) -> [u8; 16] {
 
 /// Bit mask of the positions (0..12) holding label `l`.
 #[inline(always)]
+#[allow(clippy::cast_ptr_alignment)] // unaligned load
 pub fn label_mask(v: &[u8; 16], l: u8) -> u16 {
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
     // SAFETY: SSE2 is baseline on x86_64
     unsafe {
         use core::arch::x86_64::*;
-        let x = _mm_loadu_si128(v.as_ptr() as *const __m128i);
-        (_mm_movemask_epi8(_mm_cmpeq_epi8(x, _mm_set1_epi8(l as i8))) & 0xfff) as u16
+        let x = _mm_loadu_si128(v.as_ptr().cast::<__m128i>());
+        let eq = _mm_cmpeq_epi8(x, _mm_set1_epi8(l.cast_signed()));
+        (_mm_movemask_epi8(eq).cast_unsigned() & 0xfff) as u16
     }
     #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
     {
@@ -407,14 +402,16 @@ pub fn label_mask(v: &[u8; 16], l: u8) -> u16 {
 
 /// Bit masks of the positions (0..12) holding labels 0, 1, 2, 3.
 #[inline(always)]
+#[allow(clippy::cast_ptr_alignment)] // unaligned load
 pub fn masks(v: &[u8; 16]) -> [u16; 4] {
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
     // SAFETY: SSE2 is baseline on x86_64
     unsafe {
         use core::arch::x86_64::*;
-        let x = _mm_loadu_si128(v.as_ptr() as *const __m128i);
+        let x = _mm_loadu_si128(v.as_ptr().cast::<__m128i>());
         std::array::from_fn(|l| {
-            (_mm_movemask_epi8(_mm_cmpeq_epi8(x, _mm_set1_epi8(l as i8))) & 0xfff) as u16
+            let eq = _mm_cmpeq_epi8(x, _mm_set1_epi8(l as i8));
+            (_mm_movemask_epi8(eq).cast_unsigned() & 0xfff) as u16
         })
     }
     #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]

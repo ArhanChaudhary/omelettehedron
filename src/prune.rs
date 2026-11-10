@@ -36,6 +36,11 @@ impl Table2 {
         self.data.len() * 8
     }
 
+    /// Write the table to `path` (through a temporary file, renamed when complete).
+    ///
+    /// # Errors
+    ///
+    /// If the file cannot be written.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let tmp = path.with_extension("tmp");
         let mut f = std::io::BufWriter::with_capacity(1 << 24, std::fs::File::create(&tmp)?);
@@ -48,7 +53,7 @@ impl Table2 {
         f.write_all(&checksum(&self.data).to_le_bytes())?;
         // SAFETY: u64 slice reinterpreted as bytes for writing
         let bytes = unsafe {
-            std::slice::from_raw_parts(self.data.as_ptr() as *const u8, self.data.len() * 8)
+            std::slice::from_raw_parts(self.data.as_ptr().cast::<u8>(), self.data.len() * 8)
         };
         for chunk in bytes.chunks(1 << 26) {
             f.write_all(chunk)?;
@@ -58,6 +63,11 @@ impl Table2 {
         std::fs::rename(tmp, path)
     }
 
+    /// Read a table of `n` entries from `path`.
+    ///
+    /// # Errors
+    ///
+    /// If the file cannot be read, or has the wrong format, size or checksum.
     pub fn load(path: &Path, n: usize) -> std::io::Result<Table2> {
         let err = |m: &str| {
             std::io::Error::new(
@@ -112,7 +122,7 @@ const PIECE: usize = 1 << 17;
 /// One chunk's hash step (see [`checksum`]).
 #[inline(always)]
 fn hash_step(h: u64, x: u64) -> u64 {
-    (h ^ x).wrapping_mul(0x100000001b3).rotate_left(23)
+    (h ^ x).wrapping_mul(0x0100_0000_01b3).rotate_left(23)
 }
 
 /// Fill `g` (chunks `c0..` of the table) from the file and return the XOR of their checksums.
@@ -124,7 +134,7 @@ fn read_and_hash(
 ) -> std::io::Result<u64> {
     use std::os::unix::fs::FileExt;
     let nc = g.len().div_ceil(CK);
-    let mut h: [u64; GROUP] = std::array::from_fn(|j| 0x9e3779b97f4a7c15u64 ^ (c0 + j) as u64);
+    let mut h: [u64; GROUP] = std::array::from_fn(|j| 0x9e37_79b9_7f4a_7c15_u64 ^ (c0 + j) as u64);
     let full = g.len() / CK == GROUP;
     let mut pos = 0;
     while pos < CK.min(g.len()) {
@@ -137,7 +147,7 @@ fn read_and_hash(
             }
             // SAFETY: reading raw bytes into the u64 buffer
             let bytes = unsafe {
-                std::slice::from_raw_parts_mut(g[lo..hi].as_mut_ptr() as *mut u8, (hi - lo) * 8)
+                std::slice::from_raw_parts_mut(g[lo..hi].as_mut_ptr().cast::<u8>(), (hi - lo) * 8)
             };
             file.read_exact_at(bytes, offset + ((c0 * CK + lo) * 8) as u64)?;
         }
@@ -166,9 +176,9 @@ fn checksum(d: &[u64]) -> u64 {
     d.par_chunks(1 << 20)
         .enumerate()
         .map(|(i, c)| {
-            let mut h = 0x9e3779b97f4a7c15u64 ^ i as u64;
+            let mut h = 0x9e37_79b9_7f4a_7c15_u64 ^ i as u64;
             for &x in c {
-                h = (h ^ x).wrapping_mul(0x100000001b3).rotate_left(23);
+                h = (h ^ x).wrapping_mul(0x0100_0000_01b3).rotate_left(23);
             }
             h
         })
@@ -203,13 +213,14 @@ where
     F: Fn(usize, &mut Vec<usize>) + Sync,
     S: Fn(usize, usize) + Sync,
 {
+    const CH: usize = 1 << 14; // indices per work item (multiple of 32)
     let t0 = std::time::Instant::now();
     let words = n.div_ceil(32);
     let mut raw = alloc_words(words);
     raw.par_chunks_mut(1 << 16).for_each(|c| c.fill(u64::MAX));
     // SAFETY: AtomicU64 has the same size and alignment as u64; `raw` outlives `tab`
     let tab: &[AtomicU64] =
-        unsafe { std::slice::from_raw_parts(raw.as_ptr() as *const AtomicU64, raw.len()) };
+        unsafe { std::slice::from_raw_parts(raw.as_ptr().cast::<AtomicU64>(), raw.len()) };
     let get = |i: usize| ((tab[i >> 5].load(Ordering::Relaxed) >> ((i & 31) << 1)) & 3) as u8;
     let set_if_empty = |i: usize, v: u8| -> bool {
         let w = &tab[i >> 5];
@@ -235,7 +246,6 @@ where
     let mut hist = vec![nt];
     let mut done = nt;
     let mut d = 0usize;
-    const CH: usize = 1 << 14; // indices per work item (multiple of 32)
     while done < n as u64 {
         let cur = (d % 3) as u8;
         let next = ((d + 1) % 3) as u8;
@@ -253,9 +263,9 @@ where
                     let w = tab[i >> 5].load(Ordering::Relaxed);
                     let want = if forward { cur } else { 3 };
                     // skip whole words without a matching entry
-                    let pat = 0x5555555555555555u64 * want as u64;
+                    let pat = 0x5555_5555_5555_5555_u64 * want as u64;
                     let x = !(w ^ pat);
-                    let m = x & (x >> 1) & 0x5555555555555555;
+                    let m = x & (x >> 1) & 0x5555_5555_5555_5555;
                     if m == 0 {
                         i = (i | 31) + 1;
                         continue;
@@ -271,7 +281,7 @@ where
                         nb.clear();
                         nbrs(j, &mut nb);
                         if forward {
-                            for &k in nb.iter() {
+                            for &k in &nb {
                                 if set_if_empty(k, next) {
                                     on_set(k, d + 1);
                                     cnt += 1;
@@ -329,7 +339,8 @@ mod tests {
                 if c < 0 {
                     continue;
                 }
-                assert_eq!(decode(p, (c % 3) as u8), c as u8);
+                let c = u8::try_from(c).unwrap();
+                assert_eq!(decode(p, c % 3), c);
             }
         }
     }

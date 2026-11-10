@@ -1,7 +1,7 @@
 //! Two-phase search.
 //!
-//! Phase 1: IDA* over all 16 moves until the position is in H_A = <U, F, BR, BL>, with the
-//! last move outside H_A. Phase 2: the exact table gives the optimal A-move completion.
+//! Phase 1: IDA* over all 16 moves until the position is in `H_A` = <U, F, BR, BL>, with the
+//! last move outside `H_A`. Phase 2: the exact table gives the optimal A-move completion.
 //! Every solution splits uniquely into (longest prefix ending in a non-A move) + (A-moves),
 //! so exhausting phase-1 depths up to `best - 1` proves optimality.
 //!
@@ -16,7 +16,7 @@ use crate::prune::decode;
 use crate::tables::*;
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Default)]
@@ -70,7 +70,7 @@ struct Variant {
     root: Fc,
     h_ae: u8,
     h_cb: u8,
-    /// The root conjugated by SWAP_AB (its H_A distance is this root's H_B distance), and
+    /// The root conjugated by `SWAP_AB` (its `H_A` distance is this root's `H_B` distance), and
     /// its bounds: a second lower bound on the distance to solved.
     root_b: Fc,
     hb_ae: u8,
@@ -116,7 +116,7 @@ const CHECK_EVERY: u64 = 1 << 14;
 /// No deferred CB lookup (see `dfs`).
 const NO_CB: usize = usize::MAX;
 
-/// Moves allowed after each move (index N_MOVES: no previous move), as bit masks.
+/// Moves allowed after each move (index `N_MOVES`: no previous move), as bit masks.
 static ALLOWED: [u16; N_MOVES + 1] = {
     let mut a = [0u16; N_MOVES + 1];
     let mut last = 0;
@@ -166,7 +166,7 @@ const STAT_W: [f32; 32] = {
     w
 };
 
-impl<'a, I: AeIndex> Shared<'a, I> {
+impl<I: AeIndex> Shared<'_, I> {
     fn time_up(&self) -> bool {
         if let Some(t) = self.limits.time {
             if self.start.elapsed() >= t {
@@ -189,9 +189,12 @@ impl<'a, I: AeIndex> Shared<'a, I> {
             }
             let total = d1 + d2 as usize;
             if total < self.best_len.load(Ordering::Relaxed) {
-                let mut g = self.best.lock().unwrap();
+                let mut g = self.best.lock().unwrap_or_else(PoisonError::into_inner);
                 if total < self.best_len.load(Ordering::Relaxed) {
-                    let p2 = self.t.p2.solve(&cube).expect("phase 2 failed");
+                    // (the position is in H_A, so phase 2 always succeeds)
+                    let p2 = self.t.p2.solve(&cube);
+                    debug_assert!(p2.is_some(), "phase 2 failed");
+                    let Some(p2) = p2 else { return };
                     // map the variant's internal moves back to the original frame
                     let inv = transpose(&var.sym);
                     let internal: Vec<usize> = path
@@ -598,8 +601,10 @@ impl<'a, I: AeIndex> Shared<'a, I> {
             }
             let mut next = Vec::with_capacity(front.len() * 13);
             for &i in &front {
-                let (lo, hi) = tree.kids[i as usize].unwrap();
-                next.extend((lo..hi).filter(|&c| alive(&tree.nodes[c as usize])));
+                // (every front node has been expanded above)
+                if let Some((lo, hi)) = tree.kids[i as usize] {
+                    next.extend((lo..hi).filter(|&c| alive(&tree.nodes[c as usize])));
+                }
             }
             front = next;
             k += 1;
@@ -653,19 +658,19 @@ pub fn solve<I: AeIndex>(
     report: Report,
 ) -> Outcome {
     let start = Instant::now();
-    let variants: Vec<Variant> = [IDENTITY, SWAP_AB]
+    let variants: Option<Vec<Variant>> = [IDENTITY, SWAP_AB]
         .iter()
         .map(|sym| {
             let c = if *sym == IDENTITY {
                 cube
             } else {
-                cube.conjugate(sym)
+                cube.conjugate(sym)?
             };
             let root = fast().of(&c);
             let (h_ae, h_cb) = t.exact_fast(&root);
-            let root_b = fast().of(&c.conjugate(&SWAP_AB));
+            let root_b = fast().of(&c.conjugate(&SWAP_AB)?);
             let (hb_ae, hb_cb) = t.exact_fast(&root_b);
-            Variant {
+            Some(Variant {
                 cube: c,
                 sym: *sym,
                 root,
@@ -674,9 +679,21 @@ pub fn solve<I: AeIndex>(
                 root_b,
                 hb_ae,
                 hb_cb,
-            }
+            })
         })
         .collect();
+    let Some(variants) = variants else {
+        // not a valid position in the fixed frame: nothing to search
+        return Outcome {
+            solution: None,
+            length: None,
+            solutions_found: 0,
+            nodes: 0,
+            elapsed: start.elapsed().as_secs_f64(),
+            optimal: false,
+            events: vec![],
+        };
+    };
     // Every solution is a prefix followed by class-A moves, so one variant would suffice to
     // prove optimality; both are kept because the earlier a short solution is found, the more
     // the class-B bound prunes (measured: one variant was 1.9-3.9x slower in optimal mode).
@@ -699,8 +716,7 @@ pub fn solve<I: AeIndex>(
         .variants
         .iter()
         .map(|v| v.h_ae.max(v.h_cb) as usize)
-        .min()
-        .unwrap();
+        .fold(usize::MAX, usize::min);
     let mut optimal = false;
     let threads = rayon::current_num_threads();
     let mut depth = lo;
@@ -810,8 +826,8 @@ pub fn solve<I: AeIndex>(
         }
         depth += 1;
     }
-    let (sol, events) = sh.best.into_inner().unwrap();
-    let length = sol.as_ref().map(|s| s.len());
+    let (sol, events) = sh.best.into_inner().unwrap_or_else(PoisonError::into_inner);
+    let length = sol.as_ref().map(Vec::len);
     if report == Report::Best {
         if let Some(s) = &sol {
             println!("{}", format_moves(s));

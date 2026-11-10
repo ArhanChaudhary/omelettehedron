@@ -1,6 +1,6 @@
 //! Pruning tables for phase 1 and the exact distance table for phase 2.
 //!
-//! Phase 1 must reach H_A = <U, F, BR, BL>. Membership means, up to a whole-puzzle rotation:
+//! Phase 1 must reach `H_A` = <U, F, BR, BL>. Membership means, up to a whole-puzzle rotation:
 //! (AE) A-centres solved and every edge on its own A-face in the right cyclic order, and
 //! (CB) every B-centre has the colour of the adjacent corner sticker. The two parts get
 //! separate tables; the heuristic is their maximum.
@@ -85,7 +85,7 @@ pub fn prefetch<T>(p: &T) {
     // SAFETY: prefetch is a hint and never faults
     unsafe {
         core::arch::x86_64::_mm_prefetch(
-            p as *const T as *const i8,
+            std::ptr::from_ref(p).cast::<i8>(),
             core::arch::x86_64::_MM_HINT_T0,
         );
     }
@@ -305,10 +305,10 @@ impl AeIndex for AeRelabel {
     }
 }
 
-/// class_preserving_group() lists the identity first and the 12 rotations before reflections.
+/// `class_preserving_group()` lists the identity first and the 12 rotations before reflections.
 const ROT_IDX: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 
-/// Exact phase-2 table over H_A (933120 positions = 960 corner states x 972 edge states).
+/// Exact phase-2 table over `H_A` (933120 positions = 960 corner states x 972 edge states).
 pub struct Phase2 {
     pub edge_id: HashMap<[u8; 12], u16>,
     pub dist: Vec<u8>,
@@ -336,7 +336,7 @@ impl Phase2 {
                 }
             }
         }
-        assert_eq!(elist.len(), N_P2_EDGE);
+        debug_assert_eq!(elist.len(), N_P2_EDGE);
         let emoves: Vec<[u16; N_MOVES]> = elist
             .iter()
             .map(|&ep| {
@@ -371,7 +371,7 @@ impl Phase2 {
             fr = nf;
             d += 1;
         }
-        assert!(dist.iter().all(|&x| x != u8::MAX));
+        debug_assert!(dist.iter().all(|&x| x != u8::MAX));
         Phase2 {
             edge_id,
             dist,
@@ -379,15 +379,15 @@ impl Phase2 {
         }
     }
 
-    /// Phase-2 length of a position known to be in H_A up to its edge permutation
-    /// (None if the edges are not an H_A arrangement).
+    /// Phase-2 length of a position known to be in `H_A` up to its edge permutation
+    /// (None if the edges are not an `H_A` arrangement).
     #[inline]
     pub fn length(&self, cube: &Cube) -> Option<u8> {
         let e = *self.edge_id.get(&cube.ep)?;
         Some(self.dist[corners().id(cube) as usize * N_P2_EDGE + e as usize])
     }
 
-    /// Optimal phase-2 move sequence (A moves only) for a position in H_A.
+    /// Optimal phase-2 move sequence (A moves only) for a position in `H_A`.
     pub fn solve(&self, cube: &Cube) -> Option<Vec<usize>> {
         let mut x = *cube;
         let id = |y: &Cube| -> Option<usize> {
@@ -398,7 +398,7 @@ impl Phase2 {
         while d > 0 {
             let m = (0..N_MOVES)
                 .filter(|&m| is_a_move(m))
-                .find(|&m| self.dist[id(&x.apply(m)).unwrap()] == d - 1)?;
+                .find(|&m| id(&x.apply(m)).is_some_and(|i| self.dist[i] == d - 1))?;
             out.push(m);
             x = x.apply(m);
             d -= 1;
@@ -422,10 +422,10 @@ impl Phase2 {
     }
 }
 
-/// CB part: corner state x B-centre colouring; targets are the 960 states of H_A.
+/// CB part: corner state x B-centre colouring; targets are the 960 states of `H_A`.
 pub struct CbTable {
     pub tab: Table2,
-    /// B colouring attached to each corner state inside H_A
+    /// B colouring attached to each corner state inside `H_A`
     pub attach: Vec<u32>,
 }
 
@@ -452,7 +452,7 @@ impl CbTable {
                         attach[c2] = b2;
                         nf.push(c2);
                     } else {
-                        assert_eq!(
+                        debug_assert_eq!(
                             attach[c2], b2,
                             "B colouring is not a function of the corners in H_A"
                         );
@@ -502,7 +502,7 @@ pub fn ae_targets<I: AeIndex>(ix: &I) -> Vec<usize> {
     let t = ix.index(&Coords::of(&Cube::solved()));
     let mut v = vec![t];
     ix.equivalents(t, &mut v);
-    v.sort();
+    v.sort_unstable();
     v.dedup();
     v
 }
@@ -543,7 +543,7 @@ pub struct Tables<I: AeIndex> {
 }
 
 pub fn table_dir(dir: Option<&Path>) -> PathBuf {
-    dir.map(|d| d.to_path_buf())
+    dir.map(Path::to_path_buf)
         .or_else(|| std::env::var_os("FTO_TABLES").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("tables"))
 }
@@ -597,11 +597,21 @@ impl<I: AeIndex> Tables<I> {
         }
     }
 
+    /// [`Self::load_with`] without the joint table.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::load_with`].
     pub fn load(dir: &Path, ae_ix: I, verbose: bool) -> std::io::Result<Tables<I>> {
         Self::load_with(dir, ae_ix, false, verbose)
     }
 
     /// Load (generating if needed) the tables, optionally with the joint CBE table.
+    ///
+    /// # Errors
+    ///
+    /// If a table file cannot be read or written, or holds a table of the wrong format, size
+    /// or checksum.
     pub fn load_with(
         dir: &Path,
         ae_ix: I,
@@ -656,7 +666,8 @@ impl<I: AeIndex> Tables<I> {
         })
     }
 
-    /// Exact AE distance of a position (walks down the mod-3 table).
+    /// Exact AE distance of a position (walks down the mod-3 table). If the table is not a
+    /// distance table (no neighbour is one step closer), the steps walked so far.
     pub fn ae_exact(&self, x: &Coords) -> u8 {
         let mt = move_tables();
         let mut x = *x;
@@ -668,15 +679,19 @@ impl<I: AeIndex> Tables<I> {
             }
             let v = self.ae.get(i);
             let want = (v + 2) % 3;
-            x = (0..N_MOVES)
+            let next = (0..N_MOVES)
                 .map(|m| mt.apply(&x, m))
-                .find(|y| self.ae.get(self.ae_ix.index(y)) == want)
-                .expect("AE table inconsistent");
+                .find(|y| self.ae.get(self.ae_ix.index(y)) == want);
+            let Some(next) = next else {
+                return d;
+            };
+            x = next;
             d += 1;
         }
     }
 
-    /// Exact (AE, CB) distances of a fast-coordinate position.
+    /// Exact (AE, CB) distances of a fast-coordinate position. If a table is not a distance
+    /// table (no neighbour is one step closer), the steps walked so far (a lower bound).
     pub fn exact_fast(&self, x: &Fc) -> (u8, u8) {
         let f = fast();
         let ae_ix = |y: &Fc| self.ae_ix.index_fast(f, y, f.a_rank(y));
@@ -694,9 +709,9 @@ impl<I: AeIndex> Tables<I> {
                     is[m] = ix(&zs[m]);
                     prefetch(&tab.data[is[m] >> 5]);
                 }
-                let m = (0..N_MOVES)
-                    .find(|&m| tab.get(is[m]) == want)
-                    .expect("table inconsistent");
+                let Some(m) = (0..N_MOVES).find(|&m| tab.get(is[m]) == want) else {
+                    break;
+                };
                 y = zs[m];
                 d += 1;
             }
@@ -709,7 +724,8 @@ impl<I: AeIndex> Tables<I> {
         (ha, hc)
     }
 
-    /// Exact CB distance of a position.
+    /// Exact CB distance of a position. If the table is not a distance table (no neighbour is
+    /// one step closer), the steps walked so far.
     pub fn cb_exact(&self, x: &Coords) -> u8 {
         let mt = move_tables();
         let mut x = *x;
@@ -720,10 +736,13 @@ impl<I: AeIndex> Tables<I> {
             }
             let v = self.cb.tab.get(CbTable::index(&x));
             let want = (v + 2) % 3;
-            x = (0..N_MOVES)
+            let next = (0..N_MOVES)
                 .map(|m| mt.apply(&x, m))
-                .find(|y| self.cb.tab.get(CbTable::index(y)) == want)
-                .expect("CB table inconsistent");
+                .find(|y| self.cb.tab.get(CbTable::index(y)) == want);
+            let Some(next) = next else {
+                return d;
+            };
+            x = next;
             d += 1;
         }
     }

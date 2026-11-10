@@ -8,7 +8,7 @@ use fto_solver::tables::*;
 use rand::SeedableRng;
 
 #[test]
-#[ignore]
+#[ignore = "needs the medium and huge tables on disk"]
 fn medium_and_large_tables_agree() {
     let dir = table_dir(None);
     let med = Tables::load(&dir, AeSym::new(true), false).unwrap();
