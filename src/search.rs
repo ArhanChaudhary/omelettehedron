@@ -655,6 +655,13 @@ struct Tree {
     kids: Vec<Option<(u32, u32)>>,
 }
 
+/// FTO_FULL_PROOF=1 turns off the early end of optimality proofs (see `solve`), so that
+/// scripts/check-optimal.sh can compare its results with the full proof.
+fn full_proof() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("FTO_FULL_PROOF").is_ok_and(|v| v == "1"))
+}
+
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
         .ok()
@@ -772,7 +779,7 @@ pub fn solve<I: AeIndex>(
         // the class-B variant already found it at a smaller depth, in an iteration completed
         // before this one. (This needs both variants in every iteration.) When solutions are
         // counted, that iteration still yields completions (longer ones), so it is run.
-        let proof_depth = depth + usize::from(limits.max_solutions.is_none());
+        let proof_depth = depth + usize::from(limits.max_solutions.is_none() && !full_proof());
         if proof_depth >= sh.best_len.load(Ordering::Relaxed) {
             optimal = true;
             break;
@@ -783,7 +790,8 @@ pub fn solve<I: AeIndex>(
         // For the same reason a solution of length depth + 1 found during this iteration is
         // optimal at once (no shorter one exists after the iterations below), and the search
         // stops there instead of finishing the iteration.
-        sh.proof_len.store(depth + 1, Ordering::Relaxed);
+        sh.proof_len
+            .store(if full_proof() { 0 } else { depth + 1 }, Ordering::Relaxed);
         // Small iterations run on this thread: waking the pool costs more than they do.
         let predicted = prev_nodes.map_or(if depth < 14 { 0 } else { u64::MAX }, |n| {
             n.saturating_mul(16)
