@@ -748,6 +748,8 @@ pub fn solve<I: AeIndex>(
     let mut node_stat: Vec<f32> = vec![];
     let mut prev_ids: Vec<u32> = vec![];
     let mut prev_nodes: Option<u64> = None;
+    // nodes of each variant in the previous iteration
+    let mut prev_var_nodes = [0u64; 2];
     loop {
         if depth >= sh.best_len.load(Ordering::Relaxed) {
             optimal = true;
@@ -778,6 +780,17 @@ pub fn solve<I: AeIndex>(
         if !prev_ids.is_empty() {
             ids.sort_by(|a, b| node_stat[*b as usize].total_cmp(&node_stat[*a as usize]));
         }
+        // In the last iteration before optimality is proven (depth = best - 1) one variant is
+        // enough. Every solution is a prefix ending outside H_A followed by class-A moves, so the
+        // iterations of either variant up to best - 1 find every shorter solution, and the other
+        // variant's half of this iteration could only find the same ones. Keep the variant that
+        // needed fewer nodes in the previous iteration.
+        let final_variant = (limits.is_optimal()
+            && depth + 1 == sh.best_len.load(Ordering::Relaxed))
+        .then(|| usize::from(prev_var_nodes[1] < prev_var_nodes[0]));
+        if let Some(keep) = final_variant {
+            ids.retain(|&id| tree.nodes[id as usize].v == keep);
+        }
         // Pruning against the best length changes how many (non-improving) solutions are
         // reached, so it is off when the user counts solutions.
         let count_mode = limits.max_solutions.is_some();
@@ -787,6 +800,7 @@ pub fn solve<I: AeIndex>(
             .collect();
         let next = std::sync::atomic::AtomicUsize::new(0);
         let nodes_before = sh.nodes.load(Ordering::Relaxed);
+        let var_nodes = [AtomicU64::new(0), AtomicU64::new(0)];
         let tree_ref = &tree;
         let worker = || {
             let mut path: Vec<usize> = Vec::with_capacity(64);
@@ -816,6 +830,7 @@ pub fn solve<I: AeIndex>(
                 }
                 stats[i].store(stat.to_bits(), Ordering::Relaxed);
                 sh.nodes.fetch_add(nodes - before, Ordering::Relaxed);
+                var_nodes[task.v % 2].fetch_add(nodes - before, Ordering::Relaxed);
             }
         };
         if inline {
@@ -829,6 +844,7 @@ pub fn solve<I: AeIndex>(
             });
         }
         prev_nodes = Some(sh.nodes.load(Ordering::Relaxed) - nodes_before);
+        prev_var_nodes = var_nodes.map(AtomicU64::into_inner);
         for &i in &prev_ids {
             node_stat[i as usize] = 0.0;
         }
@@ -840,12 +856,15 @@ pub fn solve<I: AeIndex>(
         if std::env::var_os("FTO_DEBUG").is_some() {
             eprintln!("  depth {depth}: split done at {t_split:.4}s");
             eprintln!(
-                "  depth {depth}: {} tasks, {} nodes, {} solutions, best {:?}, {:.3}s",
+                "  depth {depth}: {} tasks, {} nodes ({} / {} by variant), {} solutions, best {:?}, {:.3}s{}",
                 n_tasks,
                 sh.nodes.load(Ordering::Relaxed),
+                prev_var_nodes[0],
+                prev_var_nodes[1],
                 sh.count.load(Ordering::Relaxed),
                 sh.best_len.load(Ordering::Relaxed),
-                start.elapsed().as_secs_f64()
+                start.elapsed().as_secs_f64(),
+                final_variant.map_or(String::new(), |v| format!(" (final iteration: variant {v} only)"))
             );
         }
         if sh.stop.load(Ordering::Relaxed) || sh.time_up() {
