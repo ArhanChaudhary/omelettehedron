@@ -4,6 +4,7 @@ use omelettehedron::coord::*;
 use omelettehedron::cube::*;
 use omelettehedron::fast::*;
 use omelettehedron::notation::*;
+use omelettehedron::prune::decode;
 use omelettehedron::search::*;
 use omelettehedron::tables::*;
 use rand::{Rng, SeedableRng};
@@ -378,6 +379,137 @@ fn class_swap_keeps_single_and_wide_pairs() {
             slot(c) ^ 4,
             "move {m}"
         );
+    }
+}
+
+/// Leaves, completions and best length of two separate plain IDA* searches, one per side (the
+/// position for `H_A`, and the position conjugated by `SWAP_AB` for `H_B`, each with its own
+/// canonical move sequences), in solution-counting mode up to depth `max_depth`: no pipeline,
+/// no task split, no merging, and no class-B bound (which counting mode turns off).
+fn separate_searches(
+    t: &Tables<AeSym>,
+    c: Cube,
+    max_depth: usize,
+) -> ([u64; 2], u64, Option<usize>) {
+    let f = fast();
+    let n = t.moves.n_moves();
+    let cubes = [c, c.conjugate(&SWAP_AB).unwrap()];
+    let roots = cubes.map(|c| {
+        let x = f.of(&c);
+        let (ha, hc) = t.exact_fast(&x);
+        (x, ha, hc)
+    });
+    let lo = roots.iter().map(|r| r.1.max(r.2) as usize).min().unwrap();
+    let (mut leaves, mut sols, mut best) = ([0u64; 2], 0u64, usize::MAX);
+    for d in lo..=max_depth {
+        if d >= best {
+            break;
+        }
+        for s in 0..2 {
+            let mut stack = vec![(roots[s], vec![])];
+            while let Some(((x, ha, hc), path)) = stack.pop() {
+                let g = path.len();
+                if ha.max(hc) as usize + g > d {
+                    continue;
+                }
+                if g == d {
+                    if ha == 0 && hc == 0 && path.last().is_none_or(|&m| !is_a_move(m)) {
+                        leaves[s] += 1;
+                        if let Some(d2) = t.p2.length(&cubes[s].apply_seq(&path)) {
+                            sols += 1;
+                            best = best.min(d + d2 as usize);
+                        }
+                    }
+                    continue;
+                }
+                let last = path.last().copied().unwrap_or(usize::MAX);
+                let em = masks(&x.e);
+                for m in 0..n {
+                    if !t.moves.allowed_after(last, m) {
+                        continue;
+                    }
+                    let y = f.apply_m(&x, &em, m);
+                    let ya = decode(ha, t.ae.get(t.ae_ix.index_fast(f, &y, f.a_rank(&y))));
+                    let yc = decode(hc, t.cb.tab.get(CbTable::index_fast(f, &y)));
+                    let mut p = path.clone();
+                    p.push(m);
+                    stack.push(((y, ya, yc), p));
+                }
+            }
+        }
+    }
+    (leaves, sols, (best < usize::MAX).then_some(best))
+}
+
+/// The search visits both sides in one traversal (each move sequence once, with the sides it
+/// is alive on). Against two separate searches it must reach the same leaves on each side and
+/// the same completions, at 1 and 8 threads. The positions are in `H_A` or `H_B` with a long
+/// phase 2 (counting mode stops at the best length, so these have many phase-1 paths back
+/// into the group below it), plus a few short scrambles: the trees have nodes alive on one
+/// side only and on both.
+#[test]
+fn merged_sides_match_separate_searches() {
+    let a_moves: Vec<usize> = (0..N_MOVES).filter(|&m| is_a_move(m)).collect();
+    let back = omelettehedron::geometry::transpose(&SWAP_AB);
+    for (t, seed, depth) in [(tables(), 21, 8), (slice_tables(), 22, 8)] {
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(seed);
+        let mut cubes = vec![];
+        while cubes.len() < 4 {
+            let mut c = Cube::solved();
+            for _ in 0..40 {
+                c = c.apply(a_moves[rng.gen_range(0..a_moves.len())]);
+            }
+            if t.p2.length(&c).is_some_and(|d| d >= 10) {
+                // in H_A, and (conjugated back) in H_B
+                cubes.push(c);
+                cubes.push(c.conjugate(&back).unwrap());
+            }
+        }
+        for len in [5usize, 7, 9] {
+            cubes.push(scramble_to_cube(&random_scramble(&mut rng, len)).0);
+        }
+        let mut total = [0u64; 2];
+        for c in cubes {
+            let lim = Limits {
+                max_solutions: Some(u64::MAX),
+                max_depth: Some(depth),
+                ..Default::default()
+            };
+            let (leaves, sols, best) = separate_searches(t, c, depth);
+            for threads in [1, 8] {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap();
+                let o = pool.install(|| solve(t, c, Frame::identity(), &lim, Report::Quiet));
+                let what = format!("{} {c:?}, {threads} threads", t.moves.name());
+                assert_eq!(o.leaves_by_side, leaves, "{what}");
+                assert_eq!(o.solutions_found, sols, "{what}");
+                assert_eq!(o.length, best, "{what}");
+            }
+            total[0] += leaves[0];
+            total[1] += leaves[1];
+        }
+        eprintln!("{}: leaves by side {total:?}", t.moves.name());
+        assert!(total[0] > 1000 && total[1] > 1000, "{total:?}");
+    }
+}
+
+/// The merged traversal applies side 1's class-B bound to side 0's position, where the
+/// separate search for side 1 used the position conjugated by `SWAP_AB` twice (a class-
+/// preserving 180° rotation). The tables give both the same distances, so the merged tree is
+/// exactly the union of the two separate trees.
+#[test]
+fn class_swap_squared_keeps_table_distances() {
+    let s2 = omelettehedron::geometry::mat_mul(&SWAP_AB, &SWAP_AB);
+    let f = fast();
+    for (t, seed) in [(tables(), 23), (slice_tables(), 24)] {
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(seed);
+        for _ in 0..40 {
+            let c = Cube::random(&mut rng);
+            let c2 = c.conjugate(&s2).unwrap();
+            assert_eq!(t.exact_fast(&f.of(&c)), t.exact_fast(&f.of(&c2)));
+        }
     }
 }
 

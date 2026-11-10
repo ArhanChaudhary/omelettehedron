@@ -234,6 +234,31 @@ Notes:
   "inverse" of a position is not well defined: a solution of the inverse scramble's position
   does not invert into a solution. The search runs two variants: target class A, and target
   class B (via conjugation by the 90° rotation about the fixed corner's axis).
+* **Both variants in one traversal.** The conjugation keeps the canonical move order (it maps
+  single turns to single turns, wide to wide and slices to slices, axis by axis), so the class-B
+  variant walks the images of the class-A variant's move sequences. One traversal visits each
+  sequence once, carrying the position in both frames and the set of variants whose tree the
+  node is in (a child is in a variant's tree if its parent is and it passes that variant's
+  bounds; the leaves of each variant end in a move outside its class). The tree is exactly the
+  union of the two variants' trees, so the early end of the proof is unaffected. Checked against
+  two separate searches (`merged_sides_match_separate_searches`) and, with the class-B bound on,
+  by node counts: every iteration in which the best length does not change gives base nodes =
+  merged nodes + nodes evaluated once for both variants.
+  How much is shared depends on the class-B bound. A child with `budget` moves left is in the
+  class-A tree if its class-A distance is at most `budget` and its class-B distance at most
+  `lim` = best − depth − 2 (and the other way round for the class-B tree), so it is in both if
+  both distances are at most `budget` (with `lim` ≥ `budget`). In the iteration at depth
+  best − 2 (`lim` = `budget` + 1: the last one of the default proof and of each target pass)
+  about 6–24% of the evaluations are shared; in the iteration at depth best − 1 (`lim` =
+  `budget`: run with slices and by the full proof) 43–100% (less when the best is only found
+  during that iteration). There a child that fails one variant's bound fails the other's too,
+  so a node in both trees drops it before its later lookups (`stage2`).
+  Measured (large tier, against the two-variant search, two interleaved rounds): optimality
+  proofs 0.69x / 0.77x time at 48 / 1 threads (19- / 17-move sets; 1T nodes 0.70x; 30 more
+  17-move scrambles at 1T 0.91x, 20 more 19-move scrambles at 48T 0.63x), random positions
+  0.83x / 0.94x / 0.94x, with slices 0.85x / 0.67x; all proven lengths identical. Time-limited
+  search: nodes/s 0.93x / 0.94x (a shared node counts once), the mean best after 5 s at 48T
+  0.09 moves longer (two of 40 positions improve later), first solution unchanged.
 * The A-centre/edge table uses 288 symmetries:
   - colour relabelling by a class-preserving symmetry,
   - repositioning by a class-preserving symmetry,
