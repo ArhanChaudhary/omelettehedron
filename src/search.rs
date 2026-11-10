@@ -363,7 +363,7 @@ impl<I: AeIndex> Shared<'_, I> {
         let last = path.last().copied().unwrap_or(usize::MAX);
         let budget = bound - g - 1;
         self.expand(x, last, budget, fr, nodes);
-        self.stage2::<B>(h_ae, h_cb, cb_pend, xb, budget, fr);
+        self.stage2::<B>(x, h_ae, h_cb, cb_pend, xb, budget, fr);
         self.finish::<B>(v, path, xb, hb_ae, hb_cb, bound, nodes, stat, fr, frames);
     }
 
@@ -382,10 +382,17 @@ impl<I: AeIndex> Shared<'_, I> {
         if budget == 0 {
             moves &= !A_MOVES;
         }
+        let ae_first = budget >= AE_FIRST;
         while moves != 0 {
             let m = moves.trailing_zeros() as usize;
             moves &= moves - 1;
-            fr.ys[n & 15] = f.apply_w(x, fw, m);
+            // With the AE stage first, the corner and B-centre parts of a child are only
+            // generated once it passes (in `stage2`).
+            let y = &mut fr.ys[n & 15];
+            f.apply_ae_into(y, x, fw, m);
+            if !ae_first {
+                f.apply_cb_into(y, x, m);
+            }
             fr.ms[n & 15] = m as u8;
             n += 1;
         }
@@ -396,7 +403,7 @@ impl<I: AeIndex> Shared<'_, I> {
         if before / CHECK_EVERY != *nodes / CHECK_EVERY {
             self.time_up();
         }
-        if budget >= AE_FIRST {
+        if ae_first {
             t.ae_ix
                 .index_batch_fast_pf(f, &fr.ys[..n], &mut fr.idx[..n], &t.ae.data);
         } else {
@@ -412,6 +419,7 @@ impl<I: AeIndex> Shared<'_, I> {
     #[inline(always)]
     fn stage2<const B: bool>(
         &self,
+        x: &Fc,
         h_ae: u8,
         h_cb: u8,
         cb_pend: usize,
@@ -458,6 +466,7 @@ impl<I: AeIndex> Shared<'_, I> {
             *fmin_ha = min_ha;
             for &i in &sel[..k] {
                 let i = usize::from(i & 15);
+                f.apply_cb_into(&mut ys[i], x, usize::from(ms[i] & 15));
                 cbi[i] = CbTable::index_fast(f, &ys[i]);
                 prefetch_at(&t.cb.tab.data, cbi[i] >> 5);
             }
@@ -701,7 +710,7 @@ impl<I: AeIndex> Shared<'_, I> {
         }
         if n > 0 {
             let i = child(0);
-            self.stage2::<B>(has[i], hcs[i], pend[i], yb_of(i), cb, f0);
+            self.stage2::<B>(&ys[i], has[i], hcs[i], pend[i], yb_of(i), cb, f0);
         }
         for j in 0..n {
             if j + 2 < n {
@@ -710,7 +719,7 @@ impl<I: AeIndex> Shared<'_, I> {
             }
             if j + 1 < n {
                 let i = child(j + 1);
-                self.stage2::<B>(has[i], hcs[i], pend[i], yb_of(i), cb, f1);
+                self.stage2::<B>(&ys[i], has[i], hcs[i], pend[i], yb_of(i), cb, f1);
             }
             let i = child(j);
             path.push(ms[i] as usize);
