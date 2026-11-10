@@ -50,6 +50,8 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | Sibling pipeline three deep (first lookups three siblings ahead) | `neg/pipe4` | nodes/s 1.008x / 0.997x; optimal 1.009x / 0.983x: the table-read stall is not prefetch timing | no |
 | `-l L` searched as a target pass at L once a first solution exists | `neg/lpass` | time to a solution of at most L 1.01x (48T, -l 21) / 1.10x (1T, -l 22): the search already prunes against its best | no |
 | Target-length passes under a time limit (three switching rules) | `neg/tlpasses` | proof within the limit 1T 0.80 -> 0.63 s, but best after 5 s 21.45 -> 22.20 (48T), 22.00 -> 22.55 (1T): a time limit keeps the improving search | no |
+| Tables mapped from the files instead of read into huge-page memory (start-up) | (analysis) | start-up at 48T is 0.26 s, mostly kernel time (faults, zeroing, copying 8 GB); but file mappings get only 4 KB pages here (FilePmdMapped 0, THPeligible 0), and huge pages were worth +16-18% nodes/s | no |
+| Class-B bound of one-side nodes from the CB table only (skip the other side's AE read) | (analysis) | the other side's AE values are mod 3 and decoded from the parent's exact value, so skipping one level loses the chain below it; AE is also the stronger half of that bound (mean 10.9 vs 6.1) | no |
 | `AE_FIRST` 5 or 7 instead of 6 (after the merged traversal) | (no branch: constant) | optimal 1.03x / 1.01x (5) and 1.04x / 1.01x (7) time; nodes/s 0.97-1.02x | no |
 | `FTO_TASKN` 128 or 2048 instead of 512 | (no branch: env knob) | optimal 19-move set 1.04x / 1.03x, random position 3 0.98x / 0.97x | no |
 
