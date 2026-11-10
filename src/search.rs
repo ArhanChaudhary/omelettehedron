@@ -111,6 +111,43 @@ fn swap_moves() -> [usize; N_MOVES] {
 
 const CHECK_EVERY: u64 = 1 << 14;
 
+/// Moves allowed after each move (index N_MOVES: no previous move), as bit masks.
+static ALLOWED: [u16; N_MOVES + 1] = {
+    let mut a = [0u16; N_MOVES + 1];
+    let mut last = 0;
+    while last <= N_MOVES {
+        let mut m = 0;
+        while m < N_MOVES {
+            // same rule as `allowed_after`
+            let ok = if last == N_MOVES {
+                true
+            } else {
+                let (ls, s) = (last >> 1, m >> 1);
+                !(s == ls || ((s & 3) == (ls & 3) && s < ls))
+            };
+            if ok {
+                a[last] |= 1 << m;
+            }
+            m += 1;
+        }
+        last += 1;
+    }
+    a
+};
+
+/// The class-A moves as a bit mask.
+static A_MOVES: u16 = {
+    let mut a = 0u16;
+    let mut m = 0;
+    while m < N_MOVES {
+        if matches!(m >> 1, 1 | 2 | 4 | 7) {
+            a |= 1 << m;
+        }
+        m += 1;
+    }
+    a
+};
+
 /// Weight 8^-h of a surviving node with bound h in a task's ordering statistic.
 const STAT_W: [f32; 32] = {
     let mut w = [0f32; 32];
@@ -207,17 +244,20 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         let budget = bound - g - 1;
         let t = self.t;
         let f = fast();
-        let em = masks(&x.e);
+        let fw = f.flip_word(&masks(&x.e));
         // Evaluate all children as a batch: every stage issues prefetches for all children
         // before reading any of them, so the cache misses of different children overlap.
         let mut ys = [*x; N_MOVES];
         let mut ms = [0u8; N_MOVES];
         let mut n = 0;
-        for m in 0..N_MOVES {
-            if !allowed_after(last, m) || (budget == 0 && is_a_move(m)) {
-                continue;
-            }
-            ys[n] = f.apply(x, &em, m);
+        let mut moves = ALLOWED[last.min(N_MOVES)];
+        if budget == 0 {
+            moves &= !A_MOVES;
+        }
+        while moves != 0 {
+            let m = moves.trailing_zeros() as usize;
+            moves &= moves - 1;
+            ys[n] = f.apply_w(x, fw, m);
             ms[n] = m as u8;
             n += 1;
         }
@@ -241,7 +281,8 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         let mut bidx = [0usize; N_MOVES];
         let mut bcbi = [0usize; N_MOVES];
         if ae_first {
-            t.ae_ix.index_batch_fast_pf(f, &ys[..n], &mut idx[..n], &t.ae.data);
+            t.ae_ix
+                .index_batch_fast_pf(f, &ys[..n], &mut idx[..n], &t.ae.data);
             // Without a joint-table stage to hide the CB latency, fetch the CB words of all
             // children while the AE words are in flight.
             let early = budget > 8;
@@ -280,7 +321,8 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                 for i in 0..k {
                     ybs[i] = f.apply(xb, &emb, self.mb[ms[i] as usize]);
                 }
-                t.ae_ix.index_batch_fast_pf(f, &ybs[..k], &mut bidx[..k], &t.ae.data);
+                t.ae_ix
+                    .index_batch_fast_pf(f, &ybs[..k], &mut bidx[..k], &t.ae.data);
                 for i in 0..k {
                     bcbi[i] = CbTable::index_fast(f, &ybs[i]);
                     prefetch(&t.cb.tab.data[bcbi[i] >> 5]);
@@ -350,7 +392,8 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                     k += 1;
                 }
             }
-            t.ae_ix.index_batch_fast_pf(f, &ys[..k], &mut idx[..k], &t.ae.data);
+            t.ae_ix
+                .index_batch_fast_pf(f, &ys[..k], &mut idx[..k], &t.ae.data);
             n = 0;
             for i in 0..k {
                 let ha = decode(h_ae, t.ae.get(idx[i]));
@@ -392,7 +435,8 @@ impl<'a, I: AeIndex> Shared<'a, I> {
             for i in 0..n {
                 ybs[i] = f.apply(xb, &emb, self.mb[ms[i] as usize]);
             }
-            t.ae_ix.index_batch_fast_pf(f, &ybs[..n], &mut idx[..n], &t.ae.data);
+            t.ae_ix
+                .index_batch_fast_pf(f, &ybs[..n], &mut idx[..n], &t.ae.data);
             for i in 0..n {
                 cbi[i] = CbTable::index_fast(f, &ybs[i]);
                 prefetch(&t.cb.tab.data[cbi[i] >> 5]);
@@ -420,8 +464,10 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         }
         for i in 0..n {
             path.push(ms[i] as usize);
+            // (without B the class-B position is not tracked)
+            let yb = if B { &ybs[i] } else { xb };
             self.dfs::<B>(
-                v, path, &ys[i], has[i], hcs[i], &ybs[i], hbas[i], hbcs[i], bound, nodes, stat,
+                v, path, &ys[i], has[i], hcs[i], yb, hbas[i], hbcs[i], bound, nodes, stat,
             );
             path.pop();
             if self.stop.load(Ordering::Relaxed) {
@@ -455,8 +501,10 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         let mut iab = [0usize; N_MOVES];
         let mut ic = [0usize; N_MOVES];
         let mut icb = [0usize; N_MOVES];
-        tb.ae_ix.index_batch_fast_pf(f, &ys[..n], &mut ia[..n], &tb.ae.data);
-        tb.ae_ix.index_batch_fast_pf(f, &yb[..n], &mut iab[..n], &tb.ae.data);
+        tb.ae_ix
+            .index_batch_fast_pf(f, &ys[..n], &mut ia[..n], &tb.ae.data);
+        tb.ae_ix
+            .index_batch_fast_pf(f, &yb[..n], &mut iab[..n], &tb.ae.data);
         for i in 0..n {
             ic[i] = CbTable::index_fast(f, &ys[i]);
             prefetch(&tb.cb.tab.data[ic[i] >> 5]);
@@ -699,13 +747,13 @@ pub fn solve<I: AeIndex>(
                 let use_b = !count_mode && sh.best_len.load(Ordering::Relaxed) < usize::MAX;
                 if use_b {
                     sh.dfs::<true>(
-                        task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb,
-                        task.hb_ae, task.hb_cb, depth, &mut nodes, &mut stat,
+                        task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb, task.hb_ae,
+                        task.hb_cb, depth, &mut nodes, &mut stat,
                     );
                 } else {
                     sh.dfs::<false>(
-                        task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb,
-                        task.hb_ae, task.hb_cb, depth, &mut nodes, &mut stat,
+                        task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb, task.hb_ae,
+                        task.hb_cb, depth, &mut nodes, &mut stat,
                     );
                 }
                 stats[i].store(stat.to_bits(), Ordering::Relaxed);
@@ -762,5 +810,23 @@ pub fn solve<I: AeIndex>(
         elapsed: start.elapsed().as_secs_f64(),
         optimal,
         events,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn move_masks_match_rules() {
+        for last in 0..=N_MOVES {
+            for m in 0..N_MOVES {
+                let l = if last == N_MOVES { usize::MAX } else { last };
+                assert_eq!(ALLOWED[last] >> m & 1 == 1, allowed_after(l, m));
+            }
+        }
+        for m in 0..N_MOVES {
+            assert_eq!(A_MOVES >> m & 1 == 1, is_a_move(m));
+        }
     }
 }

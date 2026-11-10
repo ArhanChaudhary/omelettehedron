@@ -27,8 +27,8 @@ pub struct FastTables {
     shuf_a: [[u8; 16]; N_MOVES],
     shuf_b: [[u8; 16]; N_MOVES],
     shuf_e: [[u8; 16]; N_MOVES],
-    /// chirality flip of a triple occupying a 12-bit position mask, per move (bitsets)
-    flip_m: Box<[[u64; 64]; N_MOVES]>,
+    /// chirality flip of a triple occupying a 12-bit position mask: bit m = flipped by move m
+    flip_moves: Box<[u16; 4096]>,
     /// corner move table, padded to 1024 ids so that `& 1023` replaces bounds checks
     corner: Box<[[u16; N_MOVES]; 1024]>,
     pub(crate) c12: Box<[u16; 4096]>,
@@ -204,7 +204,15 @@ impl FastTables {
             shuf_a,
             shuf_b,
             shuf_e,
-            flip_m: boxed(&flip_m),
+            flip_moves: {
+                let mut t = Box::new([0u16; 4096]);
+                for (q, w) in t.iter_mut().enumerate() {
+                    for (m, fm) in flip_m.iter().enumerate() {
+                        *w |= ((fm[q >> 6] >> (q & 63)) as u16 & 1) << m;
+                    }
+                }
+                t
+            },
             corner: {
                 let mut c = Box::new([[0u16; N_MOVES]; 1024]);
                 c[..mt_c.len()].copy_from_slice(&mt_c);
@@ -242,15 +250,26 @@ impl FastTables {
         f
     }
 
+    /// Chirality flips of the four triples of a position with edge masks `em` under every
+    /// move: bit 16 * t + m = triple t is flipped by move m (see [`FastTables::apply_w`]).
+    #[inline(always)]
+    pub fn flip_word(&self, em: &[u16; 4]) -> u64 {
+        let w = em.map(|q| self.flip_moves[q as usize & 0xfff] as u64);
+        w[0] | w[1] << 16 | w[2] << 32 | w[3] << 48
+    }
+
     /// Apply move `m`. `em` are the edge-label masks of `x` (from [`masks`]).
     #[inline(always)]
     pub fn apply(&self, x: &Fc, em: &[u16; 4], m: usize) -> Fc {
-        let fm = &self.flip_m[m & 15];
-        let mut flips = 0u8;
-        for t in 0..4 {
-            let k = em[t] as usize & 0xfff;
-            flips |= ((fm[k >> 6] >> (k & 63)) as u8 & 1) << t;
-        }
+        self.apply_w(x, self.flip_word(em), m)
+    }
+
+    /// Apply move `m`, with `fw` = [`FastTables::flip_word`] of the edge masks of `x`.
+    #[inline(always)]
+    pub fn apply_w(&self, x: &Fc, fw: u64, m: usize) -> Fc {
+        // gather bit m of each 16-bit lane into bits 48..52 (no carries between the terms)
+        let b = (fw >> (m & 15)) & 0x0001_0001_0001_0001;
+        let flips = (b.wrapping_mul(1 << 48 | 1 << 33 | 1 << 18 | 1 << 3) >> 48) as u8 & 15;
         Fc {
             a: shuffle(&x.a, &self.shuf_a[m]),
             b: shuffle(&x.b, &self.shuf_b[m]),
