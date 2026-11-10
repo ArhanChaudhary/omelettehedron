@@ -45,12 +45,12 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | With slices, last proof iteration restricted to paths ending in a slice | `neg/slicelast` | neutral: few nodes reach the last level (48T node counts within 0.1%); slice optimal 0.97x (48T) / 1.05x (1T) | no |
 | Profile-guided build (LLVM PGO, training on other seeds) | `neg/pgo` | nodes/s 0.987x (48T) / 0.947x (1T); optimal 1.002x / 0.978x time | no |
 
-Cumulative, first working version -> main of 2026-11-10 ~13:30 (r10 and rc runs; 48 threads, 40
-random positions, 5 s): mean best length 21.60 -> 21.10; first solution 86 ms -> 6.1 ms; 1.70e9
-nodes/s. Optimal mode, 10 x 19-move scrambles at 48 threads: 15.1 s -> 1.21 s mean per position;
-random positions (seeds 1-3) 419 / 481 / 39 s (morning of 2026-11-10) -> 65 / 65 / 5.3 s. Round 2
-alone (main-r2 -> micro-compute): 1.52x nodes/s at 48T and 1T, first solution 0.36x (48T) /
-0.64x (1T), optimal proofs 0.65x / 0.67x time.
+Cumulative, first working version -> final main 8837126 of 2026-11-10 (48 threads, 40 random
+positions, 5 s): mean best length 21.60 -> 21.175; first solution 86 ms -> 5.7 ms. Optimal mode,
+10 x 19-move scrambles at 48 threads: 15.1 s -> 0.90 s mean per position; random positions
+(seeds 1-3) 419 / 481 / 39 s (morning of 2026-11-10) -> 54 / 62 / 5.0 s. Round 2 alone
+(main-r2 -> micro-compute): 1.52x nodes/s at 48T and 1T, first solution 0.36x (48T) / 0.64x
+(1T), optimal proofs 0.65x / 0.67x time.
 
 ## Table generation (`opt/gen`)
 
