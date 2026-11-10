@@ -102,4 +102,7 @@ The tests cover:
 * coordinates and symmetry reduction;
 * pruning-table consistency;
 * optimal mode, against a meet-in-the-middle brute force;
+* search coverage: with every pruning table zeroed, each allowed phase-1 move sequence is
+  reached exactly once (checked against exact counts, at 1 and 8 threads);
+* phase-2 membership, including the centres;
 * every stopping rule.
