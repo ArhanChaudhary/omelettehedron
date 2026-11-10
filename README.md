@@ -106,6 +106,64 @@ scripts/compare.py <before> <after>             # markdown comparison of two run
 * how many positions were proven optimal;
 * search speed in nodes per second.
 
+## WebAssembly demo
+
+`wasm/` holds a browser demo: the solver as a WebAssembly module, a JavaScript wrapper and a
+static page. It supports the small tier only (wasm32 has a 4 GB address space).
+
+```sh
+rustup target add wasm32-wasip1 wasm32-wasip1-threads
+scripts/build-wasm.sh        # wasm/dist/omelettehedron.wasm and omelettehedron-threads.wasm
+bun wasm/serve.mjs           # then open http://localhost:8000/
+bun wasm/test.mjs            # headless test in Bun (FTO_TABLES=DIR also compares the tables)
+bun wasm/bench.mjs [--threads N] [--tables DIR] [--count 10] [--seconds 5]
+```
+
+* `omelettehedron.wasm` (`wasm32-wasip1`) runs on one thread anywhere.
+  `omelettehedron-threads.wasm` (`wasm32-wasip1-threads`) runs rayon's thread pool on
+  wasi-threads. It needs `SharedArrayBuffer`, so a browser page must be cross-origin isolated
+  (the COOP/COEP headers that `wasm/serve.mjs` sends; GitHub Pages cannot send them). Its
+  memory is fixed at 1 GiB from the start: growing the shared memory while threads run is
+  unsafe in V8 (see `wasm/build.rs`).
+* `wasm/omelettehedron.mjs` provides the WASI functions the module imports and a worker pool
+  for its threads. `FtoSolver` generates or loads the tables, solves scrambles optimally or
+  with a time limit, makes random-state scrambles and checks solutions on the sticker model.
+  A solve can be cancelled from another thread (`cancel`), which moves the module's clock past
+  its time limit; this needs shared memory.
+* The page (`wasm/index.html`, run in a worker by `wasm/demo-worker.mjs`) starts with every core
+  when it is cross-origin isolated, else with one thread. It generates the tables, warms up the
+  engine and keeps the tables in IndexedDB for later visits. The page shows each better solution
+  while solving. **Stop** cancels a solve. Without shared memory, it restarts the worker and
+  reloads the stored tables.
+* Tables can also be loaded from the native `gen --tier small` files: the formats are the same,
+  and the module generates byte-identical files.
+
+Measured in Bun 1.4.4 (JavaScriptCore, Safari's engine) on the 48-core EPYC VM:
+
+| | native | wasm, 1 thread | wasm, 8 threads | wasm, 48 threads |
+|---|---|---|---|---|
+| table generation | 23.6 s (1T), ~1 s (48T) | 32.7 s | 31.0 s | 16.4 s |
+| table load (both files) | | 2.2 s | 0.5 s | |
+| search speed (10 random positions, 5 s each) | 58 / 399 / 2162 M nodes/s (1/8/48T) | 23 M nodes/s | 36 M nodes/s | 74 M nodes/s |
+| random positions solved within 5 s | 9 / 10 / 10 of 10 | 4 | 7 | 10 |
+
+The modules are 0.55 MB each. The single-thread module grows to 352 MiB while generating and
+428 MiB while loading table files. The optimal solves of short scrambles (6-14 moves) take
+milliseconds, with the same node counts as natively on one thread.
+
+Threads help little in JavaScriptCore. Its WebAssembly atomic loads behave like locked
+read-modify-writes. In a micro-benchmark, eight threads reading shared words got 7 M loads/s
+each, against 226 M/s for one thread. The search and the table generator read atomics often:
+the `OnceLock` statics such as `fast()`, and the stop and best-length flags. V8 (Chrome) and
+SpiderMonkey (Firefox) compile atomic loads on x86 to plain loads, so they should scale like
+the native build. No browser was available to measure this. Before a solve, the page runs a
+short warm-up so that V8 compiles the search with its optimizing tier.
+
+The JavaScript layer is adapted from [egg-solver](https://github.com/ArhanChaudhary/egg-solver)'s
+WebAssembly build (same author). That includes the WASI shim, the thread pool, the reactor
+initializer and its lessons: initial memory equals maximum memory, threads never exit, and a
+warm-up solve runs for V8.
+
 ## Tests
 
 ```sh

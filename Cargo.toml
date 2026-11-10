@@ -31,3 +31,15 @@ opt-level = 3
 [[bin]]
 name = "omelettehedron"
 path = "src/main.rs"
+
+# The WebAssembly module (wasm/, see README.md "WebAssembly demo"). `cargo build`, `cargo test`
+# and `cargo clippy` here still cover only this package.
+[workspace]
+members = [".", "wasm"]
+
+# The WebAssembly module's build (scripts/build-wasm.sh): release without debug info, for a
+# small `.wasm`.
+[profile.wasm-release]
+inherits = "release"
+debug = 0
+strip = true

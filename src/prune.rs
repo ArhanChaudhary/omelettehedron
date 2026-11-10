@@ -142,10 +142,15 @@ fn read_at(file: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result
     file.read_exact_at(buf, offset)
 }
 
-/// Elsewhere (WebAssembly) there is a single thread, so seeking the shared cursor is safe.
+/// Elsewhere (WebAssembly) the file has one shared cursor: a lock keeps each seek and read
+/// together, also when a threaded build reads chunks from several threads.
 #[cfg(not(unix))]
 fn read_at(file: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
     use std::io::{Read, Seek, SeekFrom};
+    static CURSOR: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _held = CURSOR
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut f = file;
     f.seek(SeekFrom::Start(offset))?;
     f.read_exact(buf)
@@ -197,7 +202,9 @@ fn read_and_hash(
     Ok(h[..nc].iter().fold(0, |a, b| a ^ b))
 }
 
-fn checksum(d: &[u64]) -> u64 {
+/// Checksum of a table's words, as stored in its file (see [`save_words`]); the WebAssembly
+/// module writes and checks table files in memory with it.
+pub fn checksum(d: &[u64]) -> u64 {
     d.par_chunks(1 << 20)
         .enumerate()
         .map(|(i, c)| {

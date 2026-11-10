@@ -4,3 +4,4 @@
 /tables
 *.bin
 *.prune
+/wasm/dist
