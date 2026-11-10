@@ -38,13 +38,14 @@ alive in both variants now counts once).
 Random positions (48 threads). "Proof": main ddcb5ba with the merged traversal (mean of two
 runs); in brackets main 496b389 before it, and the morning of 2026-11-10 before the early proof
 end and the sibling pipeline. The last column proves the same positions with
-`FTO_FULL_PROOF=1` (no early end, no target passes) on main 496b389: the proven lengths agree.
+`FTO_FULL_PROOF=1` (no early end, no target passes) on main ef10b90 (in brackets on 496b389,
+before the merged traversal): the proven lengths agree.
 
 | seed | optimal | first solution | proof | full proof |
 |---|---|---|---|---|
-| 1 | 21 | 25 @ 12 ms | 54.0 s (64.8 s; 419 s) | 275.6 s |
-| 2 | 21 | 24 @ 3 ms | 61.8 s (64.6 s; 481 s) | 316.2 s |
-| 3 | 20 | 23 @ 6 ms | 4.96 s (5.2 s; 39 s) | 26.1 s |
+| 1 | 21 | 25 @ 12 ms | 54.0 s (64.8 s; 419 s) | 181.3 s (275.6 s) |
+| 2 | 21 | 24 @ 3 ms | 61.8 s (64.6 s; 481 s) | 216.0 s (316.2 s) |
+| 3 | 20 | 23 @ 6 ms | 4.96 s (5.2 s; 39 s) | 17.0 s (26.1 s) |
 
 ## Move sets (`--moves`)
 
