@@ -15,6 +15,8 @@ use crate::notation::*;
 use crate::prune::decode;
 use crate::tables::*;
 use rayon::prelude::*;
+
+mod lanes;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -417,7 +419,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
     /// Tasks for one iteration: the roots, expanded level by level (in parallel) until there
     /// are enough tasks for the thread pool. The depth stays small because most of an IDA*
     /// iteration's work lies in the middle levels, which must not be explored serially.
-    fn tasks(&self, bound: usize, threads: usize) -> Vec<Task> {
+    fn tasks(&self, bound: usize, threads: usize, lanes: usize) -> Vec<Task> {
         let mut tasks: Vec<Task> = self
             .variants
             .iter()
@@ -437,7 +439,8 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         let max_k = bound.saturating_sub(4).min(MAX_SPLIT);
         let mut k = 0;
         // (single-threaded runs are split too, so per-task decisions can change mid-iteration)
-        while tasks.len() < 64 * threads && k < max_k {
+        let want = 64 * threads * lanes.max(1) / 4;
+        while tasks.len() < want && k < max_k {
             tasks = tasks
                 .par_iter()
                 .flat_map_iter(|t| self.expand(t, bound))
@@ -449,7 +452,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
 }
 
 /// Deepest level at which an iteration is split into parallel tasks.
-const MAX_SPLIT: usize = 4;
+const MAX_SPLIT: usize = 5;
 
 /// Solve one position. `frame` is the physical frame of the scrambled position.
 pub fn solve<I: AeIndex>(
@@ -509,6 +512,10 @@ pub fn solve<I: AeIndex>(
         .unwrap();
     let mut optimal = false;
     let threads = rayon::current_num_threads();
+    let n_lanes: usize = std::env::var("FTO_LANES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(lanes::DEFAULT_LANES);
     let mut depth = lo;
     let mut prev_stats: std::collections::HashMap<(usize, [u8; 8]), f32> =
         std::collections::HashMap::new();
@@ -517,7 +524,7 @@ pub fn solve<I: AeIndex>(
             optimal = true;
             break;
         }
-        let mut tasks = sh.tasks(depth, threads);
+        let mut tasks = sh.tasks(depth, threads, n_lanes);
         // Order the tasks by the statistics of the same prefixes in the previous iteration, so
         // that the most promising subtrees are searched first (egg-solver's job ordering).
         let key = |t: &Task| -> (usize, [u8; 8]) {
@@ -544,40 +551,57 @@ pub fn solve<I: AeIndex>(
             .collect();
         let next = std::sync::atomic::AtomicUsize::new(0);
         // Workers take tasks strictly in order from a shared counter.
-        rayon::scope(|scope| {
-            for _ in 0..threads {
-                scope.spawn(|_| {
-                    let mut path: Vec<usize> = Vec::with_capacity(64);
-                    // the per-thread counter persists across tasks so time checks happen regularly
-                    let mut nodes = 0u64;
-                    loop {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        if i >= tasks.len() || sh.stop.load(Ordering::Relaxed) || sh.time_up() {
-                            break;
+        if n_lanes > 0 {
+            let it = lanes::Iter {
+                sh: &sh,
+                tasks: &tasks,
+                next: &next,
+                stats: &stats,
+                bound: depth,
+                count_mode,
+            };
+            rayon::scope(|scope| {
+                for _ in 0..threads {
+                    scope.spawn(|_| it.worker(n_lanes));
+                }
+            });
+        } else {
+            rayon::scope(|scope| {
+                for _ in 0..threads {
+                    scope.spawn(|_| {
+                        let mut path: Vec<usize> = Vec::with_capacity(64);
+                        // the per-thread counter persists across tasks so time checks happen regularly
+                        let mut nodes = 0u64;
+                        loop {
+                            let i = next.fetch_add(1, Ordering::Relaxed);
+                            if i >= tasks.len() || sh.stop.load(Ordering::Relaxed) || sh.time_up() {
+                                break;
+                            }
+                            let task = &tasks[i];
+                            path.clear();
+                            path.extend_from_slice(&task.path);
+                            let before = nodes;
+                            let mut stat = 0f32;
+                            let use_b =
+                                !count_mode && sh.best_len.load(Ordering::Relaxed) < usize::MAX;
+                            if use_b {
+                                sh.dfs::<true>(
+                                    task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb,
+                                    task.hb_ae, task.hb_cb, depth, &mut nodes, &mut stat,
+                                );
+                            } else {
+                                sh.dfs::<false>(
+                                    task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb,
+                                    task.hb_ae, task.hb_cb, depth, &mut nodes, &mut stat,
+                                );
+                            }
+                            stats[i].store(stat.to_bits(), Ordering::Relaxed);
+                            sh.nodes.fetch_add(nodes - before, Ordering::Relaxed);
                         }
-                        let task = &tasks[i];
-                        path.clear();
-                        path.extend_from_slice(&task.path);
-                        let before = nodes;
-                        let mut stat = 0f32;
-                        let use_b = !count_mode && sh.best_len.load(Ordering::Relaxed) < usize::MAX;
-                        if use_b {
-                            sh.dfs::<true>(
-                                task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb,
-                                task.hb_ae, task.hb_cb, depth, &mut nodes, &mut stat,
-                            );
-                        } else {
-                            sh.dfs::<false>(
-                                task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb,
-                                task.hb_ae, task.hb_cb, depth, &mut nodes, &mut stat,
-                            );
-                        }
-                        stats[i].store(stat.to_bits(), Ordering::Relaxed);
-                        sh.nodes.fetch_add(nodes - before, Ordering::Relaxed);
-                    }
-                });
-            }
-        });
+                    });
+                }
+            });
+        }
         prev_stats = tasks
             .iter()
             .zip(stats.iter())
