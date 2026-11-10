@@ -29,7 +29,7 @@
 use clap::{Parser, Subcommand};
 use omelettehedron::bench;
 use omelettehedron::cube::{Cube, MoveSet};
-use omelettehedron::notation::{parse_moves, scramble_to_cube, Frame};
+use omelettehedron::notation::{parse_moves, scramble_to_cube, solves_pure, Frame};
 use omelettehedron::search::{solve, Limits, Report};
 use omelettehedron::tables::{table_dir, AeIndex, AeRelabel, AeSym, Tables, Tier};
 use std::io::BufRead;
@@ -223,6 +223,20 @@ fn run_solve<I: AeIndex>(
         }
         if o.solution.is_none() {
             println!("no solution found");
+        }
+        if verbose {
+            // the solver works up to centre colours; say whether the solution also restores
+            // every centre triangle to its own place
+            if let (Ok(scr), Some(sol)) = (parse_moves(label), &o.solution) {
+                eprintln!(
+                    "pure FTO (every centre unique): {}",
+                    if solves_pure(&scr, sol) {
+                        "also solved"
+                    } else {
+                        "not solved (centres of a colour exchanged)"
+                    }
+                );
+            }
         }
     }
 }

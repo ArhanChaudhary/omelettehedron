@@ -42,7 +42,12 @@ accepted as two turns. Opposite pairs: U–D, F–B, R–BL, L–BR.
 `Xw` turns face X together with the middle layer (a wide turn). `Xs` turns only the middle
 layer between X and its opposite face, in the sense of X, so `Us` = `Ds'` (a slice turn).
 Scrambles may always contain wide and slice turns; solutions name slices by their front face
-(`Us`, `Rs`, `Fs`, `Ls`).
+(`Us`, `Rs`, `Fs`, `Ls`). `Xv` in a scramble turns the whole puzzle like X (all three layers of
+X's axis).
+
+`solve -v` also says whether the solution solves the *pure* FTO, where every centre triangle is
+unique: the solver itself treats centres of a colour as interchangeable, so its optimum is a
+lower bound for the pure puzzle. `bench/hard.tsv` lists hard positions (`scripts/bench-hard.sh`).
 
 Face turns can rotate the whole puzzle, so a solution ends in the solved state in *some*
 orientation. Internally the front corner is held fixed.

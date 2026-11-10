@@ -1,0 +1,10 @@
+# Hard positions supplied by the user on 2026-11-10 (names and known lengths as given).
+# normal = the usual FTO (centres of a colour interchangeable: what omelettehedron solves);
+# pure = every centre unique (omelettehedron's normal-FTO optimum is a lower bound there).
+# name	known	config	scramble
+tri_adj+edge_opp	23	normal	U F U' B' BR' D' L' D' R L' R BR U' R D' BR F R' F' BL U F L Lv
+tri_adj+edge_adj	23	normal	U F BL B' U B' BL BR' D' BL BR L R BL' D R F' B U' BL B' U F' Rv'
+tri_adj-[Uf_Fu;Db_Bd]	23	normal	U F D L' D' U' L BR' U' B' BL' R' D L B D' BR BL D BR B U B Rv
+tri_adj+[UB_FD,NL_MR]	23	normal	U F U' L' BL B U' R U' D R' U D BR' F BL' U' R' B R F BR' F Uv'
+edge_hard	21	edges-only (also pure)	U' L BR' BL R' F' R BL' D R' BL U' D BL' R B' F BL' R' F B'
+pure_corn_6flip	>=24	pure	U F' U' R' L' R L U F U' F' L' R' L R BL L F' L U F' R' U R' BR' U B BR' B BL BR' D' BL D'
