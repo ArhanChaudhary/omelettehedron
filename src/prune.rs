@@ -197,7 +197,9 @@ fn read_and_hash(
     Ok(h[..nc].iter().fold(0, |a, b| a ^ b))
 }
 
-fn checksum(d: &[u64]) -> u64 {
+/// Checksum of a table's words, as stored in its file (see [`save_words`]); the WebAssembly
+/// module writes and checks table files in memory with it.
+pub fn checksum(d: &[u64]) -> u64 {
     d.par_chunks(1 << 20)
         .enumerate()
         .map(|(i, c)| {
