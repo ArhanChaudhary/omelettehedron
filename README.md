@@ -183,10 +183,13 @@ The modules are 0.55 MB each. The single-thread module grows to 352 MiB while ge
 428 MiB while loading table files. The optimal solves of short scrambles (6-14 moves) take
 milliseconds, with the same node counts as natively on one thread.
 
-Threads help little in JavaScriptCore. Its WebAssembly atomic loads behave like locked
+Threads helped little in JavaScriptCore. Its WebAssembly atomic loads behave like locked
 read-modify-writes. In a micro-benchmark, eight threads reading shared words got 7 M loads/s
-each, against 226 M/s for one thread. The search and the table generator read atomics often:
-the `OnceLock` statics such as `fast()`, and the stop and best-length flags. V8 (Chrome) and
+each, against 226 M/s for one thread. The search read atomics for every node: the `OnceLock`
+statics such as `fast()`, and the stop and best-length flags. Since the search keeps its tables
+in plain fields (`opt/cbref`, `opt/atomics`), 8 threads search 58.8 M nodes/s instead of 34.7 M
+(6 random positions, 5 s each; one thread 20 M); the stop and best-length flags are still read
+per node, and the table generator still reads `OnceLock`s often. V8 (Chrome) and
 SpiderMonkey (Firefox) compile atomic loads on x86 to plain loads, so they should scale like
 the native build. No browser was available to measure this. Before a solve, the page runs a
 short warm-up so that V8 compiles the search with its optimizing tier.
