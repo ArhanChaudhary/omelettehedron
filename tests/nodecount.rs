@@ -1,11 +1,15 @@
 //! Search coverage check.
 //!
 //! With every pruning table zeroed (heuristic = 0 everywhere), the search must reach each
-//! phase-1 leaf exactly once. A leaf of the depth-d iteration is a move sequence of length d
-//! that follows the move-order rules and ends with a move outside H_A, so their number is
-//! counted exactly by a transfer matrix over the last move. A mismatch means that the
-//! parallel split, the task scheduling or the batched child evaluation drops or repeats part of
-//! the tree. The tables themselves are not involved.
+//! phase-1 leaf exactly once on each side. The search runs for two targets at once (side 0:
+//! H_A; side 1: H_B, on the position conjugated by SWAP_AB), walking each move sequence once
+//! with the sides it is alive on. A leaf of side 0 in the depth-d iteration is a move sequence
+//! of length d that follows the move-order rules and ends with a move outside H_A; a leaf of
+//! side 1 one that ends with a move outside class B (the moves SWAP_AB maps into class A).
+//! Their numbers are counted exactly by a transfer matrix over the last move. A mismatch
+//! means that the parallel split, the task scheduling, the batched child evaluation or the
+//! per-side bookkeeping drops or repeats part of a side's tree. The tables themselves are not
+//! involved.
 
 use omelettehedron::cube::*;
 use omelettehedron::mem::HugeBuf;
@@ -66,23 +70,40 @@ fn canonical_ways(moves: MoveSet, depth: usize) -> Vec<u64> {
     ways
 }
 
-/// Move sequences of length `depth` allowed by the move-order rules whose last move is
-/// outside H_A (the empty sequence for depth 0).
-fn canonical_leaves(moves: MoveSet, depth: usize) -> u64 {
+/// Whether `m` ends a phase-1 path on side `side` (0: a move outside class A; 1: a move
+/// outside class B, i.e. whose image under `SWAP_AB` is outside class A).
+fn ends_path(side: usize, m: usize) -> bool {
+    let m = if side == 0 {
+        m
+    } else {
+        conjugate_move(m, &SWAP_AB)
+    };
+    !is_a_move(m)
+}
+
+/// Move sequences of length `depth` allowed by the move-order rules whose last move ends a
+/// phase-1 path on `side` (the empty sequence for depth 0).
+fn canonical_leaves(moves: MoveSet, side: usize, depth: usize) -> u64 {
     if depth == 0 {
         return 1;
     }
     let ways = canonical_ways(moves, depth);
     (0..moves.n_moves())
-        .filter(|&m| !is_a_move(m))
+        .filter(|&m| ends_path(side, m))
         .map(|m| ways[m])
         .sum()
 }
 
-/// Runs the search on `cube` up to depth `d` with each thread count and checks the leaf count.
+/// Runs the search on `cube` up to depth `d` with each thread count and checks the leaf count
+/// of each side.
 fn check_leaves(t: &Tables<AeSym>, cube: Cube, expect_solution: bool, d: usize, threads: &[usize]) {
-    // two variants (targets H_A and H_B), each searched at every depth 0..=D
-    let expected: u64 = 2 * (0..=d).map(|k| canonical_leaves(t.moves, k)).sum::<u64>();
+    // both sides (targets H_A and H_B) at every depth 0..=D
+    let per_side: [u64; 2] = [0, 1].map(|s| {
+        (0..=d)
+            .map(|k| canonical_leaves(t.moves, s, k))
+            .sum::<u64>()
+    });
+    let expected = per_side[0] + per_side[1];
     for &threads in threads {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -101,6 +122,7 @@ fn check_leaves(t: &Tables<AeSym>, cube: Cube, expect_solution: bool, d: usize, 
             )
         });
         assert_eq!(o.solution.is_some(), expect_solution);
+        assert_eq!(o.leaves_by_side, per_side, "{threads} threads");
         assert_eq!(o.leaves, expected, "{threads} threads");
     }
 }
