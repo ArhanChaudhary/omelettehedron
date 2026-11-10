@@ -231,7 +231,8 @@ export function threadSpawn(control) {
  * whether it could.
  */
 export function cancel(control) {
-  if (!control || !(control.buffer instanceof SharedArrayBuffer)) return false;
+  const shared = typeof SharedArrayBuffer !== 'undefined' && control?.buffer instanceof SharedArrayBuffer;
+  if (!shared) return false;
   Atomics.add(control, CANCEL_WORD, 1);
   return true;
 }
