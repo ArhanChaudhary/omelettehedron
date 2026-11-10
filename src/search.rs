@@ -655,8 +655,8 @@ struct Tree {
     kids: Vec<Option<(u32, u32)>>,
 }
 
-/// FTO_FULL_PROOF=1 turns off the early end of optimality proofs (see `solve`), so that
-/// scripts/check-optimal.sh can compare its results with the full proof.
+/// `FTO_FULL_PROOF=1` turns off the early end of optimality proofs (see `solve`), so that
+/// `scripts/check-optimal.sh` can compare its results with the full proof.
 fn full_proof() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("FTO_FULL_PROOF").is_ok_and(|v| v == "1"))
