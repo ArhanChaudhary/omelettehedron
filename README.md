@@ -5,7 +5,7 @@ A fast two-phase solver for the face-turning octahedron (FTO), written in Rust.
 * **Phase 1** brings the puzzle into H_A, the positions that can be solved by turning
   only the four class-A faces U, F, BR and BL.
 * **Phase 2** finishes with those faces only. Its 933,120 positions are fully tabulated, so it
-  is an O(length) lookup, and its solutions are optimal even among all-move solutions.
+  is an O(length) lookup, and its solutions are optimal even among all face-turn solutions.
 
 Phase 1 is an IDA* search guided by pruning tables. See [docs/PHASES.md](docs/PHASES.md)
 for why this split was chosen and how it compares with alternatives,
@@ -104,17 +104,17 @@ with a message if not.
 
 | `--tier` | Memory | Generation (48 cores) | Contents |
 |---|---|---|---|
-| `small` | ~260 MB | ~1 s | A-centre/edge table without edge chirality |
-| `medium` | ~1.2 GB | ~7 s | full A-centre/edge table (288-fold symmetry) |
+| `small` | ~135 MB | ~1 s | A-centre/edge table without edge chirality |
+| `medium` | ~1.0 GB | ~7 s | full A-centre/edge table (288-fold symmetry) |
 | `large` | ~8 GB | ~30 s | medium + joint corner/B-centre/edge-triple table (about 2x fewer nodes) |
-| `huge` | ~31 GB | ~3 min | relabel-only A-centre/edge table (cheaper lookups) + the joint table |
+| `huge` | ~30 GB | ~3 min | relabel-only A-centre/edge table (cheaper lookups) + the joint table |
 
 With `FTO_HUGE1G=1`, tables of 256 MB or more are placed on 1 GiB pages when the system has
 reserved them (`echo N > /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages` as root; the
 large tier needs 9): optimal proofs about 4% faster with the A-centre/edge table on a 1 GiB page.
 Without reserved pages the tables use transparent huge pages.
 
-All tiers also use the 89 MB corner/B-centre table and the in-memory phase-2 table. With
+All tiers also use the 4.7 MB corner/B-centre table and the in-memory phase-2 table. With
 `--moves slice` every tier has its own set of tables of the same sizes (names ending in
 `-slice`); `gen --tier T --moves slice` generates them ahead of time.
 Generation needs about the memory of the tier (peak 8.1 GB for `large`, 29 GB for `huge`); on
@@ -126,8 +126,8 @@ disk is a large part of its time.
 ```sh
 target/release/omelettehedron bench --tier large -N 40 -t 5       # 40 seeded random positions, 5 s each
 target/release/omelettehedron bench --tier large -N 20 -t 5 -j 1  # single-threaded
-scripts/bench.sh <label> [tier]                 # the standard set used during optimisation
-scripts/bench-opt.sh <label> [tier]             # optimal mode: time to prove optimality
+scripts/bench.sh <label> <tier>                 # the standard set used during optimisation
+scripts/bench-opt.sh <label> <tier>             # optimal mode: time to prove optimality
 scripts/bench-randopt.sh <label> <tier>         # optimal mode on random positions (slow)
 scripts/compare.py <before> <after>             # markdown comparison of two runs
 ```
