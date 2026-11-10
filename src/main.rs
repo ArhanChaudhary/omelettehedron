@@ -20,8 +20,9 @@ struct Cli {
 
 #[derive(clap::Args, Clone)]
 struct TableArgs {
-    /// Pruning-table size: small (~260 MB), medium (~1.2 GB), large (~8 GB) or huge (~31 GB)
-    #[arg(long, value_enum, default_value = "medium")]
+    /// Pruning-table size (required; there is no default): small (~260 MB), medium (~1.2 GB),
+    /// large (~8 GB) or huge (~31 GB). Larger tiers search fewer nodes.
+    #[arg(long, value_enum)]
     tier: Tier,
     /// Directory for pruning tables (default: $FTO_TABLES or ./tables)
     #[arg(long)]

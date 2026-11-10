@@ -4,7 +4,7 @@
 # Writes bench-results/<label>-{mt,st}.json. Positions are seeded random states.
 set -euo pipefail
 label=${1:?label}
-tier=${2:-medium}
+tier=${2:?tier (small|medium|large|huge)}
 cd "$(dirname "$0")/.."
 cargo build --release -q
 bin=target/release/fto

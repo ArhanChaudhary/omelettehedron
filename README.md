@@ -38,19 +38,19 @@ orientation. Internally the front corner is held fixed.
 
 ```sh
 # optimal solution (default when no stopping rule is given)
-target/release/fto solve "U R' BL F D B' L BR"
+target/release/fto solve --tier large "U R' BL F D B' L BR"
 
 # stop after 2 seconds, printing every improvement as it is found
-target/release/fto solve -t 2 -p improvements "R U' L F' BR B' ..."
+target/release/fto solve --tier large -t 2 -p improvements "R U' L F' BR B' ..."
 
 # stop at the first solution of at most 22 moves
-target/release/fto solve -l 22 "..."
+target/release/fto solve --tier large -l 22 "..."
 
 # stop after 1000 solutions (every phase-2 completion counts, even if longer than the best)
-target/release/fto solve -n 1000 "..."
+target/release/fto solve --tier large -n 1000 "..."
 
 # one scramble per line on stdin
-target/release/fto solve -t 1 < scrambles.txt
+target/release/fto solve --tier large -t 1 < scrambles.txt
 ```
 
 Stopping rules can be combined; the search stops when any of them triggers. `-j N` sets the
@@ -58,22 +58,24 @@ thread count (default: all cores).
 
 ### Pruning tables
 
-Tables are generated on first use. They are written to `./tables`, or to `--tables DIR` or
+`--tier` is required (there is no default size): choose the largest tier that fits
+comfortably in RAM. Tables are generated on first use. They are written to `./tables`, or to `--tables DIR` or
 `$FTO_TABLES` if given. `fto gen --tier T` generates them ahead of time.
 
-| `--tier` | Memory | Generation (48 cores) | Notes |
+| `--tier` | Memory | Generation (48 cores) | Contents |
 |---|---|---|---|
 | `small` | ~260 MB | ~5 s | A-centre/edge table without edge chirality |
-| `medium` (default) | ~1.2 GB | ~20 s | full A-centre/edge table, 288-fold symmetry |
-| `large` | ~23 GB | ~5 min | same information with cheaper lookups |
+| `medium` | ~1.2 GB | ~20 s | full A-centre/edge table (288-fold symmetry) |
+| `large` | ~8 GB | ~2.5 min | medium + joint corner/B-centre/edge-triple table (about 2x fewer nodes) |
+| `huge` | ~31 GB | ~5 min | relabel-only A-centre/edge table (cheaper lookups) + the joint table |
 
 All tiers also use the 89 MB corner/B-centre table and the in-memory phase-2 table.
 
 ## Benchmarks
 
 ```sh
-target/release/fto bench -N 40 -t 5             # 40 seeded random positions, 5 s each
-target/release/fto bench -N 20 -t 5 -j 1        # single-threaded
+target/release/fto bench --tier large -N 40 -t 5       # 40 seeded random positions, 5 s each
+target/release/fto bench --tier large -N 20 -t 5 -j 1  # single-threaded
 scripts/bench.sh <label> [tier]                 # the standard set used during optimisation
 scripts/compare.py <before> <after>             # markdown comparison of two runs
 ```

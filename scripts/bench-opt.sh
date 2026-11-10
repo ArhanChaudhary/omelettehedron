@@ -3,7 +3,7 @@
 # usage: scripts/bench-opt.sh <label> [tier]   -> bench-results/<label>-opt{mt,st}.json
 set -euo pipefail
 label=${1:?label}
-tier=${2:-large}
+tier=${2:?tier (small|medium|large|huge)}
 cd "$(dirname "$0")/.."
 cargo build --release -q
 bin=target/release/fto
