@@ -138,40 +138,6 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         false
     }
 
-    #[inline(always)]
-    /// A child that survives the phase-1 bound, with its exact bounds on both classes.
-    fn child(&self, t: &Task, m: usize, budget: usize) -> Option<Task> {
-        let tb = self.t;
-        let f = fast();
-        let y = f.apply(&t.x, &masks(&t.x.e), m);
-        let hc = decode(t.h_cb, tb.cb.tab.get(CbTable::index_fast(f, &y)));
-        if hc as usize > budget {
-            return None;
-        }
-        let ha = decode(t.h_ae, tb.ae.get(tb.ae_ix.index_fast(f, &y, f.a_rank(&y))));
-        if ha as usize > budget {
-            return None;
-        }
-        let yb = f.apply(&t.xb, &masks(&t.xb.e), self.mb[m]);
-        let hbc = decode(t.hb_cb, tb.cb.tab.get(CbTable::index_fast(f, &yb)));
-        let hba = decode(
-            t.hb_ae,
-            tb.ae.get(tb.ae_ix.index_fast(f, &yb, f.a_rank(&yb))),
-        );
-        let mut path = t.path.clone();
-        path.push(m);
-        Some(Task {
-            v: t.v,
-            path,
-            x: y,
-            h_ae: ha,
-            h_cb: hc,
-            xb: yb,
-            hb_ae: hba,
-            hb_cb: hbc,
-        })
-    }
-
     fn leaf(&self, v: usize, path: &[usize]) {
         let var = &self.variants[v];
         let cube = var.cube.apply_seq(path);
@@ -429,55 +395,149 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         }
     }
 
-    /// Children of a task that survive pruning under `bound`.
-    fn expand(&self, t: &Task, bound: usize) -> Vec<Task> {
-        let g = t.path.len();
+    /// All children of a task (unpruned), with their exact bounds on both classes. The
+    /// lookups of all children are issued before any is read.
+    fn expand_all(&self, t: &Task) -> Vec<Task> {
+        let tb = self.t;
+        let f = fast();
         let last = t.path.last().copied().unwrap_or(usize::MAX);
-        let budget = bound - g - 1;
-        let mut out = vec![];
+        let em = masks(&t.x.e);
+        let emb = masks(&t.xb.e);
+        let mut ys = [t.x; N_MOVES];
+        let mut yb = [t.xb; N_MOVES];
+        let mut ms = [0usize; N_MOVES];
+        let mut n = 0;
         for m in 0..N_MOVES {
-            if !allowed_after(last, m) || (budget == 0 && is_a_move(m)) {
+            if !allowed_after(last, m) {
                 continue;
             }
-            if let Some(c) = self.child(t, m, budget) {
-                out.push(c);
-            }
+            ys[n] = f.apply(&t.x, &em, m);
+            yb[n] = f.apply(&t.xb, &emb, self.mb[m]);
+            ms[n] = m;
+            n += 1;
         }
-        out
+        let mut ia = [0usize; N_MOVES];
+        let mut iab = [0usize; N_MOVES];
+        let mut ic = [0usize; N_MOVES];
+        let mut icb = [0usize; N_MOVES];
+        tb.ae_ix.index_batch_fast(f, &ys[..n], &mut ia[..n]);
+        tb.ae_ix.index_batch_fast(f, &yb[..n], &mut iab[..n]);
+        for i in 0..n {
+            prefetch(&tb.ae.data[ia[i] >> 5]);
+            prefetch(&tb.ae.data[iab[i] >> 5]);
+            ic[i] = CbTable::index_fast(f, &ys[i]);
+            prefetch(&tb.cb.tab.data[ic[i] >> 5]);
+            icb[i] = CbTable::index_fast(f, &yb[i]);
+            prefetch(&tb.cb.tab.data[icb[i] >> 5]);
+        }
+        (0..n)
+            .map(|i| {
+                let mut path = Vec::with_capacity(t.path.len() + 1);
+                path.extend_from_slice(&t.path);
+                path.push(ms[i]);
+                Task {
+                    v: t.v,
+                    path,
+                    x: ys[i],
+                    h_ae: decode(t.h_ae, tb.ae.get(ia[i])),
+                    h_cb: decode(t.h_cb, tb.cb.tab.get(ic[i])),
+                    xb: yb[i],
+                    hb_ae: decode(t.hb_ae, tb.ae.get(iab[i])),
+                    hb_cb: decode(t.hb_cb, tb.cb.tab.get(icb[i])),
+                }
+            })
+            .collect()
     }
 
-    /// Tasks for one iteration: the roots, expanded level by level (in parallel) until there
-    /// are enough tasks for the thread pool. The depth stays small because most of an IDA*
-    /// iteration's work lies in the middle levels, which must not be explored serially.
-    fn tasks(&self, bound: usize, threads: usize) -> Vec<Task> {
-        let mut tasks: Vec<Task> = self
-            .variants
-            .iter()
-            .enumerate()
-            .filter(|(_, var)| var.h_ae.max(var.h_cb) as usize <= bound)
-            .map(|(v, var)| Task {
-                v,
-                path: vec![],
-                x: var.root,
-                h_ae: var.h_ae,
-                h_cb: var.h_cb,
-                xb: var.root_b,
-                hb_ae: var.hb_ae,
-                hb_cb: var.hb_cb,
-            })
+    /// Tasks for one iteration (as node ids of `tree`): the roots, expanded level by level
+    /// until there are enough tasks for the thread pool. The depth stays small because most
+    /// of an IDA* iteration's work lies in the middle levels, which must not be explored
+    /// serially. The tree keeps every node evaluated by earlier iterations with all its
+    /// children, so a later iteration only evaluates nodes it has not seen and re-filters.
+    fn tasks(&self, tree: &mut Tree, bound: usize, threads: usize) -> Vec<u32> {
+        if tree.nodes.is_empty() {
+            for (v, var) in self.variants.iter().enumerate() {
+                tree.nodes.push(Task {
+                    v,
+                    path: vec![],
+                    x: var.root,
+                    h_ae: var.h_ae,
+                    h_cb: var.h_cb,
+                    xb: var.root_b,
+                    hb_ae: var.hb_ae,
+                    hb_cb: var.hb_cb,
+                });
+                tree.kids.push(None);
+            }
+        }
+        let alive = |t: &Task| t.h_ae.max(t.h_cb) as usize + t.path.len() <= bound;
+        let mut front: Vec<u32> = (0..self.variants.len() as u32)
+            .filter(|&i| alive(&tree.nodes[i as usize]))
             .collect();
         let max_k = bound.saturating_sub(4).min(MAX_SPLIT);
         let mut k = 0;
         // (single-threaded runs are split too, so per-task decisions can change mid-iteration)
-        while tasks.len() < 64 * threads && k < max_k {
-            tasks = tasks
-                .par_iter()
-                .flat_map_iter(|t| self.expand(t, bound))
+        while front.len() < 64 * threads && k < max_k {
+            let need: Vec<u32> = front
+                .iter()
+                .copied()
+                .filter(|&i| tree.kids[i as usize].is_none())
                 .collect();
+            if !need.is_empty() {
+                let nodes = &tree.nodes;
+                let kids: Vec<Vec<Task>> = if threads > 1 && need.len() >= par_min() {
+                    need.par_iter()
+                        .map(|&i| self.expand_all(&nodes[i as usize]))
+                        .collect()
+                } else {
+                    need.iter()
+                        .map(|&i| self.expand_all(&nodes[i as usize]))
+                        .collect()
+                };
+                for (&i, ch) in need.iter().zip(kids) {
+                    let lo = tree.nodes.len() as u32;
+                    tree.nodes.extend(ch);
+                    tree.kids[i as usize] = Some((lo, tree.nodes.len() as u32));
+                }
+                tree.kids.resize(tree.nodes.len(), None);
+            }
+            let mut next = Vec::with_capacity(front.len() * 13);
+            for &i in &front {
+                let (lo, hi) = tree.kids[i as usize].unwrap();
+                next.extend((lo..hi).filter(|&c| alive(&tree.nodes[c as usize])));
+            }
+            front = next;
             k += 1;
         }
-        tasks
+        front
     }
+}
+
+/// The top levels of the search tree, kept across the iterations of one solve.
+#[derive(Default)]
+struct Tree {
+    nodes: Vec<Task>,
+    /// children of each node (a contiguous range of `nodes`), once evaluated
+    kids: Vec<Option<(u32, u32)>>,
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
+}
+
+/// Fewest nodes to expand in parallel (fewer are expanded on the calling thread).
+fn par_min() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| env_usize("FTO_PARMIN", 64))
+}
+
+/// Iterations predicted to evaluate fewer nodes than this run on the calling thread.
+fn serial_nodes() -> u64 {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| env_usize("FTO_SERIAL", 30000)) as u64
 }
 
 /// Deepest level at which an iteration is split into parallel tasks.
@@ -542,84 +602,91 @@ pub fn solve<I: AeIndex>(
     let mut optimal = false;
     let threads = rayon::current_num_threads();
     let mut depth = lo;
-    let mut prev_stats: std::collections::HashMap<(usize, [u8; 8]), f32> =
-        std::collections::HashMap::new();
+    let mut tree = Tree::default();
+    // ordering statistic of each tree node from the previous iteration (0 if not a task then)
+    let mut node_stat: Vec<f32> = vec![];
+    let mut prev_ids: Vec<u32> = vec![];
+    let mut prev_nodes: Option<u64> = None;
     loop {
         if depth >= sh.best_len.load(Ordering::Relaxed) {
             optimal = true;
             break;
         }
-        let mut tasks = sh.tasks(depth, threads);
+        let mut ids = sh.tasks(&mut tree, depth, threads);
         // Order the tasks by the statistics of the same prefixes in the previous iteration, so
         // that the most promising subtrees are searched first (egg-solver's job ordering).
-        let key = |t: &Task| -> (usize, [u8; 8]) {
-            let mut k = [u8::MAX; 8];
-            for (i, &m) in t.path.iter().take(8).enumerate() {
-                k[i] = m as u8;
-            }
-            (t.v, k)
-        };
-        if !prev_stats.is_empty() {
-            let mut keyed: Vec<(f32, Task)> = tasks
-                .into_iter()
-                .map(|t| (*prev_stats.get(&key(&t)).unwrap_or(&0.0), t))
-                .collect();
-            keyed.sort_by(|a, b| b.0.total_cmp(&a.0));
-            tasks = keyed.into_iter().map(|(_, t)| t).collect();
+        node_stat.resize(tree.nodes.len(), 0.0);
+        if !prev_ids.is_empty() {
+            ids.sort_by(|a, b| node_stat[*b as usize].total_cmp(&node_stat[*a as usize]));
         }
         // Pruning against the best length changes how many (non-improving) solutions are
         // reached, so it is off when the user counts solutions.
         let count_mode = limits.max_solutions.is_some();
         let t_split = start.elapsed().as_secs_f64();
-        let stats: Vec<std::sync::atomic::AtomicU32> = (0..tasks.len())
+        let stats: Vec<std::sync::atomic::AtomicU32> = (0..ids.len())
             .map(|_| std::sync::atomic::AtomicU32::new(0))
             .collect();
         let next = std::sync::atomic::AtomicUsize::new(0);
-        // Workers take tasks strictly in order from a shared counter.
-        rayon::scope(|scope| {
-            for _ in 0..threads {
-                scope.spawn(|_| {
-                    let mut path: Vec<usize> = Vec::with_capacity(64);
-                    // the per-thread counter persists across tasks so time checks happen regularly
-                    let mut nodes = 0u64;
-                    loop {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        if i >= tasks.len() || sh.stop.load(Ordering::Relaxed) || sh.time_up() {
-                            break;
-                        }
-                        let task = &tasks[i];
-                        path.clear();
-                        path.extend_from_slice(&task.path);
-                        let before = nodes;
-                        let mut stat = 0f32;
-                        let use_b = !count_mode && sh.best_len.load(Ordering::Relaxed) < usize::MAX;
-                        if use_b {
-                            sh.dfs::<true>(
-                                task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb,
-                                task.hb_ae, task.hb_cb, depth, &mut nodes, &mut stat,
-                            );
-                        } else {
-                            sh.dfs::<false>(
-                                task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb,
-                                task.hb_ae, task.hb_cb, depth, &mut nodes, &mut stat,
-                            );
-                        }
-                        stats[i].store(stat.to_bits(), Ordering::Relaxed);
-                        sh.nodes.fetch_add(nodes - before, Ordering::Relaxed);
-                    }
-                });
+        let nodes_before = sh.nodes.load(Ordering::Relaxed);
+        let tree_ref = &tree;
+        let worker = || {
+            let mut path: Vec<usize> = Vec::with_capacity(64);
+            // the per-thread counter persists across tasks so time checks happen regularly
+            let mut nodes = 0u64;
+            loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                if i >= ids.len() || sh.stop.load(Ordering::Relaxed) || sh.time_up() {
+                    break;
+                }
+                let task = &tree_ref.nodes[ids[i] as usize];
+                path.clear();
+                path.extend_from_slice(&task.path);
+                let before = nodes;
+                let mut stat = 0f32;
+                let use_b = !count_mode && sh.best_len.load(Ordering::Relaxed) < usize::MAX;
+                if use_b {
+                    sh.dfs::<true>(
+                        task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb,
+                        task.hb_ae, task.hb_cb, depth, &mut nodes, &mut stat,
+                    );
+                } else {
+                    sh.dfs::<false>(
+                        task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb,
+                        task.hb_ae, task.hb_cb, depth, &mut nodes, &mut stat,
+                    );
+                }
+                stats[i].store(stat.to_bits(), Ordering::Relaxed);
+                sh.nodes.fetch_add(nodes - before, Ordering::Relaxed);
             }
+        };
+        // Small iterations run on this thread: waking the pool costs more than they do.
+        let predicted = prev_nodes.map_or(if depth < 14 { 0 } else { u64::MAX }, |n| {
+            n.saturating_mul(16)
         });
-        prev_stats = tasks
-            .iter()
-            .zip(stats.iter())
-            .map(|(t, s)| (key(t), f32::from_bits(s.load(Ordering::Relaxed))))
-            .collect();
+        if threads == 1 || predicted < serial_nodes() {
+            worker();
+        } else {
+            // Workers take tasks strictly in order from a shared counter.
+            rayon::scope(|scope| {
+                for _ in 0..threads.min(ids.len()) {
+                    scope.spawn(|_| worker());
+                }
+            });
+        }
+        prev_nodes = Some(sh.nodes.load(Ordering::Relaxed) - nodes_before);
+        for &i in &prev_ids {
+            node_stat[i as usize] = 0.0;
+        }
+        for (i, &id) in ids.iter().enumerate() {
+            node_stat[id as usize] = f32::from_bits(stats[i].load(Ordering::Relaxed));
+        }
+        let n_tasks = ids.len();
+        prev_ids = ids;
         if std::env::var_os("FTO_DEBUG").is_some() {
             eprintln!("  depth {depth}: split done at {t_split:.4}s");
             eprintln!(
                 "  depth {depth}: {} tasks, {} nodes, {} solutions, best {:?}, {:.3}s",
-                tasks.len(),
+                n_tasks,
                 sh.nodes.load(Ordering::Relaxed),
                 sh.count.load(Ordering::Relaxed),
                 sh.best_len.load(Ordering::Relaxed),
