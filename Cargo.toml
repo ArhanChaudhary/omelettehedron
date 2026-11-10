@@ -1,5 +1,5 @@
 [package]
-name = "fto-solver"
+name = "omelettehedron"
 version = "0.1.0"
 edition = "2021"
 description = "Fast two-phase solver for the face-turning octahedron (FTO)"
@@ -25,5 +25,5 @@ debug = 1
 opt-level = 3
 
 [[bin]]
-name = "fto"
+name = "omelettehedron"
 path = "src/main.rs"

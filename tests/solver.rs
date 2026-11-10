@@ -1,10 +1,10 @@
 //! End-to-end correctness tests (use the small table tier, built in memory once).
 
-use fto_solver::coord::*;
-use fto_solver::cube::*;
-use fto_solver::notation::*;
-use fto_solver::search::*;
-use fto_solver::tables::*;
+use omelettehedron::coord::*;
+use omelettehedron::cube::*;
+use omelettehedron::notation::*;
+use omelettehedron::search::*;
+use omelettehedron::tables::*;
 use rand::{Rng, SeedableRng};
 use std::collections::HashMap;
 use std::sync::OnceLock;
