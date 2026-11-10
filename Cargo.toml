@@ -5,6 +5,10 @@ edition = "2021"
 description = "Fast two-phase solver for the face-turning octahedron (FTO)"
 license = "MIT"
 
+[features]
+# Use the portable scalar code instead of SIMD (to test that path on any machine).
+scalar = []
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 rayon = "1"

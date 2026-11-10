@@ -47,7 +47,11 @@ pub struct FastTables {
     /// use the BMI2 `pext` instruction for `compress` (it is microcoded and slow on AMD
     /// before Zen 3)
     #[cfg_attr(
-        not(all(target_arch = "x86_64", target_feature = "bmi2")),
+        not(all(
+            target_arch = "x86_64",
+            target_feature = "bmi2",
+            not(feature = "scalar")
+        )),
         allow(dead_code)
     )]
     pext: bool,
@@ -280,7 +284,11 @@ impl FastTables {
     /// Bits of `x` at the set positions of the 12-bit `mask`, packed (x must be a subset).
     #[inline(always)]
     fn compress(&self, x: u32, mask: u32) -> u32 {
-        #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+        #[cfg(all(
+            target_arch = "x86_64",
+            target_feature = "bmi2",
+            not(feature = "scalar")
+        ))]
         if self.pext {
             // SAFETY: BMI2 is enabled for this build
             return unsafe { core::arch::x86_64::_pext_u32(x, mask) };
@@ -393,7 +401,11 @@ pub fn fast() -> &'static FastTables {
 #[inline(always)]
 #[allow(clippy::cast_ptr_alignment)] // unaligned loads and stores
 pub fn shuffle(v: &[u8; 16], s: &[u8; 16]) -> [u8; 16] {
-    #[cfg(all(target_arch = "x86_64", target_feature = "ssse3"))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "ssse3",
+        not(feature = "scalar")
+    ))]
     // SAFETY: SSSE3 is enabled for this build; loads/stores are unaligned-safe
     unsafe {
         use core::arch::x86_64::*;
@@ -405,7 +417,7 @@ pub fn shuffle(v: &[u8; 16], s: &[u8; 16]) -> [u8; 16] {
         _mm_storeu_si128(o.as_mut_ptr().cast::<__m128i>(), r);
         o
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", not(feature = "scalar")))]
     // SAFETY: NEON is baseline on aarch64; the loads and the store are of 16-byte arrays
     unsafe {
         use core::arch::aarch64::*;
@@ -415,7 +427,11 @@ pub fn shuffle(v: &[u8; 16], s: &[u8; 16]) -> [u8; 16] {
         vst1q_u8(o.as_mut_ptr(), vqtbl1q_u8(vld1q_u8(v.as_ptr()), idx));
         o
     }
-    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_feature = "simd128",
+        not(feature = "scalar")
+    ))]
     // SAFETY: simd128 is enabled for this build; v128 loads and stores may be unaligned
     unsafe {
         use core::arch::wasm32::*;
@@ -428,11 +444,14 @@ pub fn shuffle(v: &[u8; 16], s: &[u8; 16]) -> [u8; 16] {
         );
         o
     }
-    #[cfg(not(any(
-        all(target_arch = "x86_64", target_feature = "ssse3"),
-        target_arch = "aarch64",
-        all(target_arch = "wasm32", target_feature = "simd128")
-    )))]
+    #[cfg(any(
+        feature = "scalar",
+        not(any(
+            all(target_arch = "x86_64", target_feature = "ssse3"),
+            target_arch = "aarch64",
+            all(target_arch = "wasm32", target_feature = "simd128")
+        ))
+    ))]
     {
         std::array::from_fn(|i| {
             if s[i] & 0x80 != 0 {
@@ -445,7 +464,7 @@ pub fn shuffle(v: &[u8; 16], s: &[u8; 16]) -> [u8; 16] {
 }
 
 /// Bit i set for each lane i of `eq` that is all ones (NEON has no `movemask`).
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(feature = "scalar")))]
 #[inline(always)]
 unsafe fn neon_movemask(eq: core::arch::aarch64::uint8x16_t) -> u16 {
     use core::arch::aarch64::*;
@@ -461,7 +480,11 @@ unsafe fn neon_movemask(eq: core::arch::aarch64::uint8x16_t) -> u16 {
 #[inline(always)]
 #[allow(clippy::cast_ptr_alignment)] // unaligned load
 pub fn label_mask(v: &[u8; 16], l: u8) -> u16 {
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "sse2",
+        not(feature = "scalar")
+    ))]
     // SAFETY: SSE2 is baseline on x86_64
     unsafe {
         use core::arch::x86_64::*;
@@ -469,23 +492,30 @@ pub fn label_mask(v: &[u8; 16], l: u8) -> u16 {
         let eq = _mm_cmpeq_epi8(x, _mm_set1_epi8(l.cast_signed()));
         (_mm_movemask_epi8(eq).cast_unsigned() & 0xfff) as u16
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", not(feature = "scalar")))]
     // SAFETY: NEON is baseline on aarch64; the load is of a 16-byte array
     unsafe {
         use core::arch::aarch64::*;
         neon_movemask(vceqq_u8(vld1q_u8(v.as_ptr()), vdupq_n_u8(l))) & 0xfff
     }
-    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_feature = "simd128",
+        not(feature = "scalar")
+    ))]
     // SAFETY: simd128 is enabled for this build; v128 loads may be unaligned
     unsafe {
         use core::arch::wasm32::*;
         u8x16_bitmask(u8x16_eq(v128_load(v.as_ptr().cast()), u8x16_splat(l))) & 0xfff
     }
-    #[cfg(not(any(
-        all(target_arch = "x86_64", target_feature = "sse2"),
-        target_arch = "aarch64",
-        all(target_arch = "wasm32", target_feature = "simd128")
-    )))]
+    #[cfg(any(
+        feature = "scalar",
+        not(any(
+            all(target_arch = "x86_64", target_feature = "sse2"),
+            target_arch = "aarch64",
+            all(target_arch = "wasm32", target_feature = "simd128")
+        ))
+    ))]
     {
         let mut m = 0u16;
         for p in 0..12 {
@@ -501,7 +531,11 @@ pub fn label_mask(v: &[u8; 16], l: u8) -> u16 {
 #[inline(always)]
 #[allow(clippy::cast_ptr_alignment)] // unaligned load
 pub fn masks(v: &[u8; 16]) -> [u16; 4] {
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "sse2",
+        not(feature = "scalar")
+    ))]
     // SAFETY: SSE2 is baseline on x86_64
     unsafe {
         use core::arch::x86_64::*;
@@ -511,25 +545,32 @@ pub fn masks(v: &[u8; 16]) -> [u16; 4] {
             (_mm_movemask_epi8(eq).cast_unsigned() & 0xfff) as u16
         })
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", not(feature = "scalar")))]
     // SAFETY: NEON is baseline on aarch64; the load is of a 16-byte array
     unsafe {
         use core::arch::aarch64::*;
         let x = vld1q_u8(v.as_ptr());
         std::array::from_fn(|l| neon_movemask(vceqq_u8(x, vdupq_n_u8(l as u8))) & 0xfff)
     }
-    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_feature = "simd128",
+        not(feature = "scalar")
+    ))]
     // SAFETY: simd128 is enabled for this build; v128 loads may be unaligned
     unsafe {
         use core::arch::wasm32::*;
         let x = v128_load(v.as_ptr().cast());
         std::array::from_fn(|l| u8x16_bitmask(u8x16_eq(x, u8x16_splat(l as u8))) & 0xfff)
     }
-    #[cfg(not(any(
-        all(target_arch = "x86_64", target_feature = "sse2"),
-        target_arch = "aarch64",
-        all(target_arch = "wasm32", target_feature = "simd128")
-    )))]
+    #[cfg(any(
+        feature = "scalar",
+        not(any(
+            all(target_arch = "x86_64", target_feature = "sse2"),
+            target_arch = "aarch64",
+            all(target_arch = "wasm32", target_feature = "simd128")
+        ))
+    ))]
     {
         let mut m = [0u16; 4];
         for p in 0..12 {
