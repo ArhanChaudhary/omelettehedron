@@ -52,3 +52,16 @@ The huge tier holds the same A-centre/edge values as medium with a cheaper index
 slower than large (0.85x nodes/s), so large is the fastest tier. Tables are generated on first use
 and loaded from disk afterwards; all tiers include the 4.7 MB symmetry-reduced corner/B-centre
 table and the in-memory phase-2 table.
+
+## WebAssembly (small tier)
+
+Measured in Bun (JavaScriptCore) on the same machine; see the README's WebAssembly section.
+
+| | native small tier | wasm, 1 thread | wasm, 48 threads |
+|---|---|---|---|
+| table generation | 27 s (1T), 1.2 s (48T) | 32.7 s | 16.4 s |
+| search speed | 58 M nodes/s (1T) | 23 M nodes/s | 74 M nodes/s |
+| random positions solved within 5 s | 9 of 10 (1T) | 4 of 10 | 10 of 10 |
+
+The modules are 0.55 MB each. Threads scale poorly in JavaScriptCore because its WebAssembly
+atomic loads are slow under contention.
