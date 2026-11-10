@@ -4,7 +4,8 @@
 //! move or a symmetry is a single byte shuffle (`pshufb`). Ranks are computed from per-label
 //! bit masks with small tables, and edge chirality is updated with bitset lookups. All of these
 //! tables fit in L1/L2, so the only random DRAM accesses left per node are the pruning tables
-//! and the 1.5 MB symmetry-class table.
+//! and the 1.5 MB symmetry-class table. (+35% / +42% nodes/s at 48T / 1T when added,
+//! opt/fastcoord.)
 
 use crate::coord::*;
 use crate::cube::*;
@@ -48,7 +49,8 @@ pub struct FastTables {
     pext: bool,
 }
 
-/// Whether `pext` is fast on this CPU (`FTO_PEXT=0`/`1` overrides).
+/// Whether `pext` is fast on this CPU (`FTO_PEXT=0`/`1` overrides). Using it where it is fast
+/// is part of the opt/micro-compute stack (1.29x / 1.28x nodes/s at 48T / 1T as a whole).
 fn fast_pext() -> bool {
     if let Some(v) = std::env::var_os("FTO_PEXT") {
         return v != "0";
