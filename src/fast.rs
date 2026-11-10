@@ -42,6 +42,36 @@ pub struct FastTables {
     repos_gather: [[u8; 16]; 32],
     relab_bits: [[u8; 16]; 32],
     pub(crate) flip_t: Box<[[u64; 64]; 32]>,
+    /// use the BMI2 `pext` instruction for `compress` (it is microcoded and slow on AMD
+    /// before Zen 3)
+    pext: bool,
+}
+
+/// Whether `pext` is fast on this CPU (FTO_PEXT=0/1 overrides).
+fn fast_pext() -> bool {
+    if let Some(v) = std::env::var_os("FTO_PEXT") {
+        return v != "0";
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if !std::arch::is_x86_feature_detected!("bmi2") {
+            return false;
+        }
+        // SAFETY: cpuid is available on every x86_64 CPU
+        let (v0, v1) = unsafe {
+            (
+                core::arch::x86_64::__cpuid(0),
+                core::arch::x86_64::__cpuid(1),
+            )
+        };
+        let amd = (v0.ebx, v0.edx, v0.ecx) == (0x6874_7541, 0x6974_6e65, 0x444d_4163);
+        let hygon = (v0.ebx, v0.edx, v0.ecx) == (0x6f67_7948, 0x6e65_476e, 0x656e_6975);
+        let family = ((v1.eax >> 8) & 0xf) + ((v1.eax >> 20) & 0xff);
+        // AMD families 0x15..0x18 (Excavator, Zen 1/2, Hygon) implement pext in microcode
+        !((amd || hygon) && family < 0x19)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    false
 }
 
 fn boxed<T: Copy, const N: usize>(v: &[T]) -> Box<[T; N]> {
@@ -187,6 +217,7 @@ impl FastTables {
             repos_gather,
             relab_bits,
             flip_t: boxed(&flip_t),
+            pext: fast_pext(),
         }
     }
 
@@ -230,6 +261,11 @@ impl FastTables {
     /// Bits of `x` at the set positions of the 12-bit `mask`, packed (x must be a subset).
     #[inline(always)]
     fn compress(&self, x: u32, mask: u32) -> u32 {
+        #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+        if self.pext {
+            // SAFETY: BMI2 is enabled for this build
+            return unsafe { core::arch::x86_64::_pext_u32(x, mask) };
+        }
         let lo = (mask & 63) as usize;
         let hi = ((mask >> 6) & 63) as usize;
         let a = self.cmp6[lo][(x & 63) as usize] as u32;
