@@ -448,7 +448,12 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         let x = [&task.x[a], &task.x[b]];
         let (ha, hc) = ([task.h_ae[a], task.h_ae[b]], [task.h_cb[a], task.h_cb[b]]);
         self.expand_any(kind, r, x, last, budget, fr, ctr);
-        self.stage2_any::<B>(kind, r, x, ha, hc, [NO_CB; 2], budget, fr);
+        let lim = if B {
+            self.prune_len.load(Ordering::Relaxed).saturating_sub(g + 2)
+        } else {
+            0
+        };
+        self.stage2_any::<B>(kind, r, x, ha, hc, [NO_CB; 2], budget, lim, fr);
         self.finish_any::<B>(kind, r, x, path, bound, ctr, stat, fr, frames);
     }
 
@@ -483,12 +488,13 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         h_cb: [u8; 2],
         cb_pend: [usize; 2],
         budget: usize,
+        lim: usize,
         fr: &mut Scratch<N>,
     ) {
         if sides == BOTH {
-            self.stage2::<BOTH, B>(0, x, h_ae, h_cb, cb_pend, budget, fr);
+            self.stage2::<BOTH, B>(0, x, h_ae, h_cb, cb_pend, budget, lim, fr);
         } else {
-            self.stage2::<SIDE_A, B>(r, x, h_ae, h_cb, cb_pend, budget, fr);
+            self.stage2::<SIDE_A, B>(r, x, h_ae, h_cb, cb_pend, budget, lim, fr);
         }
     }
 
@@ -604,7 +610,13 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
     /// issue the lookups of the next stages for those still alive on a side. `h_ae`, `h_cb`
     /// are the node's distances on both sides; `cb_pend[s]`, if not `NO_CB`, is the index of
     /// the node's own CB entry on side `s` (prefetched by its parent), and `h_cb[s]` its
-    /// parent's distance.
+    /// parent's distance. `lim` is the children's class-B limit (see `finish`) as of now: it
+    /// can only fall before `finish` applies it, so on a node alive on both sides, where both
+    /// sides' first bounds are known here, a side whose class-B bound already fails is dropped
+    /// at once, before its CB and joint-table lookups. In the last iteration of a full proof
+    /// (always with slices) the class-B limit equals the moves left, so there almost every
+    /// node is alive on both sides and every child that fails on one side fails on the other
+    /// (with slices optimal 1T 0.80x, 48T 0.91x time when added; face turns neutral).
     #[inline(always)]
     fn stage2<const S: u8, const B: bool>(
         &self,
@@ -614,6 +626,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         h_cb: [u8; 2],
         cb_pend: [usize; 2],
         budget: usize,
+        lim: usize,
         fr: &mut Scratch<N>,
     ) {
         let t = self.t;
@@ -652,10 +665,18 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                         continue;
                     }
                     let ha = decode(h_ae[s], t.ae.get(idx[s][i]));
-                    let ok = ha as usize <= budget;
                     has[s][i] = ha;
-                    c &= !(u8::from(!ok) << s);
-                    min_ha[s] = min_ha[s].min(if ok { ha } else { u8::MAX });
+                    c &= !(u8::from(ha as usize > budget) << s);
+                }
+                if B && S == BOTH {
+                    // (early class-B check, see above)
+                    c &= !(u8::from(has[1][i] as usize > lim)
+                        | u8::from(has[0][i] as usize > lim) << 1);
+                }
+                for s in 0..2 {
+                    if on(S, s) {
+                        min_ha[s] = min_ha[s].min(if on(c, s) { has[s][i] } else { u8::MAX });
+                    }
                 }
                 live[i] = c;
                 sel[k % N] = i as u8;
@@ -727,6 +748,11 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                     let hc = decode(h_cb[s], t.cb.tab.get(cbi[s][i]));
                     hcs[s][i] = hc;
                     c &= !(u8::from(hc as usize > budget) << s);
+                }
+                if B && S == BOTH {
+                    // (early class-B check, see above)
+                    c &= !(u8::from(hcs[1][i] as usize > lim)
+                        | u8::from(hcs[0][i] as usize > lim) << 1);
                 }
                 live[i] = c;
                 sel[k % N] = i as u8;
@@ -1000,6 +1026,12 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         // lookups read (`f1`) and child j+2 its first lookups issued (`f2`).
         let [mut f0, mut f1, mut f2] = trio.each_mut();
         let cb = budget - 1;
+        // the class-B limit of the children's children (at depth g + 2)
+        let clim = if B {
+            self.prune_len.load(Ordering::Relaxed).saturating_sub(g + 3)
+        } else {
+            0
+        };
         let sel = *sel;
         let child = |j: usize| usize::from(sel[j % N]) % N;
         // A child alive on one side is evaluated by the one-side code with that side in slot 0
@@ -1045,7 +1077,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         if n > 0 {
             let i = child(0);
             let (ha, hc, pd) = hs(i);
-            self.stage2_any::<B>(kind(i), slots(i).0, xs(i), ha, hc, pd, cb, f0);
+            self.stage2_any::<B>(kind(i), slots(i).0, xs(i), ha, hc, pd, cb, clim, f0);
         }
         for j in 0..n {
             if j + 2 < n {
@@ -1055,7 +1087,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             if j + 1 < n {
                 let i = child(j + 1);
                 let (ha, hc, pd) = hs(i);
-                self.stage2_any::<B>(kind(i), slots(i).0, xs(i), ha, hc, pd, cb, f1);
+                self.stage2_any::<B>(kind(i), slots(i).0, xs(i), ha, hc, pd, cb, clim, f1);
             }
             let i = child(j);
             path.push(ms[i] as usize);
