@@ -569,3 +569,32 @@ fn optimal_matches_brute_force_many_with_slices() {
     }
     assert_eq!(checked, 400);
 }
+
+/// A cancellation deadline (`Limits::cancel_after`) stops a search without changing it: on one
+/// thread an optimal solve with one takes exactly the nodes of one without (the target-length
+/// passes stay on), while a time limit, a stopping rule, turns them off.
+#[test]
+fn cancel_deadline_does_not_change_the_search() {
+    let t = tables();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(31);
+    for _ in 0..6 {
+        let scr = random_scramble(&mut rng, 13);
+        let (c, fr) = scramble_to_cube(&scr);
+        let plain = solve_one_thread(t, c, fr);
+        let lim = Limits {
+            cancel_after: Some(Duration::from_secs(1_000_000)),
+            ..Default::default()
+        };
+        static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+        let pool = POOL.get_or_init(|| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .unwrap()
+        });
+        let with = pool.install(|| solve(t, c, fr, &lim, Report::Quiet));
+        assert!(plain.optimal && with.optimal);
+        assert_eq!(plain.length, with.length, "{}", format_moves(&scr));
+        assert_eq!(plain.nodes, with.nodes, "{}", format_moves(&scr));
+    }
+}
