@@ -990,7 +990,7 @@ impl<I: AeIndex> Tables<I> {
         } else {
             None
         };
-        Ok(Tables {
+        let t = Tables {
             moves,
             ae_ix,
             ae,
@@ -998,7 +998,40 @@ impl<I: AeIndex> Tables<I> {
             cb,
             p2: Phase2::new(),
             cbe,
-        })
+        };
+        t.check_walks(&ae_path, &cb_path)?;
+        Ok(t)
+    }
+
+    /// A table file that passes its checksum may still have been made for another layout (an
+    /// older version's index): its values are then meaningless, and walking down it would not
+    /// end. Walk down both mod-3 tables from a few random positions: each walk must reach a
+    /// target within the table's largest distance. (A few hundred lookups; the joint table's
+    /// saturating codes cannot be walked, so only its size and checksum are checked.)
+    ///
+    /// # Errors
+    ///
+    /// If a walk does not reach a target.
+    pub fn check_walks(&self, ae_path: &Path, cb_path: &Path) -> std::io::Result<()> {
+        use rand::SeedableRng;
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0x7ab1e);
+        for _ in 0..8 {
+            let x = fast().of(&Cube::random(&mut rng));
+            let ((_, ae_ok), (_, cb_ok)) = self.walks(&x);
+            for (ok, path) in [(ae_ok, ae_path), (cb_ok, cb_path)] {
+                if !ok {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "{}: not a distance table for this version's layout (made by a \
+                             different version?); delete it to regenerate",
+                            path.display()
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Exact AE distance of a position in the metric of the tables (walks down the mod-3
@@ -1012,37 +1045,52 @@ impl<I: AeIndex> Tables<I> {
     /// If a table is not a distance table (no neighbour is one step closer), the steps walked
     /// so far (a lower bound).
     pub fn exact_fast(&self, x: &Fc) -> (u8, u8) {
+        let ((ha, _), (hc, _)) = self.walks(x);
+        (ha, hc)
+    }
+
+    /// The walks of [`Self::exact_fast`]: (steps, whether a target was reached) for AE and CB.
+    /// A walk stops after the table's largest distance, so a table of another layout cannot
+    /// make it run forever.
+    fn walks(&self, x: &Fc) -> ((u8, bool), (u8, bool)) {
         let f = fast();
         let n_moves = self.moves.n_moves();
         let ae_ix = |y: &Fc| self.ae_ix.index_fast(f, y, f.a_rank(y));
         let cb_ix = |y: &Fc| CbTable::index_fast(f, y);
         // Each step reads the values of all neighbours, with every lookup issued first.
-        let walk = |ix: &dyn Fn(&Fc) -> usize, tab: &Table2, done: &dyn Fn(&Fc) -> bool| -> u8 {
-            let mut y = *x;
-            let mut d = 0;
-            while !done(&y) {
-                let want = (tab.get(ix(&y)) + 2) % 3;
-                let em = masks(&y.e);
-                let zs: [Fc; MAX_MOVES] = std::array::from_fn(|m| {
-                    if m < n_moves {
-                        f.apply_m(&y, &em, m)
-                    } else {
-                        y
+        let walk =
+            |ix: &dyn Fn(&Fc) -> usize, tab: &Table2, done: &dyn Fn(&Fc) -> bool| -> (u8, bool) {
+                let mut y = *x;
+                let mut d = 0;
+                let max = tab.hist.len().saturating_sub(1);
+                loop {
+                    if done(&y) {
+                        return (d, true);
                     }
-                });
-                let mut is = [0usize; MAX_MOVES];
-                for m in 0..n_moves {
-                    is[m] = ix(&zs[m]);
-                    prefetch(&tab.data[is[m] >> 5]);
+                    if usize::from(d) >= max {
+                        return (d, false);
+                    }
+                    let want = (tab.get(ix(&y)) + 2) % 3;
+                    let em = masks(&y.e);
+                    let zs: [Fc; MAX_MOVES] = std::array::from_fn(|m| {
+                        if m < n_moves {
+                            f.apply_m(&y, &em, m)
+                        } else {
+                            y
+                        }
+                    });
+                    let mut is = [0usize; MAX_MOVES];
+                    for m in 0..n_moves {
+                        is[m] = ix(&zs[m]);
+                        prefetch(&tab.data[is[m] >> 5]);
+                    }
+                    let Some(m) = (0..n_moves).find(|&m| tab.get(is[m]) == want) else {
+                        return (d, false);
+                    };
+                    y = zs[m];
+                    d += 1;
                 }
-                let Some(m) = (0..n_moves).find(|&m| tab.get(is[m]) == want) else {
-                    break;
-                };
-                y = zs[m];
-                d += 1;
-            }
-            d
-        };
+            };
         let ha = walk(&ae_ix, &self.ae, &|y| self.ae_targets.contains(&ae_ix(y)));
         let hc = walk(&cb_ix, &self.cb.tab, &|y| {
             self.cb.attach[y.c as usize] == f.b_rank(y)
