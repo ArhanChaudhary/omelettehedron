@@ -31,7 +31,9 @@ awk '
 if [ "${FTO_CHECK_FAST:-0}" != 1 ]; then
     not_checked=()
     cargo test --lib --features scalar
-    for t in aarch64-apple-darwin aarch64-unknown-linux-gnu wasm32-wasip1 wasm32-unknown-unknown; do
+    # (WebAssembly is built for WASI, as egg-solver does, also for browsers via a JS WASI
+    # shim; wasm32-unknown-unknown would need getrandom's JS backend)
+    for t in aarch64-apple-darwin aarch64-unknown-linux-gnu wasm32-wasip1; do
         if rustup target list --installed | grep -qx "$t"; then
             cargo clippy --lib --target "$t" -- -D warnings
         else
