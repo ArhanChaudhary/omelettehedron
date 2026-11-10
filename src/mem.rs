@@ -2,7 +2,8 @@
 //!
 //! Random lookups into tables of hundreds of megabytes are dominated by cache and TLB misses;
 //! huge pages remove most of the TLB misses. `madvise` only works on page-aligned ranges, so
-//! the allocation itself must be 2 MiB aligned (a plain `Vec` is not).
+//! the allocation itself must be 2 MiB aligned (a plain `Vec` is not). (+18% / +16% nodes/s,
+//! first solution 0.77x at 48T when added, opt/hugepages.)
 
 use rayon::prelude::*;
 use std::alloc::{alloc, dealloc, Layout};

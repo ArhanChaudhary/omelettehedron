@@ -257,7 +257,8 @@ impl<I: AeIndex> Shared<'_, I> {
         let f = fast();
         let fw = f.flip_word(&masks(&x.e));
         // Evaluate all children as a batch: every stage issues prefetches for all children
-        // before reading any of them, so the cache misses of different children overlap.
+        // before reading any of them, so the cache misses of different children overlap
+        // (2.0x nodes/s at 48T and 1T when added, opt/prefetch).
         let mut ys = [*x; N_MOVES];
         let mut ms = [0u8; N_MOVES];
         let mut n = 0;
@@ -285,7 +286,9 @@ impl<I: AeIndex> Shared<'_, I> {
         // CB entries of the children whose lookup is deferred to the child itself
         let mut pend = [NO_CB; N_MOVES];
         let mut h_cb = h_cb;
-        // The CB table (max 8) prunes almost nothing with 6+ moves left: check AE first there.
+        // The CB table (max 8) prunes almost nothing with 6+ moves left: check AE first there
+        // (+7% / +10% nodes/s at 48T / 1T when added with 7+ moves, opt/ae-first; lowered to 6
+        // in the opt/stages stack, measured only as part of it: +10% / +14% nodes/s).
         let ae_first = budget >= 6;
         let mut cbe_done = false;
         let mut b_done = false;
@@ -316,7 +319,8 @@ impl<I: AeIndex> Shared<'_, I> {
                 h_cb = decode(h_cb, t.cb.tab.get(cb_pend));
             }
             // The class-B lookups are issued here too, so that their latency overlaps the
-            // CB and joint-table stages.
+            // CB and joint-table stages (+6% / +4% nodes/s at 48T / 1T, optimal 0.95x time,
+            // when added, opt/bpath).
             let lim = if B {
                 // a child at depth g+1 with bound h cannot give a solution shorter than g+1+h
                 self.best_len.load(Ordering::Relaxed).saturating_sub(g + 2)
@@ -335,7 +339,8 @@ impl<I: AeIndex> Shared<'_, I> {
                     prefetch(&t.cb.tab.data[bcbi[i] >> 5]);
                 }
             }
-            // The joint table goes before reading the CB words, so their latency overlaps it.
+            // The joint table goes before reading the CB words, so their latency overlaps it
+            // (part of the opt/stages stack: +10% / +14% nodes/s at 48T / 1T as a whole).
             if budget <= 8 {
                 if let Some(cbe) = &t.cbe {
                     let mut ci = [[0usize; 4]; N_MOVES];
@@ -363,7 +368,8 @@ impl<I: AeIndex> Shared<'_, I> {
             }
             // Without a joint-table stage, CB values that can neither prune nor change the
             // ordering statistic (max(ha, hc) = ha) are read by each child itself, after its
-            // own AE stage, when the prefetch issued here has completed.
+            // own AE stage, when the prefetch issued here has completed (part of the
+            // opt/micro-compute stack: 1.29x / 1.28x nodes/s at 48T / 1T as a whole).
             let defer = !cbe_done && budget >= self.cb_max as usize && min_ha >= self.cb_max;
             n = 0;
             for i in 0..k {
@@ -443,7 +449,8 @@ impl<I: AeIndex> Shared<'_, I> {
                 n = k;
             }
         }
-        // Class-B bound against the best solution so far.
+        // Class-B bound against the best solution so far (optimal mode 0.29x / 0.67x time at
+        // 48T / 1T when added, opt/classb).
         if B && n > 0 && !b_done {
             let best = self.best_len.load(Ordering::Relaxed);
             // a child at depth g+1 with bound h cannot give a solution shorter than g+1+h
@@ -552,6 +559,8 @@ impl<I: AeIndex> Shared<'_, I> {
     /// of an IDA* iteration's work lies in the middle levels, which must not be explored
     /// serially. The tree keeps every node evaluated by earlier iterations with all its
     /// children, so a later iteration only evaluates nodes it has not seen and re-filters.
+    /// (Splitting: 48T first solution 0.50x when added, opt/split; memoized tree and adaptive
+    /// task count: a further 0.51x, opt/split2 stack.)
     fn tasks(&self, tree: &mut Tree, bound: usize, threads: usize, want: usize) -> Vec<u32> {
         if tree.nodes.is_empty() {
             for (v, var) in self.variants.iter().enumerate() {
@@ -746,7 +755,8 @@ pub fn solve<I: AeIndex>(
         };
         let mut ids = sh.tasks(&mut tree, depth, threads, want);
         // Order the tasks by the statistics of the same prefixes in the previous iteration, so
-        // that the most promising subtrees are searched first (egg-solver's job ordering).
+        // that the most promising subtrees are searched first (egg-solver's job ordering;
+        // 48T 5 s mean length -0.225 moves, 1T optimal 0.69x time when added, opt/order).
         node_stat.resize(tree.nodes.len(), 0.0);
         if !prev_ids.is_empty() {
             ids.sort_by(|a, b| node_stat[*b as usize].total_cmp(&node_stat[*a as usize]));

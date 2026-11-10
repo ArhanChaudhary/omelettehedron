@@ -63,7 +63,8 @@ impl Table2 {
         std::fs::rename(tmp, path)
     }
 
-    /// Read a table of `n` entries from `path`.
+    /// Read a table of `n` entries from `path`. (Parallel fused read and checksum, part of the
+    /// opt/startup2 stack: large-tier startup 1.07 -> 0.33 s at 48T, 7.9 -> 3.3 s at 1T.)
     ///
     /// # Errors
     ///

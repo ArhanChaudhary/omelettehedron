@@ -10,6 +10,8 @@
 //! `H_A` is invariant under both). The corner coordinate is reduced by the 6 symmetries fixing
 //! triple 0. Values are stored as a saturating code: 0 = at most 6 moves, 1 = 7, 2 = 8,
 //! 3 = at least 9; only the 7..9 range adds information over the other tables.
+//!
+//! (2.05x fewer nodes; first solution 0.75x / 0.65x at 48T / 1T when added, opt/cbe.)
 
 use crate::coord::*;
 use crate::cube::*;
