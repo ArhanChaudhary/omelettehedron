@@ -23,6 +23,16 @@ pub struct Fc {
     pub ebits: u8,
 }
 
+impl Fc {
+    pub const ZERO: Fc = Fc {
+        a: [0; 16],
+        b: [0; 16],
+        e: [0; 16],
+        c: 0,
+        ebits: 0,
+    };
+}
+
 pub struct FastTables {
     /// gather shuffles of the 16 moves: new[p] = old[src[p]]
     shuf_a: [[u8; 16]; N_MOVES],

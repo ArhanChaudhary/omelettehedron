@@ -61,6 +61,8 @@ pub trait AeIndex: Send + Sync + 'static {
     fn entry_parts(&self, f: &FastTables, x: &Fc, v: u32) -> Option<(usize, usize, u8)>;
     /// The symmetry-class table read first by `index_fast` (for prefetching).
     fn class_entry(&self, a_rank: u32) -> &u32;
+    /// Prefetch the symmetry-class entry read first by `index_fast`.
+    fn prefetch_class(&self, a_rank: u32);
     /// Pipelined `index_fast` over a batch.
     #[inline(always)]
     fn index_batch_fast(&self, f: &FastTables, xs: &[Fc], out: &mut [usize]) {
@@ -68,7 +70,7 @@ pub trait AeIndex: Send + Sync + 'static {
         let mut ar = [0u32; N_MOVES];
         for i in 0..n {
             ar[i] = f.a_rank(&xs[i]);
-            prefetch(self.class_entry(ar[i]));
+            self.prefetch_class(ar[i]);
         }
         for i in 0..n {
             out[i] = self.index_fast(f, &xs[i], ar[i]);
@@ -82,11 +84,33 @@ pub trait AeIndex: Send + Sync + 'static {
         let mut ar = [0u32; N_MOVES];
         for i in 0..n {
             ar[i] = f.a_rank(&xs[i]);
-            prefetch(self.class_entry(ar[i]));
+            self.prefetch_class(ar[i]);
         }
         for i in 0..n {
             out[i] = self.index_fast(f, &xs[i], ar[i]);
-            prefetch(&tab[out[i] >> 5]);
+            prefetch_at(tab, out[i] >> 5);
+        }
+    }
+    /// [`AeIndex::index_batch_fast_pf`] over the positions `xs[i]` for `i` in `sel`, writing
+    /// `out[i]`.
+    #[inline(always)]
+    fn index_sel_pf(
+        &self,
+        f: &FastTables,
+        xs: &[Fc; N_MOVES],
+        sel: &[u8],
+        out: &mut [usize; N_MOVES],
+        tab: &[u64],
+    ) {
+        let mut ar = [0u32; N_MOVES];
+        for (j, &i) in sel.iter().enumerate() {
+            ar[j & 15] = f.a_rank(&xs[usize::from(i & 15)]);
+            self.prefetch_class(ar[j & 15]);
+        }
+        for (j, &i) in sel.iter().enumerate() {
+            let i = usize::from(i & 15);
+            out[i] = self.index_fast(f, &xs[i], ar[j & 15]);
+            prefetch_at(tab, out[i] >> 5);
         }
     }
 }
@@ -94,23 +118,6 @@ pub trait AeIndex: Send + Sync + 'static {
 /// Hint that `p` will be read soon.
 #[inline(always)]
 pub fn prefetch<T>(p: &T) {
-    #[cfg(target_arch = "x86_64")]
-    // SAFETY: prefetch is a hint and never faults
-    unsafe {
-        core::arch::x86_64::_mm_prefetch(
-            std::ptr::from_ref(p).cast::<i8>(),
-            core::arch::x86_64::_MM_HINT_T0,
-        );
-    }
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: PRFM is a hint and never faults, whatever the address
-    unsafe {
-        core::arch::asm!(
-            "prfm pldl1keep, [{0}]",
-            in(reg) std::ptr::from_ref(p),
-            options(nostack, preserves_flags, readonly)
-        );
-    }
     // WebAssembly has no prefetch, but a load whose value is dropped starts the cache miss
     // just the same while execution runs on (egg-solver measured +45-53% in V8 and wasmtime;
     // src/prefetch.rs there). `p` is a reference, so the byte is always readable.
@@ -119,11 +126,43 @@ pub fn prefetch<T>(p: &T) {
     unsafe {
         std::ptr::read_volatile(std::ptr::from_ref(p).cast::<u8>());
     }
-    #[cfg(not(any(
-        target_arch = "x86_64",
-        target_arch = "aarch64",
-        target_arch = "wasm32"
-    )))]
+    #[cfg(not(target_arch = "wasm32"))]
+    prefetch_ptr(std::ptr::from_ref(p));
+}
+
+/// Hint that `s[i]` will be read soon. Where prefetching is a hint there is no bounds check:
+/// prefetching outside `s` has no effect on the program (with the single-lookup CBE bound:
+/// +0.8% nodes/s at 1T in optimal mode, when added). On WebAssembly the prefetch is a real
+/// load, so an index outside `s` is skipped.
+#[inline(always)]
+pub fn prefetch_at<T>(s: &[T], i: usize) {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(x) = s.get(i) {
+        prefetch(x);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    prefetch_ptr(s.as_ptr().wrapping_add(i));
+}
+
+/// A prefetch instruction where there is one (never faults, whatever the address).
+#[cfg(not(target_arch = "wasm32"))]
+#[inline(always)]
+fn prefetch_ptr<T>(p: *const T) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: prefetch is a hint and never faults, whatever the address
+    unsafe {
+        core::arch::x86_64::_mm_prefetch(p.cast::<i8>(), core::arch::x86_64::_MM_HINT_T0);
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: PRFM is a hint and never faults, whatever the address
+    unsafe {
+        core::arch::asm!(
+            "prfm pldl1keep, [{0}]",
+            in(reg) p,
+            options(nostack, preserves_flags, readonly)
+        );
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let _ = p;
 }
 
@@ -250,9 +289,12 @@ impl AeIndex for AeSym {
         let (e, flips) = f.sym_e_parts(x, &masks(&x.e), g, t);
         Some(((v & 0xffff) as usize * N_ECOSET + e as usize * 8, g, flips))
     }
-    #[inline(always)]
     fn class_entry(&self, a_rank: u32) -> &u32 {
         &self.cls.sym[a_rank as usize]
+    }
+    #[inline(always)]
+    fn prefetch_class(&self, a_rank: u32) {
+        prefetch_at(&self.cls.sym, a_rank as usize);
     }
     fn name(&self) -> &'static str {
         if self.chiral {
@@ -355,9 +397,12 @@ impl AeIndex for AeRelabel {
         let base = (v & 0xffff) as usize * N_ECOSET + f.relabel_rank(x, g) as usize * 8;
         Some((base, g, 0))
     }
-    #[inline(always)]
     fn class_entry(&self, a_rank: u32) -> &u32 {
         &self.cls.sym[a_rank as usize]
+    }
+    #[inline(always)]
+    fn prefetch_class(&self, a_rank: u32) {
+        prefetch_at(&self.cls.sym, a_rank as usize);
     }
     fn name(&self) -> &'static str {
         "ae-relabel12-chiral"
