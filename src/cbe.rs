@@ -253,6 +253,31 @@ impl CbeIndex {
     }
 }
 
+/// Moves between CBE entries (all of triple 0).
+struct CbeGraph<'a> {
+    ix: &'a CbeIndex,
+    f: &'static FastTables,
+}
+
+impl Graph for CbeGraph<'_> {
+    const MOVES: usize = N_MOVES;
+    /// position and its flip word
+    type Node = (Fc, u64);
+    #[inline(always)]
+    fn node(&self, i: usize) -> (Fc, u64) {
+        let x = self.ix.decode(i);
+        (x, self.f.flip_word(&masks(&x.e)))
+    }
+    #[inline(always)]
+    fn step(&self, (x, fw): &(Fc, u64), m: usize) -> usize {
+        let y = self.f.apply_w(x, *fw, m);
+        self.ix.index(self.f, &y, &masks(&y.e), 0)
+    }
+    fn equivalents(&self, j: usize, out: &mut Vec<usize>) {
+        self.ix.equivalents(self.f, j, out);
+    }
+}
+
 pub struct CbeTable {
     pub ix: CbeIndex,
     pub codes: HugeBuf<u64>,
@@ -314,19 +339,10 @@ impl CbeTable {
             .map(|_| AtomicU64::new(0))
             .collect();
         let tab = bfs_with(
+            &CbeGraph { ix: &ix, f },
             n,
             &targets,
-            |i, out| {
-                let x = ix.decode(i);
-                let em = masks(&x.e);
-                for m in 0..N_MOVES {
-                    let y = f.apply(&x, &em, m);
-                    let j = ix.index(f, &y, &masks(&y.e), 0);
-                    out.push(j);
-                    ix.equivalents(f, j, out);
-                }
-            },
-            |i, d| {
+            &|i, d| {
                 if d >= 7 {
                     let code = (d - 6).min(3) as u64;
                     codes_raw[i >> 5].fetch_or(code << ((i & 31) << 1), Ordering::Relaxed);

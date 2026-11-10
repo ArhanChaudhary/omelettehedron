@@ -500,25 +500,11 @@ impl CbTable {
     }
 
     pub fn build(verbose: bool) -> Table2 {
-        let mt = move_tables();
         let attach = Self::attach_targets();
         let targets: Vec<usize> = (0..N_CORNER)
             .map(|c| c * N_MSET + attach[c] as usize)
             .collect();
-        bfs(
-            N_CB,
-            &targets,
-            |i, out| {
-                let (c, b) = (i / N_MSET, i % N_MSET);
-                let mc = &mt.c[c];
-                let mb = &mt.b[b];
-                for m in 0..N_MOVES {
-                    out.push(mc[m] as usize * N_MSET + mb[m] as usize);
-                }
-            },
-            "cb",
-            verbose,
-        )
+        bfs(&CbGraph(move_tables()), N_CB, &targets, "cb", verbose)
     }
 
     #[inline(always)]
@@ -542,26 +528,53 @@ pub fn ae_targets<I: AeIndex>(ix: &I) -> Vec<usize> {
     v
 }
 
+/// Moves between CB entries.
+struct CbGraph(&'static MoveTables);
+
+impl Graph for CbGraph {
+    const MOVES: usize = N_MOVES;
+    type Node = (usize, usize);
+    #[inline(always)]
+    fn node(&self, i: usize) -> (usize, usize) {
+        (i / N_MSET, i % N_MSET)
+    }
+    #[inline(always)]
+    fn step(&self, &(c, b): &(usize, usize), m: usize) -> usize {
+        self.0.c[c][m] as usize * N_MSET + self.0.b[b][m] as usize
+    }
+}
+
+/// Moves between AE entries.
+struct AeGraph<'a, I: AeIndex>(&'a I, &'static MoveTables);
+
+impl<I: AeIndex> Graph for AeGraph<'_, I> {
+    const MOVES: usize = N_MOVES;
+    type Node = Coords;
+    #[inline(always)]
+    fn node(&self, i: usize) -> Coords {
+        let (a, e, bits) = self.0.decode(i);
+        Coords {
+            c: 0,
+            a,
+            b: 0,
+            e,
+            ebits: bits,
+        }
+    }
+    #[inline(always)]
+    fn step(&self, x: &Coords, m: usize) -> usize {
+        self.0.index(&self.1.apply(x, m))
+    }
+    fn equivalents(&self, j: usize, out: &mut Vec<usize>) {
+        self.0.equivalents(j, out);
+    }
+}
+
 pub fn build_ae<I: AeIndex>(ix: &I, verbose: bool) -> Table2 {
-    let mt = move_tables();
     bfs(
+        &AeGraph(ix, move_tables()),
         ix.size(),
         &ae_targets(ix),
-        |i, out| {
-            let (a, e, bits) = ix.decode(i);
-            let x = Coords {
-                c: 0,
-                a,
-                b: 0,
-                e,
-                ebits: bits,
-            };
-            for m in 0..N_MOVES {
-                let j = ix.index(&mt.apply(&x, m));
-                out.push(j);
-                ix.equivalents(j, out);
-            }
-        },
         ix.name(),
         verbose,
     )
