@@ -29,7 +29,7 @@ pub struct FastTables {
     shuf_b: [[u8; 16]; N_MOVES],
     shuf_e: [[u8; 16]; N_MOVES],
     /// chirality flip of a triple occupying a 12-bit position mask: bit m = flipped by move m
-    flip_moves: Box<[u16; 4096]>,
+    pub(crate) flip_moves: Box<[u16; 4096]>,
     /// corner move table, padded to 1024 ids so that `& 1023` replaces bounds checks
     corner: Box<[[u16; N_MOVES]; 1024]>,
     pub(crate) c12: Box<[u16; 4096]>,

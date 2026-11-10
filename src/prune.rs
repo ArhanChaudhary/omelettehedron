@@ -201,8 +201,11 @@ pub trait Graph: Sync {
     const MOVES: usize;
     /// An entry decoded into whatever [`Graph::step`] needs.
     type Node: Copy;
+    /// Per-thread state kept between [`Graph::node`] calls, e.g. data shared by consecutive
+    /// entries (entries are decoded mostly in increasing order).
+    type Cache: Default;
     /// Decode entry `i`.
-    fn node(&self, i: usize) -> Self::Node;
+    fn node(&self, i: usize, cache: &mut Self::Cache) -> Self::Node;
     /// Index of the neighbour of `x` by move `m` (`m < MOVES`).
     fn step(&self, x: &Self::Node, m: usize) -> usize;
     /// Append every other index that denotes a position equivalent to index `j`, if indices
@@ -212,9 +215,11 @@ pub trait Graph: Sync {
 
 /// A level runs forward if frontier * `MOVES` < unvisited * `FORWARD_RATIO`. A forward step
 /// makes all neighbours of each frontier entry; a backward step makes those of each unvisited
-/// entry up to the first frontier hit. The rule is egg-solver's; on these tables it makes the
-/// same choices as the previous rule (forward if the frontier is below a third of the
-/// unvisited entries).
+/// entry up to the first frontier hit (6.3 per entry on average at CBE depth 8). The rule is
+/// egg-solver's, re-checked on the levels nearest the boundary (48 threads, opt/gen): AE
+/// medium depth 11 (ratio 3.4) forward 4.7 s vs backward 5.4 s, CBE depth 8 (ratio 6.6)
+/// backward 15.3 s vs forward 20.6 s; small-tier AE depth 10 (2.4) and CB depth 6 (3.0)
+/// differ by at most 0.1 s either way.
 const FORWARD_RATIO: u64 = 4;
 
 /// Indices per work item (a multiple of 32, so that work items own whole words).
@@ -336,8 +341,9 @@ fn forward<G: Graph>(g: &G, tab: &[AtomicU64], lo: usize, hi: usize, cur: u8, ne
         }
     };
     let mut nb: Vec<usize> = Vec::with_capacity(16);
+    let mut cache = G::Cache::default();
     for i in Scan::new(tab, lo, hi, cur) {
-        let x = g.node(i);
+        let x = g.node(i, &mut cache);
         for m in 0..G::MOVES {
             let j = g.step(&x, m);
             push(j, &mut cnt);
@@ -383,14 +389,15 @@ fn backward<G: Graph>(
     set: bool,
     mut misses: Option<&mut Vec<usize>>,
 ) -> u64 {
-    let start = |i: usize| -> Lane<G::Node> {
-        let x = g.node(i);
+    let mut cache = G::Cache::default();
+    let mut start = |i: usize| -> Lane<G::Node> {
+        let x = g.node(i, &mut cache);
         let j = g.step(&x, 0);
         prefetch(&tab[j >> 5]);
         Lane { i, j, m: 0, x }
     };
     let mut scan = Scan::new(tab, lo, hi, 3);
-    let mut lanes: Vec<Lane<G::Node>> = scan.by_ref().take(LANES).map(start).collect();
+    let mut lanes: Vec<Lane<G::Node>> = scan.by_ref().take(LANES).map(&mut start).collect();
     let mut cnt = 0;
     let mut k = 0;
     while !lanes.is_empty() {
@@ -594,7 +601,7 @@ impl<'g, G: Graph> Bfs<'g, G> {
                 Some(l) => l.binary_search(&j).is_ok(),
             };
             let (mut found, left): (Vec<usize>, Vec<usize>) = rest.par_iter().partition(|&&i| {
-                let x = g.node(i);
+                let x = g.node(i, &mut G::Cache::default());
                 (0..G::MOVES).any(|m| in_last(g.step(&x, m)))
             });
             if found.is_empty() {
@@ -711,7 +718,8 @@ mod tests {
     impl Graph for Ring {
         const MOVES: usize = 2;
         type Node = usize;
-        fn node(&self, i: usize) -> usize {
+        type Cache = ();
+        fn node(&self, i: usize, (): &mut ()) -> usize {
             i
         }
         fn step(&self, &i: &usize, m: usize) -> usize {
@@ -740,7 +748,8 @@ mod tests {
     impl Graph for Chords {
         const MOVES: usize = 6;
         type Node = usize;
-        fn node(&self, i: usize) -> usize {
+        type Cache = ();
+        fn node(&self, i: usize, (): &mut ()) -> usize {
             i
         }
         fn step(&self, &i: &usize, m: usize) -> usize {

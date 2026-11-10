@@ -252,24 +252,141 @@ impl CbeIndex {
 }
 
 /// Moves between CBE entries (all of triple 0).
+///
+/// Consecutive entries share their corner class and B colouring (groups of `N_E1`), so the
+/// corner/B part of each neighbour's index is made once per group and move. A step then only
+/// moves the triple: one byte shuffle (the move and the symmetry composed), a mask and two
+/// small lookups. (CBE generation 38.1 -> 21.2 s, large tier 46.2 -> 29.5 s at 48T when added,
+/// opt/gen.)
 struct CbeGraph<'a> {
     ix: &'a CbeIndex,
     f: &'static FastTables,
+    /// labelling of each triple-0 position set (0 = triple 0, 1 = other edges)
+    e_labels: Vec<[u8; 16]>,
+    /// per move and repositioning symmetry t: the move's gather followed by the gather of t
+    comp: Box<[[[u8; 16]; 32]; N_MOVES]>,
+    /// per t: whether repositioning flips the chirality of triple 0, as a bitset over the
+    /// triple's positions after repositioning
+    flip_post: Box<[[u64; 64]; 32]>,
+}
+
+/// The corner/B part of the neighbours of a group of entries.
+#[derive(Clone, Copy)]
+struct CbeGroup {
+    /// per move: class * `N_ROW` + B rank * `N_E1` of the neighbour
+    base: [u64; N_MOVES],
+    /// per move: repositioning symmetry of the neighbour
+    t: [u8; N_MOVES],
+    /// bit m: relabelling flips the chirality bit of the neighbour by move m
+    flip: u16,
+}
+
+#[derive(Clone, Copy)]
+struct CbeNode {
+    g: CbeGroup,
+    e: [u8; 16],
+    /// bit m: chirality bit of the neighbour by move m before repositioning
+    flip: u16,
+}
+
+impl<'a> CbeGraph<'a> {
+    fn new(ix: &'a CbeIndex) -> Self {
+        let f = fast();
+        let e_labels = ix
+            .c12_unrank
+            .iter()
+            .map(|&q| std::array::from_fn(|p| u8::from(p < 12 && q >> p & 1 == 0)))
+            .collect();
+        let d = defs();
+        let comp = Box::new(std::array::from_fn(|m| {
+            std::array::from_fn(|t| {
+                let mut g = [0x80u8; 16];
+                if t < N_GEO {
+                    for p in 0..12 {
+                        g[p] = d.moves[m].ep[ix.egather[t][p] as usize];
+                    }
+                }
+                g
+            })
+        }));
+        let mut flip_post = Box::new([[0u64; 64]; 32]);
+        for t in 0..N_GEO {
+            for q in (0..4096usize).filter(|q| q.count_ones() == 3) {
+                let l: [u8; 16] = std::array::from_fn(|p| u8::from(p >= 12 || q >> p & 1 == 0));
+                let post = label_mask(&shuffle(&l, &ix.egather[t]), 0) as usize & 0xfff;
+                if f.flip_t[t][q >> 6] >> (q & 63) & 1 == 1 {
+                    flip_post[t][post >> 6] |= 1 << (post & 63);
+                }
+            }
+        }
+        CbeGraph {
+            ix,
+            f,
+            e_labels,
+            comp,
+            flip_post,
+        }
+    }
+
+    /// Group `key` = class * `N_MSET` + B rank.
+    fn group(&self, key: usize) -> CbeGroup {
+        let (cls, b) = (key / N_MSET, key % N_MSET);
+        let x = Fc {
+            a: [0; 16],
+            b: mset_labels()[b],
+            e: [0; 16],
+            c: self.ix.rep[cls],
+            ebits: 0,
+        };
+        let mut g = CbeGroup {
+            base: [0; N_MOVES],
+            t: [0; N_MOVES],
+            flip: 0,
+        };
+        for m in 0..N_MOVES {
+            let y = self.f.apply_w(&x, 0, m);
+            let (cls2, m2, t2) = self.ix.kt[y.c as usize & 1023][0];
+            let (m2, t2) = (m2 as usize & 31, t2 as usize & 31);
+            let bb = shuffle(&shuffle(&self.ix.bmap[m2], &y.b), &self.ix.bgather[t2]);
+            g.base[m] = (cls2 as usize * N_ROW + self.f.rank(&masks(&bb)) as usize * N_E1) as u64;
+            g.t[m] = t2 as u8;
+            g.flip |= u16::from(self.ix.relab_flip[m2][0]) << m;
+        }
+        g
+    }
 }
 
 impl Graph for CbeGraph<'_> {
     const MOVES: usize = N_MOVES;
-    /// position and its flip word
-    type Node = (Fc, u64);
+    type Node = CbeNode;
+    /// the last group and its key
+    type Cache = Option<(usize, CbeGroup)>;
     #[inline(always)]
-    fn node(&self, i: usize) -> (Fc, u64) {
-        let x = self.ix.decode(i);
-        (x, self.f.flip_word(&masks(&x.e)))
+    fn node(&self, i: usize, cache: &mut Option<(usize, CbeGroup)>) -> CbeNode {
+        let key = i / N_E1;
+        let g = match cache {
+            Some((k, g)) if *k == key => *g,
+            _ => {
+                let g = self.group(key);
+                *cache = Some((key, g));
+                g
+            }
+        };
+        let e1 = i % N_E1;
+        let q = self.ix.c12_unrank[e1 / 2] as usize & 0xfff;
+        let bit = if e1 & 1 == 1 { u16::MAX } else { 0 };
+        CbeNode {
+            g,
+            e: self.e_labels[e1 / 2],
+            flip: g.flip ^ self.f.flip_moves[q] ^ bit,
+        }
     }
     #[inline(always)]
-    fn step(&self, (x, fw): &(Fc, u64), m: usize) -> usize {
-        let y = self.f.apply_w(x, *fw, m);
-        self.ix.index(self.f, &y, &masks(&y.e), 0)
+    fn step(&self, x: &CbeNode, m: usize) -> usize {
+        let t = x.g.t[m] as usize & 31;
+        let mask = label_mask(&shuffle(&x.e, &self.comp[m & 15][t]), 0) as usize & 0xfff;
+        let post = (self.flip_post[t][mask >> 6] >> (mask & 63)) as usize & 1;
+        x.g.base[m] as usize + self.f.c12[mask] as usize * 2 + ((x.flip >> m) as usize & 1 ^ post)
     }
     fn equivalents(&self, j: usize, out: &mut Vec<usize>) {
         self.ix.equivalents(self.f, j, out);
@@ -333,7 +450,7 @@ impl CbeTable {
         targets.sort_unstable();
         targets.dedup();
         // The codes are made directly (see `saturating`).
-        let t = saturating(&CbeGraph { ix: &ix, f }, n, &targets, 6, "cbe", verbose);
+        let t = saturating(&CbeGraph::new(&ix), n, &targets, 6, "cbe", verbose);
         CbeTable {
             ix,
             codes: t.data,
@@ -382,6 +499,33 @@ impl CbeTable {
 mod tests {
     use super::*;
     use rand::SeedableRng;
+
+    /// The grouped neighbour indices of the generator equal the index of each moved position.
+    #[test]
+    fn graph_steps_match_index() {
+        use rand::Rng;
+        let f = fast();
+        let ix = CbeIndex::new();
+        let g = CbeGraph::new(&ix);
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(43);
+        let mut cache = None;
+        for _ in 0..300 {
+            let i0 = rng.gen_range(0..ix.size() - 40);
+            for i in i0..i0 + 40 {
+                let x = ix.decode(i);
+                let em = masks(&x.e);
+                let node = g.node(i, &mut cache);
+                for m in 0..N_MOVES {
+                    let y = f.apply(&x, &em, m);
+                    assert_eq!(
+                        g.step(&node, m),
+                        ix.index(f, &y, &masks(&y.e), 0),
+                        "{i} {m}"
+                    );
+                }
+            }
+        }
+    }
 
     /// The fast symmetry transform equals conjugation + re-fixing at sticker level.
     #[test]

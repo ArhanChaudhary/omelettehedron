@@ -551,8 +551,9 @@ struct CbGraph(&'static MoveTables);
 impl Graph for CbGraph {
     const MOVES: usize = N_MOVES;
     type Node = (usize, usize);
+    type Cache = ();
     #[inline(always)]
-    fn node(&self, i: usize) -> (usize, usize) {
+    fn node(&self, i: usize, (): &mut ()) -> (usize, usize) {
         (i / N_MSET, i % N_MSET)
     }
     #[inline(always)]
@@ -603,8 +604,9 @@ impl<I: AeIndex> Graph for AeGraph<'_, I> {
     const MOVES: usize = N_MOVES;
     /// edges (the A-centres are not needed), flip word and A class
     type Node = (Fc, u64, usize);
+    type Cache = ();
     #[inline(always)]
-    fn node(&self, i: usize) -> (Fc, u64, usize) {
+    fn node(&self, i: usize, (): &mut ()) -> (Fc, u64, usize) {
         let (_, e, bits) = self.ix.decode(i);
         let x = Fc {
             a: [0; 16],
@@ -874,5 +876,40 @@ impl<I: AeIndex> Tables<I> {
             x = next;
             d += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::{Rng, SeedableRng};
+
+    /// The generator's neighbour indices equal the index of each moved position.
+    fn check_graph<I: AeIndex>(ix: &I) {
+        let g = AeGraph::new(ix);
+        let mt = move_tables();
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(44);
+        for _ in 0..2000 {
+            let i = rng.gen_range(0..ix.size());
+            let (a, e, ebits) = ix.decode(i);
+            let x = Coords {
+                c: 0,
+                a,
+                b: 0,
+                e,
+                ebits,
+            };
+            let node = g.node(i, &mut ());
+            for m in 0..N_MOVES {
+                assert_eq!(g.step(&node, m), ix.index(&mt.apply(&x, m)), "{i} {m}");
+            }
+        }
+    }
+
+    #[test]
+    fn ae_graph_steps_match_index() {
+        check_graph(&AeSym::new(false));
+        check_graph(&AeSym::new(true));
+        check_graph(&AeRelabel::new());
     }
 }
