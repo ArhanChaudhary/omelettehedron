@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>omelettehedron FTO solver</title>
+<!-- Adapted from egg-solver's wasm/index.html (same author): layout, worker protocol,
+     thread fallback and prime normalization. -->
+<style>
+  :root { --bg: #fdfdfc; --fg: #1d1d1b; --muted: #6b6b66; --line: #d9d8d3; --accent: #2f5fa7; --ok: #2c7a3f; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1b1a; --fg: #e9e8e4; --muted: #a09f99; --line: #3a3a37; --accent: #7aa5e8; --ok: #6cc486; }
+  }
+  body { background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; margin: 0 auto; max-width: 52rem; padding: 1rem; }
+  h1 { font-size: 1.4rem; margin: 0.5rem 0; }
+  p.note, .note { color: var(--muted); }
+  p.note { margin: 0.25rem 0 1rem; }
+  details { border: 1px solid var(--line); border-radius: 6px; margin: 1.5rem 0 1rem; padding: 0.5rem 0.75rem; }
+  summary { cursor: pointer; color: var(--muted); }
+  label { white-space: nowrap; }
+  input, button, textarea { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 0.2rem 0.4rem; }
+  button { cursor: pointer; border-color: var(--accent); }
+  button:disabled, input:disabled { opacity: 0.5; cursor: default; }
+  button.primary { background: var(--accent); color: var(--bg); font-weight: 600; padding: 0.3rem 1.2rem; }
+  textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; }
+  code, pre { font-family: ui-monospace, monospace; }
+  pre { background: color-mix(in srgb, var(--line) 30%, transparent); border-radius: 6px; padding: 0.75rem; margin: 0.4rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .row { display: flex; flex-wrap: wrap; gap: 0.5rem 0.75rem; align-items: center; margin: 0.4rem 0; }
+  #progress { width: 12rem; }
+  #progress[hidden] { display: none; }
+  .ok { color: var(--ok); }
+  table { border-collapse: collapse; font-size: 0.9em; }
+  td { padding: 0 0.75rem 0 0; vertical-align: top; }
+  td.moves { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+  td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<h1>omelettehedron</h1>
+<p class="note">A two-phase solver for the face-turning octahedron (FTO), running in your browser.
+Hold the puzzle with a corner pointing at you: front faces U (top), R, F (bottom), L; back faces
+B (top), BR, D (bottom), BL. <code>X</code> turns face X clockwise as seen from outside, <code>X'</code>
+anticlockwise.</p>
+
+<div class="row">
+  <progress id="progress" max="1" value="0" hidden></progress>
+  <span id="status" role="status">Starting…</span>
+</div>
+
+<textarea id="scramble" rows="3" aria-label="Scramble" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Paste a scramble, e.g. U R' BL F D B' L BR, or press Random scramble"></textarea>
+<div class="row">
+  <button id="random" disabled>Random scramble</button>
+  <label><input type="radio" name="mode" value="time" checked> best in <input id="seconds" type="number" min="0.1" step="any" value="10" style="width:4rem" aria-label="Time limit in seconds"> s</label>
+  <label><input type="radio" name="mode" value="optimal"> optimal</label>
+  <button id="solve" class="primary" disabled>Solve</button>
+  <button id="stop" disabled>Stop</button>
+</div>
+
+<section id="result" hidden>
+  <div id="summary"></div>
+  <pre id="solution"></pre>
+  <div id="stats" class="note"></div>
+  <table id="history" aria-label="Solutions found, each shorter than the one before"></table>
+</section>
+
+<details id="settings">
+  <summary>Settings and details</summary>
+  <p class="note">The solver uses the <em>small</em> pruning tables (134 MB), generated here when the
+  page first opens and kept in this browser's storage for later visits. Random positions take
+  about 22–24 moves; proving a solution optimal can take hours for them, but short scrambles are
+  solved optimally at once. A time-limited solve may need several seconds on one thread to find its
+  first solution. Threads need a cross-origin isolated page (see the README); without one the
+  solver uses one thread.</p>
+  <div class="row">
+    <label>Threads <input id="threads" type="number" min="1" value="1" style="width:4rem"></label>
+    <button id="apply" disabled>Restart</button>
+    <span id="isolation" class="note"></span>
+  </div>
+  <div class="row"><span id="tables" class="note"></span></div>
+  <div class="row">
+    <button id="forget" disabled>Forget the stored tables</button>
+    <label>Load table files <input id="files" type="file" multiple accept=".prun" disabled></label>
+  </div>
+  <p class="note">Table files: <code>ae-sym288-triples.prun</code> and <code>cb-sym24.prun</code>
+  from the native <code>omelettehedron gen --tier small</code>.</p>
+</details>
+
+<script type="module">
+import { cancel, parseImprovement } from './omelettehedron.mjs';
+
+const $ = (id) => document.getElementById(id);
+const status = (text) => { $('status').textContent = text; };
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+// --- The solver worker (demo-worker.mjs) ---
+let worker = null;
+let nextId = 0;
+const pending = new Map();
+const startWorker = () => {
+  worker = new Worker(new URL('./demo-worker.mjs', import.meta.url), { type: 'module' });
+  worker.onmessage = ({ data }) => {
+    const p = pending.get(data.id);
+    if (!p) return;
+    pending.delete(data.id);
+    'error' in data ? p.reject(new Error(data.error)) : p.resolve(data.result);
+  };
+  worker.onerror = (e) => {
+    for (const p of pending.values()) p.reject(new Error(e.message || 'the solver worker failed'));
+    pending.clear();
+  };
+};
+const stopWorker = (reason) => {
+  worker?.terminate();
+  worker = null;
+  for (const p of pending.values()) p.reject(new Error(reason));
+  pending.clear();
+};
+const call = (cmd, args = {}) => new Promise((resolve, reject) => {
+  const id = nextId++;
+  pending.set(id, { resolve, reject });
+  worker.postMessage({ id, cmd, ...args });
+});
+
+// The module's output lines arrive on a BroadcastChannel, also while the solver is busy:
+// stderr (2) has the table generation's progress, stdout (1) each better solution.
+const channelName = `omelettehedron-${Math.random().toString(36).slice(2)}`;
+new BroadcastChannel(channelName).onmessage = ({ data: { fd, line } }) => {
+  if (fd === 2) generationProgress(line);
+  else improvement(parseImprovement(line));
+};
+
+// --- Tables kept in IndexedDB ---
+const DB = 'omelettehedron';
+const STORE = 'tables';
+const KEY = 'small-v1';
+const db = () => new Promise((resolve, reject) => {
+  const r = indexedDB.open(DB, 1);
+  r.onupgradeneeded = () => r.result.createObjectStore(STORE);
+  r.onsuccess = () => resolve(r.result);
+  r.onerror = () => reject(r.error);
+});
+const store = async (mode, f) => {
+  const d = await db();
+  return new Promise((resolve, reject) => {
+    const r = f(d.transaction(STORE, mode).objectStore(STORE));
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+};
+const cached = () => store('readonly', (s) => s.get(KEY)).catch(() => undefined);
+const keep = (files) => store('readwrite', (s) => s.put(files, KEY));
+const forget = () => store('readwrite', (s) => s.delete(KEY)).catch(() => undefined);
+
+// --- State and buttons ---
+let threads = 1;
+let control = null;
+let ready = false;
+let solving = false;
+const buttons = () => {
+  $('random').disabled = $('solve').disabled = !ready || solving;
+  $('stop').disabled = !solving;
+  $('apply').disabled = $('files').disabled = $('forget').disabled = !ready || solving;
+};
+
+// --- Generation progress ---
+// Share of the generation time when each depth of the A-centre/edge table is done (measured on
+// one thread; the corner/B-centre table and the rest take the last ~12%).
+const AE_DONE = { 8: 0.01, 9: 0.14, 10: 0.73, 11: 0.87, 12: 0.88 };
+let generating = null;
+const generationProgress = (line) => {
+  const m = /^\s*(\S+): depth (\d+) /.exec(line);
+  if (!m || !generating) return;
+  const depth = Number(m[2]);
+  const f = m[1] === 'cb' ? 0.88 + depth / 8 * 0.1 : AE_DONE[depth] ?? 0;
+  $('progress').value = Math.max($('progress').value, f);
+  generating.table = m[1] === 'cb' ? 'corner/B-centre table' : 'A-centre/edge table';
+};
+
+/** Tables from IndexedDB, else generated (and then stored). */
+const prepareTables = async () => {
+  ready = false;
+  buttons();
+  const t0 = performance.now();
+  const seconds = () => ((performance.now() - t0) / 1000).toFixed(1);
+  const files = await cached();
+  if (files) {
+    status('Loading the stored tables…');
+    try {
+      await call('load', files);
+      $('tables').textContent = `Tables loaded from this browser's storage in ${seconds()} s.`;
+      return;
+    } catch (e) {
+      await forget();
+    }
+  }
+  $('progress').hidden = false;
+  $('progress').value = 0;
+  generating = { table: 'tables' };
+  const timer = setInterval(() => status(`Generating the pruning tables (${generating.table})… ${seconds()} s`), 200);
+  try {
+    const info = await call('generate');
+    $('tables').textContent = `Tables generated in ${info.seconds.toFixed(1)} s with ${plural(threads, 'thread')}.`;
+  } finally {
+    clearInterval(timer);
+    generating = null;
+    $('progress').hidden = true;
+  }
+  // Keep them for the next visit (in the background; failures only cost a regeneration).
+  call('export')
+    .then((t) => keep({ ae: t[0].blob, cb: t[1].blob }))
+    .then(() => { $('tables').textContent += ' Stored in this browser for later visits.'; })
+    .catch(() => {});
+};
+
+/** Start the solver with `n` threads (one if the threads build cannot start), then the tables. */
+const start = async (n) => {
+  stopWorker('restarted');
+  ready = false;
+  buttons();
+  status(`Starting with ${plural(n, 'thread')}…`);
+  startWorker();
+  try {
+    ({ threads, control } = await call('init', { threads: n, channel: channelName }));
+  } catch (e) {
+    if (n <= 1) throw e;
+    stopWorker('restarted');
+    startWorker();
+    ({ threads, control } = await call('init', { threads: 1, channel: channelName }));
+    status(`${n} threads unavailable (${e.message}); using 1`);
+  }
+  $('threads').value = threads;
+  // (on one thread a random position's first solution can take ~10 s: allow more time)
+  if (!$('seconds').dataset.edited) $('seconds').value = threads > 1 ? 10 : 30;
+  await prepareTables();
+  ready = true;
+  buttons();
+  status(`Ready · ${plural(threads, 'thread')}`);
+};
+const run = (label, f) => f().catch((e) => {
+  // (a solve stopped by restarting the worker: `start` reports)
+  if (e.message === 'stopped') return;
+  status(`${label} failed: ${e.message}`);
+  buttons();
+});
+
+// --- Solving ---
+let best = null;
+let rows = [];
+const improvement = (r) => {
+  if (!r || !solving) return;
+  best = r;
+  rows.unshift(r);
+  showSolution(r.solution, `best so far: <strong>${plural(r.length, 'move')}</strong>`);
+  showHistory();
+};
+const showSolution = (moves, summary) => {
+  $('result').hidden = false;
+  $('summary').innerHTML = summary;
+  $('solution').textContent = moves || '(already solved)';
+};
+const showHistory = () => {
+  const table = $('history');
+  table.replaceChildren(...rows.map((r) => {
+    const tr = document.createElement('tr');
+    for (const [text, cls] of [[`${r.seconds.toFixed(3)} s`, 'num'], [`${r.length}`, 'num'], [r.solution, 'moves']]) {
+      const td = document.createElement('td');
+      td.className = cls;
+      td.textContent = text;
+      tr.append(td);
+    }
+    return tr;
+  }));
+};
+// Phone keyboards substitute curly or look-alike apostrophes for the prime (from egg-solver).
+const primes = /[‘’‛′´`ʼʹ]/g;
+const plain = (text) => text.replace(primes, "'").replace(/ /g, ' ');
+
+$('solve').onclick = () => run('Solve', async () => {
+  const scramble = plain($('scramble').value).trim();
+  $('scramble').value = scramble;
+  const optimal = document.querySelector('input[name=mode]:checked').value === 'optimal';
+  const seconds = optimal ? 0 : Math.max(0.01, Number($('seconds').value) || 10);
+  solving = true;
+  best = null;
+  rows = [];
+  showHistory();
+  $('stats').textContent = '';
+  buttons();
+  const t0 = performance.now();
+  const timer = setInterval(() => status(`Solving… ${((performance.now() - t0) / 1000).toFixed(1)} s`
+    + (best ? ` · best so far ${plural(best.length, 'move')}` : '')), 100);
+  try {
+    const r = await call('solve', { scramble, seconds });
+    const how = r.optimal ? '<span class="ok">optimal</span>'
+      : r.cancelled ? 'stopped, not proven optimal'
+      : optimal ? 'not proven optimal' : `best found in ${seconds} s, not proven optimal`;
+    if (r.solution === null) {
+      showSolution('', `No solution found ${r.cancelled ? 'before you stopped' : `in ${seconds} s`}: try a longer time.`);
+      $('solution').textContent = '';
+    } else {
+      showSolution(r.solution, `<strong>${plural(r.length, 'move')}</strong> · ${how}`
+        + (r.verified ? ' · <span class="ok">checked</span> on a sticker model' : ' · <strong>check failed</strong>'));
+    }
+    const rate = r.seconds > 0 ? ` (${(r.nodes / r.seconds / 1e6).toFixed(1)} M/s)` : '';
+    $('stats').textContent = `${r.seconds.toFixed(3)} s · ${(r.nodes / 1e6).toFixed(2)} M nodes${rate} · `
+      + `${plural(r.solutions, 'solution')} reached · ${plural(threads, 'thread')}`;
+    status(`Ready · ${plural(threads, 'thread')}`);
+  } finally {
+    clearInterval(timer);
+    solving = false;
+    buttons();
+  }
+});
+
+$('stop').onclick = () => {
+  // With shared memory the search stops at once and returns its best so far; otherwise the
+  // worker cannot be reached while it solves, so it is restarted (tables from storage).
+  if (cancel(control)) return;
+  stopWorker('stopped');
+  if (best) {
+    showSolution(best.solution, `<strong>${plural(best.length, 'move')}</strong> · stopped, not proven optimal`);
+  } else {
+    showSolution('', 'Stopped before a solution was found.');
+    $('solution').textContent = '';
+  }
+  $('stats').textContent = '';
+  run('Restart', () => start(threads));
+};
+
+$('random').onclick = () => run('Random scramble', async () => {
+  status('Making a random-state scramble…');
+  const { scramble } = await call('random');
+  $('scramble').value = scramble;
+  status(`Ready · ${plural(threads, 'thread')}`);
+});
+$('seconds').addEventListener('input', () => { $('seconds').dataset.edited = '1'; });
+$('scramble').addEventListener('input', () => {
+  const box = $('scramble');
+  if (!primes.test(box.value)) return;
+  primes.lastIndex = 0;
+  const [s, e] = [box.selectionStart, box.selectionEnd];
+  box.value = plain(box.value);
+  box.setSelectionRange(s, e);
+});
+
+// --- Settings ---
+const cores = crossOriginIsolated ? Math.max(1, navigator.hardwareConcurrency || 1) : 1;
+$('isolation').textContent = crossOriginIsolated
+  ? `cross-origin isolated: up to ${cores} threads`
+  : 'not cross-origin isolated: one thread';
+$('threads').max = Math.max(cores, 1);
+$('threads').disabled = !crossOriginIsolated;
+$('apply').onclick = () => run('Restart', () => start(Math.max(1, Math.min(cores, Number($('threads').value) || 1))));
+$('forget').onclick = () => run('Forget', async () => {
+  await forget();
+  $('tables').textContent = 'Stored tables removed; they will be generated again on the next visit.';
+});
+$('files').onchange = () => run('Load', async () => {
+  const files = [...$('files').files];
+  const ae = files.find((f) => f.name.startsWith('ae-sym288-triples'));
+  const cb = files.find((f) => f.name.startsWith('cb-sym24'));
+  if (!ae || !cb) throw new Error('choose both ae-sym288-triples.prun and cb-sym24.prun');
+  ready = false;
+  buttons();
+  status('Loading the table files…');
+  const t0 = performance.now();
+  try {
+    await call('load', { ae, cb });
+  } catch (e) {
+    // (the module dropped its tables to load these: get them back)
+    await prepareTables();
+    ready = true;
+    buttons();
+    throw e;
+  }
+  await keep({ ae, cb }).catch(() => {});
+  $('tables').textContent = `Tables loaded from files in ${((performance.now() - t0) / 1000).toFixed(1)} s.`;
+  ready = true;
+  buttons();
+  status(`Ready · ${plural(threads, 'thread')}`);
+});
+
+// The default, with no clicks: every core the page may use, and the tables.
+run('Start', () => start(cores));
+</script>
+</body>
+</html>

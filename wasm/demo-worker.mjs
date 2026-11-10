@@ -1,0 +1,55 @@
+// The browser demo's solver (index.html; also driven by test.mjs in Bun): runs the
+// WebAssembly module in a worker, so that the page stays responsive and the module may block.
+// Messages in: { id, cmd, ...args }; out: { id, result } or { id, error }. The module's
+// output lines (progress while generating tables, each better solution while solving) go to
+// the BroadcastChannel named at `init`, from this worker and from the pool's threads.
+//
+// Adapted from egg-solver's wasm/demo-worker.mjs (same author).
+
+import { FtoSolver } from './omelettehedron.mjs';
+
+let solver = null;
+
+const commands = {
+  /** Start the module: the threads build if `threads` > 1. Returns `{ threads, control }`. */
+  async init({ threads, channel }) {
+    solver?.close();
+    solver = null;
+    const name = threads > 1 ? 'omelettehedron-threads.wasm' : 'omelettehedron.wasm';
+    const wasm = new URL(`dist/${name}`, import.meta.url);
+    solver = await FtoSolver.create({ wasm, threads: threads > 1 ? threads : undefined, channel });
+    // (the control array goes to the page for `cancel`, if it can be shared)
+    const shared =
+      typeof SharedArrayBuffer !== 'undefined' && solver.control.buffer instanceof SharedArrayBuffer;
+    return { threads: solver.threads, control: shared ? solver.control : null };
+  },
+  /** Generate the tables (progress on the channel), then warm the engine up. */
+  async generate() {
+    const info = solver.generate();
+    await solver.warmUp();
+    return info;
+  },
+  /** Load the two table files (Blobs, URLs or bytes), then warm the engine up. */
+  async load({ ae, cb }) {
+    const info = await solver.loadTables(ae, cb);
+    await solver.warmUp();
+    return info;
+  },
+  /** The tables as files: `[{ name, blob }, { name, blob }]`. */
+  export: () => solver.exportTables(),
+  /** Solve, printing improvements on the channel. */
+  solve: ({ scramble, seconds = 0, maxLength = 0 }) =>
+    solver.solve(scramble, { seconds, maxLength, improvements: true }),
+  random: ({ seed }) => solver.randomScramble({ seed }),
+  isSolved: ({ moves }) => solver.isSolved(moves),
+  bench: (args) => solver.bench(args),
+};
+
+onmessage = async ({ data: { id, cmd, ...args } }) => {
+  try {
+    if (cmd !== 'init' && !solver) throw new Error('not started');
+    postMessage({ id, result: await commands[cmd](args) });
+  } catch (e) {
+    postMessage({ id, error: e.message });
+  }
+};
