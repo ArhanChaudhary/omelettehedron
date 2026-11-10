@@ -427,6 +427,8 @@ pub struct CbTable {
     pub tab: Table2,
     /// B colouring attached to each corner state inside `H_A`
     pub attach: Vec<u32>,
+    /// experiment (FTO_CBSYM=1): `tab` is the symmetry-reduced table with this index
+    pub sym: Option<crate::cbsym::CbSymIndex>,
 }
 
 pub const N_CB: usize = N_CORNER * N_MSET;
@@ -495,6 +497,15 @@ impl CbTable {
     pub fn index_fast(f: &FastTables, x: &Fc) -> usize {
         x.c as usize * N_MSET + f.b_rank(x) as usize
     }
+
+    /// Index into `tab` (plain or symmetry-reduced).
+    #[inline(always)]
+    pub fn ix(&self, f: &FastTables, x: &Fc) -> usize {
+        match &self.sym {
+            Some(s) => s.index(f, x),
+            None => Self::index_fast(f, x),
+        }
+    }
 }
 
 /// All indices of the solved AE class.
@@ -540,6 +551,8 @@ pub struct Tables<I: AeIndex> {
     pub cb: CbTable,
     pub p2: Phase2,
     pub cbe: Option<crate::cbe::CbeTable>,
+    /// experiment (FTO_CBA=1): joint corner x B-centre x A-colour table
+    pub cba: Option<crate::cba::CbaTable>,
 }
 
 pub fn table_dir(dir: Option<&Path>) -> PathBuf {
@@ -585,6 +598,7 @@ impl<I: AeIndex> Tables<I> {
         let cb = CbTable {
             tab: CbTable::build(verbose),
             attach: CbTable::attach_targets(),
+            sym: None,
         };
         let ae_targets = ae_targets(&ae_ix);
         Tables {
@@ -594,6 +608,7 @@ impl<I: AeIndex> Tables<I> {
             cb,
             p2: Phase2::new(),
             cbe: None,
+            cba: None,
         }
     }
 
@@ -625,10 +640,40 @@ impl<I: AeIndex> Tables<I> {
         let cbt = load_or_build(&dir.join("cb.prun"), N_CB, verbose, || {
             CbTable::build(verbose)
         })?;
-        let cb = CbTable {
+        let mut cb = CbTable {
             tab: cbt,
             attach: CbTable::attach_targets(),
+            sym: None,
         };
+        if std::env::var("FTO_CBSYM").is_ok_and(|v| v == "1") {
+            let t0 = std::time::Instant::now();
+            let ix = crate::cbsym::CbSymIndex::new();
+            let tab = ix.build(verbose);
+            // check against the plain table on random positions and their neighbours
+            let f = fast();
+            let mut rng = <rand_xoshiro::Xoshiro256PlusPlus as rand::SeedableRng>::seed_from_u64(5);
+            for _ in 0..2000 {
+                let x = f.of(&Cube::random(&mut rng));
+                let em = masks(&x.e);
+                for m in 0..N_MOVES {
+                    let y = f.apply(&x, &em, m);
+                    assert_eq!(
+                        tab.get(ix.index(f, &y)),
+                        cb.tab.get(CbTable::index_fast(f, &y)),
+                        "cb-sym mismatch"
+                    );
+                }
+            }
+            eprintln!(
+                "cb-sym: {} classes, {:.1} MB, hist {:?}, {:.2}s",
+                ix.rep.len(),
+                tab.bytes() as f64 / 1e6,
+                tab.hist,
+                t0.elapsed().as_secs_f64()
+            );
+            cb.tab = tab;
+            cb.sym = Some(ix);
+        }
         let ae_targets = ae_targets(&ae_ix);
         let cbe = if with_cbe {
             let path = dir.join("cbe.prun");
@@ -663,6 +708,11 @@ impl<I: AeIndex> Tables<I> {
             cb,
             p2: Phase2::new(),
             cbe,
+            cba: if std::env::var("FTO_CBA").is_ok_and(|v| v == "1") {
+                Some(crate::cba::CbaTable::build(verbose))
+            } else {
+                None
+            },
         })
     }
 
@@ -695,7 +745,7 @@ impl<I: AeIndex> Tables<I> {
     pub fn exact_fast(&self, x: &Fc) -> (u8, u8) {
         let f = fast();
         let ae_ix = |y: &Fc| self.ae_ix.index_fast(f, y, f.a_rank(y));
-        let cb_ix = |y: &Fc| CbTable::index_fast(f, y);
+        let cb_ix = |y: &Fc| self.cb.ix(f, y);
         // Each step reads the values of all neighbours, with every lookup issued first.
         let walk = |ix: &dyn Fn(&Fc) -> usize, tab: &Table2, done: &dyn Fn(&Fc) -> bool| -> u8 {
             let mut y = *x;

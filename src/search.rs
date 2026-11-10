@@ -92,6 +92,16 @@ struct Shared<'a, I: AeIndex> {
     mb: [usize; N_MOVES],
     /// largest CB distance (8): with at least this many moves left CB cannot prune
     cb_max: u8,
+    /// FTO_SKIPLAST: optimality is proven once both variants have exhausted bound best - 2
+    skip_last: bool,
+    /// bound of the iteration in progress
+    cur_depth: AtomicUsize,
+    /// set when an improvement proved optimality in the middle of an iteration
+    proven: AtomicBool,
+    /// length used by the class-B bound (the best length, or less in target mode)
+    prune_len: AtomicUsize,
+    /// a solution of at most this length is optimal (skip-last / target mode)
+    proof_len: AtomicUsize,
 }
 
 #[derive(Clone)]
@@ -182,6 +192,14 @@ impl<I: AeIndex> Shared<'_, I> {
         let cube = var.cube.apply_seq(path);
         let d1 = path.len();
         // with the small tier the edge chirality is not in the tables: verify membership
+        #[cfg(feature = "stats")]
+        crate::stats::with(|st| match self.t.p2.length(&cube) {
+            Some(d2) => {
+                let useful = d1 + (d2 as usize) < self.best_len.load(Ordering::Relaxed);
+                st.leaf_d2[(d2 as usize).min(15) + if useful { 0 } else { 16 }] += 1;
+            }
+            None => st.leaf_nonmember += 1,
+        });
         if let Some(d2) = self.t.p2.length(&cube) {
             let n = self.count.fetch_add(1, Ordering::Relaxed) + 1;
             if self.limits.max_solutions.is_some_and(|k| n >= k) {
@@ -213,6 +231,16 @@ impl<I: AeIndex> Shared<'_, I> {
                         length: total,
                     });
                     self.best_len.store(total, Ordering::Relaxed);
+                    self.prune_len.fetch_min(total, Ordering::Relaxed);
+                    // every iteration below the current one is complete: if they reach
+                    // best - 2, no shorter solution exists
+                    if self.skip_last
+                        && self.limits.max_solutions.is_none()
+                        && total <= self.proof_len.load(Ordering::Relaxed)
+                    {
+                        self.proven.store(true, Ordering::Relaxed);
+                        self.stop.store(true, Ordering::Relaxed);
+                    }
                     if self.limits.max_length.is_some_and(|l| total <= l) {
                         self.stop.store(true, Ordering::Relaxed);
                     }
@@ -278,6 +306,8 @@ impl<I: AeIndex> Shared<'_, I> {
         if before / CHECK_EVERY != *nodes / CHECK_EVERY && self.time_up() {
             return;
         }
+        #[cfg(feature = "stats")]
+        self.stats_children::<B>(g, budget, h_ae, h_cb, cb_pend, xb, hb_ae, hb_cb, &ys[..n], &ms[..n]);
         let mut has = [0u8; N_MOVES];
         let mut hcs = [0u8; N_MOVES];
         let mut idx = [0usize; N_MOVES];
@@ -306,7 +336,7 @@ impl<I: AeIndex> Shared<'_, I> {
                     ms[k] = ms[i];
                     has[k] = ha;
                     min_ha = min_ha.min(ha);
-                    cbi[k] = CbTable::index_fast(f, &ys[k]);
+                    cbi[k] = t.cb.ix(f, &ys[k]);
                     prefetch(&t.cb.tab.data[cbi[k] >> 5]);
                     k += 1;
                 }
@@ -319,7 +349,7 @@ impl<I: AeIndex> Shared<'_, I> {
             // CB and joint-table stages.
             let lim = if B {
                 // a child at depth g+1 with bound h cannot give a solution shorter than g+1+h
-                self.best_len.load(Ordering::Relaxed).saturating_sub(g + 2)
+                self.prune_len.load(Ordering::Relaxed).saturating_sub(g + 2)
             } else {
                 0
             };
@@ -331,7 +361,7 @@ impl<I: AeIndex> Shared<'_, I> {
                 t.ae_ix
                     .index_batch_fast_pf(f, &ybs[..k], &mut bidx[..k], &t.ae.data);
                 for i in 0..k {
-                    bcbi[i] = CbTable::index_fast(f, &ybs[i]);
+                    bcbi[i] = t.cb.ix(f, &ybs[i]);
                     prefetch(&t.cb.tab.data[bcbi[i] >> 5]);
                 }
             }
@@ -339,12 +369,17 @@ impl<I: AeIndex> Shared<'_, I> {
             if budget <= 8 {
                 if let Some(cbe) = &t.cbe {
                     let mut ci = [[0usize; 4]; N_MOVES];
+                    let mut ca = [[0usize; 4]; N_MOVES];
                     for i in 0..k {
                         cbe.prefetch_all(f, &ys[i], &mut ci[i]);
+                        if let Some(cba) = &t.cba {
+                            cba.prefetch_all(f, &ys[i], &mut ca[i]);
+                        }
                     }
                     let mut k2 = 0;
                     for i in 0..k {
-                        if cbe.bound(&ci[i]) as usize <= budget {
+                        let hb = t.cba.as_ref().map_or(0, |c| c.bound(&ca[i]));
+                        if cbe.bound(&ci[i]).max(hb) as usize <= budget {
                             ys[k2] = ys[i];
                             ms[k2] = ms[i];
                             has[k2] = has[i];
@@ -396,7 +431,7 @@ impl<I: AeIndex> Shared<'_, I> {
             b_done = true;
         } else {
             for i in 0..n {
-                cbi[i] = CbTable::index_fast(f, &ys[i]);
+                cbi[i] = t.cb.ix(f, &ys[i]);
                 prefetch(&t.cb.tab.data[cbi[i] >> 5]);
             }
             let mut k = 0;
@@ -427,12 +462,17 @@ impl<I: AeIndex> Shared<'_, I> {
         if budget <= 8 && !cbe_done {
             if let Some(cbe) = &t.cbe {
                 let mut ci = [[0usize; 4]; N_MOVES];
+                let mut ca = [[0usize; 4]; N_MOVES];
                 for i in 0..n {
                     cbe.prefetch_all(f, &ys[i], &mut ci[i]);
+                    if let Some(cba) = &t.cba {
+                        cba.prefetch_all(f, &ys[i], &mut ca[i]);
+                    }
                 }
                 let mut k = 0;
                 for i in 0..n {
-                    if cbe.bound(&ci[i]) as usize <= budget {
+                    let hb = t.cba.as_ref().map_or(0, |c| c.bound(&ca[i]));
+                    if cbe.bound(&ci[i]).max(hb) as usize <= budget {
                         ys[k] = ys[i];
                         ms[k] = ms[i];
                         hcs[k] = hcs[i];
@@ -445,7 +485,7 @@ impl<I: AeIndex> Shared<'_, I> {
         }
         // Class-B bound against the best solution so far.
         if B && n > 0 && !b_done {
-            let best = self.best_len.load(Ordering::Relaxed);
+            let best = self.prune_len.load(Ordering::Relaxed);
             // a child at depth g+1 with bound h cannot give a solution shorter than g+1+h
             let lim = best.saturating_sub(g + 2);
             let emb = masks(&xb.e);
@@ -455,7 +495,7 @@ impl<I: AeIndex> Shared<'_, I> {
             t.ae_ix
                 .index_batch_fast_pf(f, &ybs[..n], &mut idx[..n], &t.ae.data);
             for i in 0..n {
-                cbi[i] = CbTable::index_fast(f, &ybs[i]);
+                cbi[i] = t.cb.ix(f, &ybs[i]);
                 prefetch(&t.cb.tab.data[cbi[i] >> 5]);
             }
             let mut k = 0;
@@ -493,6 +533,112 @@ impl<I: AeIndex> Shared<'_, I> {
         }
     }
 
+    /// Analysis: evaluate every bound of every child (feature `stats`).
+    #[cfg(feature = "stats")]
+    fn stats_children<const B: bool>(
+        &self,
+        g: usize,
+        budget: usize,
+        h_ae: u8,
+        h_cb: u8,
+        cb_pend: usize,
+        xb: &Fc,
+        hb_ae: u8,
+        hb_cb: u8,
+        ys: &[Fc],
+        ms: &[u8],
+    ) {
+        use crate::stats::*;
+        let t = self.t;
+        let f = fast();
+        let h_cb = if cb_pend != NO_CB {
+            decode(h_cb, t.cb.tab.get(cb_pend))
+        } else {
+            h_cb
+        };
+        let lim = self.prune_len.load(Ordering::Relaxed).saturating_sub(g + 2);
+        let emb = masks(&xb.e);
+        let cbe_of = |y: &Fc| -> u8 {
+            t.cbe.as_ref().map_or(0, |c| {
+                let mut ci = [0usize; 4];
+                c.prefetch_all(f, y, &mut ci);
+                c.bound(&ci)
+            })
+        };
+        with(|st| {
+            for i in 0..ys.len() {
+                let y = &ys[i];
+                let ha = decode(h_ae, t.ae.get(t.ae_ix.index_fast(f, y, f.a_rank(y))));
+                let hc = decode(h_cb, t.cb.tab.get(t.cb.ix(f, y)));
+                let ce = if budget <= 8 { cbe_of(y) } else { 0 };
+                let mut bits = 0;
+                if ha as usize > budget {
+                    bits |= AE;
+                }
+                if hc as usize > budget {
+                    bits |= CB;
+                }
+                if ce as usize > budget {
+                    bits |= CBE;
+                }
+                let mut bm = 0u8;
+                if B {
+                    let yb = f.apply(xb, &emb, self.mb[ms[i] as usize]);
+                    let hba = decode(hb_ae, t.ae.get(t.ae_ix.index_fast(f, &yb, f.a_rank(&yb))));
+                    let hbc = decode(hb_cb, t.cb.tab.get(t.cb.ix(f, &yb)));
+                    let hbe = cbe_of(&yb);
+                    bm = hba.max(hbc);
+                    if hba as usize > lim {
+                        bits |= BAE;
+                    }
+                    if hbc as usize > lim {
+                        bits |= BCB;
+                    }
+                    if hbe as usize > lim {
+                        bits |= BCBE;
+                    }
+                }
+                // forced route: s = best - 1 - bound = lim - budget
+                let pl = self.prune_len.load(Ordering::Relaxed);
+                if pl < usize::MAX && lim >= budget && lim - budget <= 7 {
+                    let r = route();
+                    if r.d[lim - budget][r.ix.index(f, y)] as usize > budget {
+                        bits |= FR;
+                    }
+                }
+                let b = budget.min(NB - 1);
+                st.pat[b][bits] += 1;
+                let surv = bits & (AE | CB | CBE | BAE | BCB) == 0;
+                if surv && bits & FR != 0 {
+                    st.fr_surv[b] += 1;
+                }
+                if self.prune_len.load(Ordering::Relaxed) < usize::MAX {
+                    st.lim_eval[lim.min(NB - 1)] += 1;
+                    if surv {
+                        st.lim_surv[lim.min(NB - 1)] += 1;
+                    }
+                }
+                if bits & (AE | CB | CBE | BAE | BCB) == 0 {
+                    let h = ha.max(hc).max(ce);
+                    st.slack[b][(budget - h as usize).min(7)] += 1;
+                    let w = if ha == h && hc < h && ce < h {
+                        0
+                    } else if hc == h && ha < h && ce < h {
+                        1
+                    } else if ce == h && ha < h && hc < h {
+                        2
+                    } else {
+                        3
+                    };
+                    st.bind[b][w] += 1;
+                    if B {
+                        st.bslack[b][(lim - bm as usize).min(7)] += 1;
+                    }
+                }
+            }
+        });
+    }
+
     /// All children of a task (unpruned), with their exact bounds on both classes. The
     /// lookups of all children are issued before any is read.
     fn expand_all(&self, t: &Task) -> Vec<Task> {
@@ -523,9 +669,9 @@ impl<I: AeIndex> Shared<'_, I> {
         tb.ae_ix
             .index_batch_fast_pf(f, &yb[..n], &mut iab[..n], &tb.ae.data);
         for i in 0..n {
-            ic[i] = CbTable::index_fast(f, &ys[i]);
+            ic[i] = tb.cb.ix(f, &ys[i]);
             prefetch(&tb.cb.tab.data[ic[i] >> 5]);
-            icb[i] = CbTable::index_fast(f, &yb[i]);
+            icb[i] = tb.cb.ix(f, &yb[i]);
             prefetch(&tb.cb.tab.data[icb[i] >> 5]);
         }
         (0..n)
@@ -657,6 +803,8 @@ pub fn solve<I: AeIndex>(
     limits: &Limits,
     report: Report,
 ) -> Outcome {
+    #[cfg(feature = "stats")]
+    let _ = crate::stats::route();
     let start = Instant::now();
     let variants: Option<Vec<Variant>> = [IDENTITY, SWAP_AB]
         .iter()
@@ -711,6 +859,11 @@ pub fn solve<I: AeIndex>(
         best: Mutex::new((None, vec![])),
         mb: swap_moves(),
         cb_max: (t.cb.tab.hist.len() - 1) as u8,
+        skip_last: std::env::var("FTO_SKIPLAST").is_ok_and(|v| v == "1"),
+        cur_depth: AtomicUsize::new(0),
+        proven: AtomicBool::new(false),
+        prune_len: AtomicUsize::new(usize::MAX),
+        proof_len: AtomicUsize::new(0),
     };
     let lo = sh
         .variants
@@ -725,10 +878,57 @@ pub fn solve<I: AeIndex>(
     let mut node_stat: Vec<f32> = vec![];
     let mut prev_ids: Vec<u32> = vec![];
     let mut prev_nodes: Option<u64> = None;
+    // FTO_SKIPLAST=1: with both variants exhausted to best - 2, no shorter solution exists
+    // (the canonical form of a shortest solution ends in an A move, found by variant A with a
+    // non-empty phase 2, or in a B move, found likewise by variant B).
+    let skip = sh.skip_last as usize;
+    // FTO_TARGET=1 (optimal mode, with FTO_SKIPLAST=1): passes for target length T = lo+1,
+    // lo+2, ...; pass T runs iterations lo..T-1 with the class-B bound set for solutions of at
+    // most T moves, so that a loose early best does not loosen the bound.
+    let target_mode = sh.skip_last
+        && limits.is_optimal()
+        && std::env::var("FTO_TARGET").is_ok_and(|v| v == "1");
+    let mut target = lo + 1;
+    if target_mode {
+        if cube == Cube::solved() {
+            target = 0;
+        }
+        sh.prune_len.store(target + 1, Ordering::Relaxed);
+        sh.proof_len.store(target, Ordering::Relaxed);
+    }
     loop {
-        if depth >= sh.best_len.load(Ordering::Relaxed) {
+        if sh.proven.load(Ordering::Relaxed) {
             optimal = true;
             break;
+        }
+        if depth + skip >= sh.best_len.load(Ordering::Relaxed) {
+            optimal = true;
+            break;
+        }
+        if target_mode && depth >= target.max(lo + 1) {
+            // pass complete: no solution of at most `target` moves
+            target += 1;
+            if sh.best_len.load(Ordering::Relaxed) <= target {
+                optimal = true;
+                break;
+            }
+            sh.prune_len.store(
+                (target + 1).min(sh.best_len.load(Ordering::Relaxed)),
+                Ordering::Relaxed,
+            );
+            sh.proof_len.store(target, Ordering::Relaxed);
+            depth = lo;
+            prev_nodes = None;
+            if std::env::var_os("FTO_DEBUG").is_some() {
+                eprintln!("  pass for length {target}");
+            }
+            continue;
+        }
+        sh.cur_depth.store(depth, Ordering::Relaxed);
+        if !target_mode {
+            sh.prune_len
+                .store(sh.best_len.load(Ordering::Relaxed), Ordering::Relaxed);
+            sh.proof_len.store(depth + 1, Ordering::Relaxed);
         }
         // Small iterations run on this thread: waking the pool costs more than they do.
         let predicted = prev_nodes.map_or(if depth < 14 { 0 } else { u64::MAX }, |n| {
@@ -761,6 +961,8 @@ pub fn solve<I: AeIndex>(
         let next = std::sync::atomic::AtomicUsize::new(0);
         let nodes_before = sh.nodes.load(Ordering::Relaxed);
         let tree_ref = &tree;
+        let it0 = Instant::now();
+        let finish: Mutex<Vec<f64>> = Mutex::new(vec![]);
         let worker = || {
             let mut path: Vec<usize> = Vec::with_capacity(64);
             // the per-thread counter persists across tasks so time checks happen regularly
@@ -775,7 +977,7 @@ pub fn solve<I: AeIndex>(
                 path.extend_from_slice(&task.path);
                 let before = nodes;
                 let mut stat = 0f32;
-                let use_b = !count_mode && sh.best_len.load(Ordering::Relaxed) < usize::MAX;
+                let use_b = !count_mode && sh.prune_len.load(Ordering::Relaxed) < usize::MAX;
                 if use_b {
                     sh.dfs::<true>(
                         task.v, &mut path, &task.x, task.h_ae, task.h_cb, NO_CB, &task.xb,
@@ -790,6 +992,7 @@ pub fn solve<I: AeIndex>(
                 stats[i].store(stat.to_bits(), Ordering::Relaxed);
                 sh.nodes.fetch_add(nodes - before, Ordering::Relaxed);
             }
+            finish.lock().unwrap().push(it0.elapsed().as_secs_f64());
         };
         if inline {
             worker();
@@ -810,8 +1013,22 @@ pub fn solve<I: AeIndex>(
         }
         let n_tasks = ids.len();
         prev_ids = ids;
+        #[cfg(feature = "stats")]
+        {
+            let st = crate::stats::take();
+            eprintln!("stats: iteration {depth} (best {:?})", sh.best_len.load(Ordering::Relaxed));
+            crate::stats::print(&st);
+        }
         if std::env::var_os("FTO_DEBUG").is_some() {
             eprintln!("  depth {depth}: split done at {t_split:.4}s");
+            let fin = finish.lock().unwrap();
+            let wall = fin.iter().cloned().fold(0.0, f64::max);
+            let util = fin.iter().sum::<f64>() / (fin.len().max(1) as f64 * wall.max(1e-12));
+            eprintln!(
+                "  depth {depth}: wall {wall:.4}s, {} workers, utilisation {util:.3}",
+                fin.len()
+            );
+            drop(fin);
             eprintln!(
                 "  depth {depth}: {} tasks, {} nodes, {} solutions, best {:?}, {:.3}s",
                 n_tasks,
@@ -820,6 +1037,10 @@ pub fn solve<I: AeIndex>(
                 sh.best_len.load(Ordering::Relaxed),
                 start.elapsed().as_secs_f64()
             );
+        }
+        if sh.proven.load(Ordering::Relaxed) {
+            optimal = true;
+            break;
         }
         if sh.stop.load(Ordering::Relaxed) || sh.time_up() {
             break;

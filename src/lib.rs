@@ -44,7 +44,9 @@
 )]
 //! Two-phase solver for the face-turning octahedron.
 pub mod bench;
+pub mod cba;
 pub mod cbe;
+pub mod cbsym;
 pub mod coord;
 pub mod cube;
 pub mod fast;
@@ -53,5 +55,7 @@ pub mod mem;
 pub mod notation;
 pub mod prune;
 pub mod search;
+#[cfg(feature = "stats")]
+pub mod stats;
 pub mod sym;
 pub mod tables;
