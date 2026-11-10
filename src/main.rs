@@ -205,6 +205,13 @@ macro_rules! dispatch {
     ($tab:expr, |$t:ident, $name:ident| $body:expr) => {{
         let dir = table_dir($tab.tables.as_deref());
         omelettehedron::preflight::set_force($tab.force);
+        // The larger tiers' indices exceed 2^32 entries (and their tables 4 GB): 32-bit
+        // targets such as WebAssembly support the small tier only.
+        if cfg!(target_pointer_width = "32") && !matches!($tab.tier, Tier::Small) {
+            return Err(
+                "only --tier small is supported on 32-bit targets such as WebAssembly".into(),
+            );
+        }
         match $tab.tier {
             Tier::Small => {
                 let $t = Tables::load(&dir, AeSym::new(false), $tab.verbose)

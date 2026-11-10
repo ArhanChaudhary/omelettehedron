@@ -1102,7 +1102,11 @@ mod tests {
     #[test]
     fn ae_graph_steps_match_index() {
         check_graph(&AeSym::new(false));
-        check_graph(&AeSym::new(true));
-        check_graph(&AeRelabel::new());
+        // (the larger indices need 64-bit sizes: 4.1e9 and 9.1e10 entries)
+        #[cfg(target_pointer_width = "64")]
+        {
+            check_graph(&AeSym::new(true));
+            check_graph(&AeRelabel::new());
+        }
     }
 }
