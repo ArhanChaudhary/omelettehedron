@@ -116,12 +116,7 @@ fn hash_step(h: u64, x: u64) -> u64 {
 }
 
 /// Fill `g` (chunks `c0..` of the table) from the file and return the XOR of their checksums.
-fn read_and_hash(
-    file: &std::fs::File,
-    offset: u64,
-    c0: usize,
-    g: &mut [u64],
-) -> std::io::Result<u64> {
+fn read_and_hash(file: &std::fs::File, offset: u64, c0: usize, g: &mut [u64]) -> std::io::Result<u64> {
     use std::os::unix::fs::FileExt;
     let nc = g.len().div_ceil(CK);
     let mut h: [u64; GROUP] = std::array::from_fn(|j| 0x9e3779b97f4a7c15u64 ^ (c0 + j) as u64);
