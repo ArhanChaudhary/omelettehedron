@@ -7,8 +7,14 @@ A fast two-phase solver for the face-turning octahedron (FTO), written in Rust.
 * **Phase 2** finishes with those faces only. Its 933,120 positions are fully tabulated, so it
   is an O(length) lookup, and its solutions are optimal even among all-move solutions.
 
-Phase 1 is an IDA* search guided by two pruning tables. See [docs/PHASES.md](docs/PHASES.md)
-for why this split was chosen and how it compares with alternatives.
+Phase 1 is an IDA* search guided by pruning tables. See [docs/PHASES.md](docs/PHASES.md)
+for why this split was chosen and how it compares with alternatives,
+[docs/RESULTS.md](docs/RESULTS.md) for measured speed and solution lengths, and
+[docs/OPTIMIZATION_LOG.md](docs/OPTIMIZATION_LOG.md) for how it got there.
+
+On 48 threads a random position gets its first solution in about 6 ms (23 moves on average),
+21.5 moves after 1 s and 21.1 after 5 s; a proof of optimality takes from a few seconds to about
+a minute (optimal lengths are around 20-21).
 
 ## Build
 
