@@ -318,13 +318,15 @@ pub extern "C" fn fto_load() -> i32 {
         ensure_pool(state, 1)?;
         state.tables = None;
         let start = Instant::now();
-        let files = std::mem::take(&mut state.incoming);
+        let [ae_file, cb_file] = std::mem::take(&mut state.incoming);
         let ae_ix = AeSym::new(false);
         let (ae_name, ae_n) = table_kind(0)?;
         let (cb_name, cb_n) = table_kind(1)?;
-        let ae = parse_table(&files[0], ae_n, ae_name)?;
-        let cb = parse_table(&files[1], cb_n, cb_name)?;
-        drop(files);
+        // (each file is freed once parsed: less memory at the peak)
+        let cb = parse_table(&cb_file, cb_n, cb_name)?;
+        drop(cb_file);
+        let ae = parse_table(&ae_file, ae_n, ae_name)?;
+        drop(ae_file);
         let t = Tables {
             ae_targets: ae_targets(&ae_ix),
             ae_ix,
