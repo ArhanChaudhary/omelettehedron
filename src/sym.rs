@@ -113,28 +113,33 @@ fn build() -> Syms {
         }
     }
     let ms = mset();
+    // Speedup: both tables work on the label masks (`Mset::unrank_masks`, `MaskPerm`) instead of
+    // unranking to labels and ranking again.
     let relab_e: Vec<Vec<u32>> = (0..N_GEO)
         .map(|g| {
+            // label x becomes a_col[g][x]: the new mask of label y is the old mask of from[y]
+            let mut from = [0usize; 4];
+            for x in 0..4 {
+                from[a_col[g][x] as usize] = x;
+            }
             (0..N_MSET as u32)
                 .into_par_iter()
                 .map(|r| {
-                    let l = ms.unrank(r);
-                    ms.rank(&l.map(|x| a_col[g][x as usize]))
+                    let [m0, m1, m2] = ms.unrank_masks(r);
+                    let m = [m0, m1, m2, 0xfff ^ m0 ^ m1 ^ m2];
+                    ms.rank_masks(m[from[0]], m[from[1]], m[from[2]])
                 })
                 .collect()
         })
         .collect();
     let repos_e: Vec<Vec<u32>> = (0..N_GEO)
         .map(|t| {
+            let perm = MaskPerm::new(&e_pos[t]);
             (0..N_MSET as u32)
                 .into_par_iter()
                 .map(|r| {
-                    let l = ms.unrank(r);
-                    let mut n = [0u8; 12];
-                    for p in 0..12 {
-                        n[e_pos[t][p] as usize] = l[p];
-                    }
-                    ms.rank(&n) | (triple_flip_mask(&l, &e_pos[t]) as u32) << 20
+                    let m = ms.unrank_masks(r);
+                    perm.rank(ms, &m) | u32::from(perm.flips(&m)) << 20
                 })
                 .collect()
         })
@@ -318,6 +323,24 @@ impl AClasses {
 mod tests {
     use super::*;
     use rand::SeedableRng;
+
+    #[test]
+    fn edge_tables_match_label_construction() {
+        let (s, ms) = (syms(), mset());
+        for g in 0..N_GEO {
+            for r in 0..N_MSET as u32 {
+                let l = ms.unrank(r);
+                let i = g * N_MSET + r as usize;
+                assert_eq!(s.relab_e[i], ms.rank(&l.map(|x| s.a_col[g][x as usize])));
+                let mut n = [0u8; 12];
+                for p in 0..12 {
+                    n[s.e_pos[g][p] as usize] = l[p];
+                }
+                let want = ms.rank(&n) | u32::from(triple_flip_mask(&l, &s.e_pos[g])) << 20;
+                assert_eq!(s.repos_e[i], want);
+            }
+        }
+    }
 
     /// The symmetries must map the move set to itself (as permutations of the coordinates):
     /// applying (g,t) then a move equals applying the conjugated move then (g,t).
