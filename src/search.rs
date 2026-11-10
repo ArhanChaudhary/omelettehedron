@@ -500,6 +500,38 @@ impl<I: AeIndex> Shared<'_, I> {
         }
     }
 
+    /// Greedy depth-first probe for a quick first solution: below `t`, children are tried in
+    /// order of their bound (smallest first) and the probe gives up after `cap` nodes. Returns
+    /// true once a phase-2 completion has been reached.
+    fn probe(&self, t: &Task, bound: usize, nodes: &mut u64, cap: u64) -> bool {
+        let g = t.path.len();
+        // (unlike an iteration, the probe takes the first phase-1 path at any depth)
+        if t.h_ae == 0 && t.h_cb == 0 && t.path.last().is_none_or(|&m| !is_a_move(m)) {
+            let before = self.count.load(Ordering::Relaxed);
+            self.leaf(t.v, &t.path);
+            if self.count.load(Ordering::Relaxed) > before {
+                return true;
+            }
+        }
+        if g >= bound || *nodes >= cap {
+            return false;
+        }
+        let mut kids = self.expand_all(t);
+        *nodes += kids.len() as u64;
+        let budget = bound - g - 1;
+        kids.retain(|k| k.h_ae.max(k.h_cb) as usize <= budget);
+        kids.sort_by_key(|k| (k.h_ae.max(k.h_cb), k.hb_ae.max(k.hb_cb)));
+        for k in &kids {
+            if self.probe(k, bound, nodes, cap) {
+                return true;
+            }
+            if *nodes >= cap {
+                return false;
+            }
+        }
+        false
+    }
+
     /// All children of a task (unpruned), with their exact bounds on both classes. The
     /// lookups of all children are issued before any is read.
     fn expand_all(&self, t: &Task) -> Vec<Task> {
@@ -728,6 +760,37 @@ pub fn solve<I: AeIndex>(
         .fold(usize::MAX, usize::min);
     let mut optimal = false;
     let threads = rayon::current_num_threads();
+    // A short greedy probe finds a first solution long before the iterations reach the depth
+    // of the first phase-1 path, and the bound against the best is active from then on.
+    // FTO_PROBE sets its node budget (0 turns it off).
+    let probe_cap = env_usize("FTO_PROBE", 20_000) as u64;
+    if probe_cap > 0 && limits.max_solutions.is_none() {
+        let roots: Vec<Task> = sh
+            .variants
+            .iter()
+            .enumerate()
+            .map(|(v, var)| Task {
+                v,
+                path: vec![],
+                x: var.root,
+                h_ae: var.h_ae,
+                h_cb: var.h_cb,
+                xb: var.root_b,
+                hb_ae: var.hb_ae,
+                hb_cb: var.hb_cb,
+            })
+            .collect();
+        let mut nodes = 0u64;
+        'probe: for slack in [2, 4, 6, 8] {
+            for r in &roots {
+                let bound = r.h_ae.max(r.h_cb) as usize + slack;
+                if sh.probe(r, bound, &mut nodes, probe_cap) || nodes >= probe_cap {
+                    break 'probe;
+                }
+            }
+        }
+        sh.nodes.fetch_add(nodes, Ordering::Relaxed);
+    }
     let mut depth = lo;
     let mut tree = Tree::default();
     // ordering statistic of each tree node from the previous iteration (0 if not a task then)
