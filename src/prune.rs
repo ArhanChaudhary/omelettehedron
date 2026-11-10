@@ -135,6 +135,22 @@ fn hash_step(h: u64, x: u64) -> u64 {
     (h ^ x).wrapping_mul(0x0100_0000_01b3).rotate_left(23)
 }
 
+/// Read exactly `buf.len()` bytes at `offset` without moving a shared file cursor.
+#[cfg(unix)]
+fn read_at(file: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(buf, offset)
+}
+
+/// Elsewhere (WebAssembly) there is a single thread, so seeking the shared cursor is safe.
+#[cfg(not(unix))]
+fn read_at(file: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = file;
+    f.seek(SeekFrom::Start(offset))?;
+    f.read_exact(buf)
+}
+
 /// Fill `g` (chunks `c0..` of the table) from the file and return the XOR of their checksums.
 fn read_and_hash(
     file: &std::fs::File,
@@ -142,7 +158,6 @@ fn read_and_hash(
     c0: usize,
     g: &mut [u64],
 ) -> std::io::Result<u64> {
-    use std::os::unix::fs::FileExt;
     let nc = g.len().div_ceil(CK);
     let mut h: [u64; GROUP] = std::array::from_fn(|j| 0x9e37_79b9_7f4a_7c15_u64 ^ (c0 + j) as u64);
     let full = g.len() / CK == GROUP;
@@ -159,7 +174,7 @@ fn read_and_hash(
             let bytes = unsafe {
                 std::slice::from_raw_parts_mut(g[lo..hi].as_mut_ptr().cast::<u8>(), (hi - lo) * 8)
             };
-            file.read_exact_at(bytes, offset + ((c0 * CK + lo) * 8) as u64)?;
+            read_at(file, bytes, offset + ((c0 * CK + lo) * 8) as u64)?;
         }
         if full {
             // four independent chains: the multiply latency is shared
