@@ -131,12 +131,28 @@ enum Cmd {
     },
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn pool(threads: Option<usize>) -> Result<rayon::ThreadPool, Error> {
     let mut b = rayon::ThreadPoolBuilder::new();
     if let Some(t) = threads {
         b = b.num_threads(t);
     }
     Ok(b.build()?)
+}
+
+/// WebAssembly (WASI) has no threads: the only worker is the current thread, for this pool and
+/// for the global one (which table generation may use).
+#[cfg(target_family = "wasm")]
+fn pool(_threads: Option<usize>) -> Result<rayon::ThreadPool, Error> {
+    // (fails harmlessly if the global pool already exists)
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .use_current_thread()
+        .build_global();
+    Ok(rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .use_current_thread()
+        .build()?)
 }
 
 fn table_error(dir: &Path, e: &std::io::Error) -> Error {
