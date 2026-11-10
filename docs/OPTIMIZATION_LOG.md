@@ -44,6 +44,7 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | `FastTables` read from `Shared` in the pipeline stages (no `fast()` `OnceLock` per stage and node) | `opt/atomics` | WebAssembly 8 threads (Bun) 34.7 -> 58.8 M nodes/s (1.70x); native nodes/s 0.98x / 1.00x (within noise) | yes |
 | With slices, last proof iteration restricted to paths ending in a slice | `neg/slicelast` | neutral: few nodes reach the last level (48T node counts within 0.1%); slice optimal 0.97x (48T) / 1.05x (1T) | no |
 | Profile-guided build (LLVM PGO, training on other seeds) | `neg/pgo` | nodes/s 0.987x (48T) / 0.947x (1T); optimal 1.002x / 0.978x time | no |
+| Sibling pipeline three deep (first lookups three siblings ahead) | `neg/pipe4` | nodes/s 1.008x / 0.997x; optimal 1.009x / 0.983x: the table-read stall is not prefetch timing | no |
 
 Cumulative, first working version -> final main 8837126 of 2026-11-10 (48 threads, 40 random
 positions, 5 s): mean best length 21.60 -> 21.175; first solution 86 ms -> 5.7 ms. Optimal mode,
