@@ -746,10 +746,13 @@ pub fn solve<I: AeIndex>(
     let mut node_stat: Vec<f32> = vec![];
     let mut prev_ids: Vec<u32> = vec![];
     let mut prev_nodes: Option<u64> = None;
-    // target-length passes: only in optimal mode, when the best is at least this far above
-    // the lower bound (0 = never)
+    // Target-length passes: only in optimal mode, when the best is at least this far above the
+    // lower bound (0 = never). On by default for one thread only: there the best stays loose
+    // for long and the passes cut the proof time (1T 17-move set 11.95 -> 5.27 s, 0.44x, when
+    // added); with 48 threads a tight best is found early and the rerun iterations cost more
+    // (19-move set 1.07x, random positions 1.00-1.04x). FTO_TARGET_GAP overrides.
     let target_gap = if limits.is_optimal() {
-        env_usize("FTO_TARGET_GAP", 0)
+        env_usize("FTO_TARGET_GAP", if threads == 1 { 2 } else { 0 })
     } else {
         0
     };
