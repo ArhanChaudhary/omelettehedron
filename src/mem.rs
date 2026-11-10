@@ -43,8 +43,11 @@ fn advise_huge(p: *mut u8, bytes: usize) {
 #[cfg(not(all(target_os = "linux", not(miri))))]
 fn advise_huge(_p: *mut u8, _bytes: usize) {}
 
-/// Map `bytes` (rounded up to whole 1 GiB pages) from the hugetlb pool, if FTO_HUGE1G=1, the
-/// buffer is large and the pool has the pages. The kernel hands the memory out zeroed.
+/// Map `bytes` (rounded up to whole 1 GiB pages) from the hugetlb pool, if `FTO_HUGE1G=1`, the
+/// buffer is large and the pool has the pages (reserved with
+/// `echo N > /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages`). The kernel hands the
+/// memory out zeroed. (A-centre/edge table on a 1 GiB page: optimal proofs 0.96x / 0.97x time,
+/// nodes/s 1.01x / 1.03x at 48T / 1T, two interleaved rounds, when added.)
 #[cfg(all(target_os = "linux", not(miri)))]
 fn map_1g(bytes: usize) -> Option<(NonNull<u8>, usize)> {
     const GIB: usize = 1 << 30;
