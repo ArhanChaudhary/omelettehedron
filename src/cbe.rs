@@ -181,11 +181,11 @@ impl CbeIndex {
         let b = shuffle(&shuffle(&self.bmap[m], &x.b), &self.bgather[t]);
         let e = shuffle(&shuffle(&self.amap[m], &x.e), &self.egather[t]);
         let mask = masks(&e)[0] as usize;
-        let ft = &f.flip_t[t];
-        let q = em[k] as usize;
+        let ft = &f.flip_t[t & 31];
+        let q = em[k] as usize & 0xfff;
         let bit =
             ((x.ebits >> k) & 1) ^ self.relab_flip[m][k] ^ ((ft[q >> 6] >> (q & 63)) as u8 & 1);
-        f.rank(&masks(&b)) as usize * N_E1 + f.c12[mask] as usize * 2 + bit as usize
+        f.rank(&masks(&b)) as usize * N_E1 + f.c12[mask & 0xfff] as usize * 2 + bit as usize
     }
 
     /// Index of triple `k` of position `x` (`em` = edge masks of `x`).
