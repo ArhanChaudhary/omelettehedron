@@ -17,6 +17,9 @@ pub struct HugeBuf<T: Copy> {
     ptr: NonNull<T>,
     len: usize,
     layout: Option<Layout>,
+    /// bytes of a 1 GiB-page mapping (0: allocated with `layout`)
+    #[cfg_attr(not(all(target_os = "linux", not(miri))), allow(dead_code))]
+    mapped: usize,
 }
 
 // SAFETY: HugeBuf owns its memory exclusively, like Vec<T>.
@@ -39,6 +42,39 @@ fn advise_huge(p: *mut u8, bytes: usize) {
 /// Elsewhere (and under Miri) the buffer simply uses the system's normal pages.
 #[cfg(not(all(target_os = "linux", not(miri))))]
 fn advise_huge(_p: *mut u8, _bytes: usize) {}
+
+/// Map `bytes` (rounded up to whole 1 GiB pages) from the hugetlb pool, if FTO_HUGE1G=1, the
+/// buffer is large and the pool has the pages. The kernel hands the memory out zeroed.
+#[cfg(all(target_os = "linux", not(miri)))]
+fn map_1g(bytes: usize) -> Option<(NonNull<u8>, usize)> {
+    const GIB: usize = 1 << 30;
+    let on = std::env::var("FTO_HUGE1G").is_ok_and(|v| v == "1");
+    if !on || bytes < GIB / 4 {
+        return None;
+    }
+    let len = bytes.checked_next_multiple_of(GIB)?;
+    let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_HUGETLB | libc::MAP_HUGE_1GB;
+    // SAFETY: an anonymous mapping of fresh memory; the result is checked below
+    let p = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            flags,
+            -1,
+            0,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return None;
+    }
+    NonNull::new(p.cast::<u8>()).map(|p| (p, len))
+}
+
+#[cfg(not(all(target_os = "linux", not(miri))))]
+fn map_1g(_bytes: usize) -> Option<(NonNull<u8>, usize)> {
+    None
+}
 
 /// Layout of a buffer of `len` elements of `T`, rounded up to whole huge pages and aligned to
 /// them. A size beyond the address space is handled like a failed allocation (the process
@@ -63,6 +99,15 @@ impl<T: Copy> HugeBuf<T> {
     pub fn zeroed(len: usize) -> HugeBuf<T> {
         let layout = huge_layout::<T>(len);
         let bytes = layout.size();
+        if let Some((p, mapped)) = map_1g(bytes) {
+            // (1 GiB pages are zeroed by the kernel)
+            return HugeBuf {
+                ptr: p.cast::<T>(),
+                len,
+                layout: None,
+                mapped,
+            };
+        }
         // Allocate without touching the memory (an aligned zeroed allocation would memset it,
         // faulting in small pages before madvise), then advise, then zero in parallel.
         // SAFETY: layout has non-zero size
@@ -83,6 +128,7 @@ impl<T: Copy> HugeBuf<T> {
             ptr,
             len,
             layout: Some(layout),
+            mapped: 0,
         }
     }
 
@@ -91,6 +137,14 @@ impl<T: Copy> HugeBuf<T> {
     pub fn for_overwrite(len: usize) -> HugeBuf<T> {
         let layout = huge_layout::<T>(len);
         let bytes = layout.size();
+        if let Some((p, mapped)) = map_1g(bytes) {
+            return HugeBuf {
+                ptr: p.cast::<T>(),
+                len,
+                layout: None,
+                mapped,
+            };
+        }
         // SAFETY: layout has non-zero size
         let p = unsafe { alloc(layout) };
         let Some(ptr) = NonNull::new(p.cast::<T>()) else {
@@ -101,6 +155,7 @@ impl<T: Copy> HugeBuf<T> {
             ptr,
             len,
             layout: Some(layout),
+            mapped: 0,
         }
     }
 
@@ -131,6 +186,12 @@ impl<T: Copy> DerefMut for HugeBuf<T> {
 
 impl<T: Copy> Drop for HugeBuf<T> {
     fn drop(&mut self) {
+        #[cfg(all(target_os = "linux", not(miri)))]
+        if self.mapped > 0 {
+            // SAFETY: mapped with exactly this length in `map_1g`
+            unsafe { libc::munmap(self.ptr.as_ptr().cast::<libc::c_void>(), self.mapped) };
+            return;
+        }
         if let Some(l) = self.layout {
             // SAFETY: allocated with exactly this layout in `zeroed`
             unsafe { dealloc(self.ptr.as_ptr().cast::<u8>(), l) };
