@@ -385,7 +385,25 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         for i in 0..n {
             *stat += STAT_W[has[i].max(hcs[i]) as usize];
         }
+        // Visit the most promising children first (smallest bounds; with the class-B bound
+        // active also smallest class-B bounds). Only changes the order within an iteration.
+        let mut order = [0u8; N_MOVES];
         for i in 0..n {
+            order[i] = i as u8;
+        }
+        if n > 1 {
+            let key = |i: usize| -> u16 {
+                let a = has[i] as u16 + hcs[i] as u16;
+                if B {
+                    a + hbas[i].max(hbcs[i]) as u16
+                } else {
+                    a
+                }
+            };
+            order[..n].sort_by_key(|&i| key(i as usize));
+        }
+        for &oi in &order[..n] {
+            let i = oi as usize;
             path.push(ms[i] as usize);
             self.dfs::<B>(
                 v, path, &ys[i], has[i], hcs[i], &ybs[i], hbas[i], hbcs[i], bound, nodes, stat,
