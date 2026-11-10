@@ -133,6 +133,9 @@ const CHECK_EVERY: u64 = 1 << 14;
 /// only as part of it: +10% / +14% nodes/s).
 const AE_FIRST: usize = 6;
 
+/// Speculative expansion of the first AE survivor from this many moves left (see `finish`).
+const SPEC_MIN: usize = 8;
+
 /// No deferred CB lookup (see `dfs`).
 const NO_CB: usize = usize::MAX;
 
@@ -362,7 +365,8 @@ impl<I: AeIndex> Shared<'_, I> {
         };
         let last = path.last().copied().unwrap_or(usize::MAX);
         let budget = bound - g - 1;
-        self.expand(x, last, budget, fr, nodes);
+        self.expand(x, last, budget, fr);
+        self.count(fr.n, nodes);
         self.stage2::<B>(x, h_ae, h_cb, cb_pend, xb, budget, fr);
         self.finish::<B>(v, path, xb, hb_ae, hb_cb, bound, nodes, stat, fr, frames);
     }
@@ -373,7 +377,7 @@ impl<I: AeIndex> Shared<'_, I> {
     /// issues the lookups of all children before reading any of them, so the cache misses of
     /// different children overlap (2.0x nodes/s at 48T and 1T when added, opt/prefetch).
     #[inline(always)]
-    fn expand(&self, x: &Fc, last: usize, budget: usize, fr: &mut Scratch, nodes: &mut u64) {
+    fn expand(&self, x: &Fc, last: usize, budget: usize, fr: &mut Scratch) {
         let t = self.t;
         let f = fast();
         let fw = f.flip_word(&masks(&x.e));
@@ -401,12 +405,6 @@ impl<I: AeIndex> Shared<'_, I> {
             n += 1;
         }
         fr.n = n;
-        // count every evaluated node; check the clock regularly (`finish` sees the stop)
-        let before = *nodes;
-        *nodes += n as u64;
-        if before / CHECK_EVERY != *nodes / CHECK_EVERY {
-            self.time_up();
-        }
         if ae_first {
             for i in 0..n {
                 fr.idx[i] = t.ae_ix.index_fast(f, &fr.ys[i], ar[i]);
@@ -417,6 +415,17 @@ impl<I: AeIndex> Shared<'_, I> {
                 fr.cbi[i] = CbTable::index_fast(f, &fr.ys[i]);
                 prefetch_at(&t.cb.tab.data, fr.cbi[i] >> 5);
             }
+        }
+    }
+
+    /// Count the `n` children of an expanded node as evaluated; check the clock regularly
+    /// (`finish` sees the stop).
+    #[inline(always)]
+    fn count(&self, n: usize, nodes: &mut u64) {
+        let before = *nodes;
+        *nodes += n as u64;
+        if before / CHECK_EVERY != *nodes / CHECK_EVERY {
+            self.time_up();
         }
     }
 
@@ -568,6 +577,22 @@ impl<I: AeIndex> Shared<'_, I> {
         let (mut k, h_ae, h_cb, min_ha, cbe_done) = (*k, *h_ae, *h_cb, *min_ha, *cbe_done);
         let mut n = 0;
         let mut b_done = false;
+        // (the caller provides three frames per remaining level)
+        let Some((trio, frames)) = frames.split_first_mut() else {
+            debug_assert!(false, "out of search frames");
+            return;
+        };
+        let [mut f0, mut f1, mut f2] = trio.each_mut();
+        // Speculation: while the second round of lookups is in flight, expand the first child
+        // that passed the AE stage, before knowing whether it survives (it usually does with
+        // 8+ moves left). Its nodes are counted only if it is used.
+        let spec = if budget >= SPEC_MIN && k > 0 {
+            let i = usize::from(sel[0] & 15);
+            self.expand(&ys[i], ms[i] as usize, budget - 1, f0);
+            Some(sel[0])
+        } else {
+            None
+        };
         if budget >= AE_FIRST {
             if cbe_done {
                 if let Some(cbe) = &t.cbe {
@@ -694,25 +719,23 @@ impl<I: AeIndex> Shared<'_, I> {
             }
             return;
         }
-        // (the caller provides three frames per remaining level)
-        let Some((trio, frames)) = frames.split_first_mut() else {
-            debug_assert!(false, "out of search frames");
-            return;
-        };
         // Sibling pipeline: child j is finished in `f0` while child j+1 has had its first
         // lookups read (`f1`) and child j+2 its first lookups issued (`f2`).
-        let [mut f0, mut f1, mut f2] = trio.each_mut();
         let cb = budget - 1;
         let sel = *sel;
         let child = |j: usize| usize::from(sel[j & 15] & 15);
         let yb_of = |i: usize| if B { &ybs[i] } else { xb };
         if n > 0 {
-            let i = child(0);
-            self.expand(&ys[i], ms[i] as usize, cb, f0, nodes);
+            if spec != Some(sel[0]) {
+                let i = child(0);
+                self.expand(&ys[i], ms[i] as usize, cb, f0);
+            }
+            self.count(f0.n, nodes);
         }
         if n > 1 {
             let i = child(1);
-            self.expand(&ys[i], ms[i] as usize, cb, f1, nodes);
+            self.expand(&ys[i], ms[i] as usize, cb, f1);
+            self.count(f1.n, nodes);
         }
         if n > 0 {
             let i = child(0);
@@ -721,7 +744,8 @@ impl<I: AeIndex> Shared<'_, I> {
         for j in 0..n {
             if j + 2 < n {
                 let i = child(j + 2);
-                self.expand(&ys[i], ms[i] as usize, cb, f2, nodes);
+                self.expand(&ys[i], ms[i] as usize, cb, f2);
+                self.count(f2.n, nodes);
             }
             if j + 1 < n {
                 let i = child(j + 1);
