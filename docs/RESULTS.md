@@ -79,13 +79,13 @@ agrees with the source's.
 | tri_adj-[Uf_Fu;Db_Bd] | 23 | 21 | 76 s | no |
 | tri_adj+[UB_FD,NL_MR] | 23 | 22 | 654 s | no |
 | edge_hard | 21 | 21 | 74 s | no (a different 21 does, per the source) |
-| pure_corn_6flip | >= 24 (pure) | 18-23 (normal FTO) | stopped | no |
+| pure_corn_6flip | >= 24 (pure) | 19-23 (normal FTO) | stopped | no |
 
 The corner 6-flip leaves edges and centres solved, so the A-centre/edge table bounds it by 0 and
 only the corner tables prune: each target pass costs about 9 times the previous one (no
-solution of at most 16 moves after 14.8 s, at most 17 after 128.7 s), so excluding 22 moves would
-take months at this rate. Its normal-FTO optimum lies between 18 and 23 (a 23-move solution is
-found in 1 s); the pure optimum is at least that.
+solution of at most 17 moves after 14.8 s, at most 18 after 128.7 s; pass 18 alone 114 s), so
+excluding 22 moves would take about 10 days at this rate. Its normal-FTO optimum lies between
+19 and 23 (a 23-move solution is found in 1 s); the pure optimum is at least that.
 
 ## Start-up
 
