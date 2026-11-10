@@ -237,6 +237,12 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         // The CB table (max 8) prunes almost nothing with 6+ moves left: check AE first there.
         let ae_first = budget >= 6;
         let mut cbe_done = false;
+        let mut b_done = false;
+        let mut ybs = [*xb; N_MOVES];
+        let mut hbas = [0u8; N_MOVES];
+        let mut hbcs = [0u8; N_MOVES];
+        let mut bidx = [0usize; N_MOVES];
+        let mut bcbi = [0usize; N_MOVES];
         if ae_first {
             t.ae_ix.index_batch_fast_pf(f, &ys[..n], &mut idx[..n], &t.ae.data);
             // Without a joint-table stage to hide the CB latency, fetch the CB words of all
@@ -264,6 +270,25 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                     k += 1;
                 }
             }
+            // The class-B lookups are issued here too, so that their latency overlaps the
+            // CB and joint-table stages.
+            let lim = if B {
+                // a child at depth g+1 with bound h cannot give a solution shorter than g+1+h
+                self.best_len.load(Ordering::Relaxed).saturating_sub(g + 2)
+            } else {
+                0
+            };
+            if B && k > 0 {
+                let emb = masks(&xb.e);
+                for i in 0..k {
+                    ybs[i] = f.apply(xb, &emb, self.mb[ms[i] as usize]);
+                }
+                t.ae_ix.index_batch_fast_pf(f, &ybs[..k], &mut bidx[..k], &t.ae.data);
+                for i in 0..k {
+                    bcbi[i] = CbTable::index_fast(f, &ybs[i]);
+                    prefetch(&t.cb.tab.data[bcbi[i] >> 5]);
+                }
+            }
             // The joint table goes before reading the CB words, so their latency overlaps it.
             if budget <= 8 {
                 if let Some(cbe) = &t.cbe {
@@ -278,6 +303,11 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                             ms[k2] = ms[i];
                             has[k2] = has[i];
                             cbi[k2] = cbi[i];
+                            if B {
+                                ybs[k2] = ybs[i];
+                                bidx[k2] = bidx[i];
+                                bcbi[k2] = bcbi[i];
+                            }
                             k2 += 1;
                         }
                     }
@@ -288,14 +318,26 @@ impl<'a, I: AeIndex> Shared<'a, I> {
             n = 0;
             for i in 0..k {
                 let hc = decode(h_cb, t.cb.tab.get(cbi[i]));
-                if hc as usize <= budget {
-                    ys[n] = ys[i];
-                    ms[n] = ms[i];
-                    has[n] = has[i];
-                    hcs[n] = hc;
-                    n += 1;
+                if hc as usize > budget {
+                    continue;
                 }
+                if B {
+                    let hba = decode(hb_ae, t.ae.get(bidx[i]));
+                    let hbc = decode(hb_cb, t.cb.tab.get(bcbi[i]));
+                    if hba.max(hbc) as usize > lim {
+                        continue;
+                    }
+                    ybs[n] = ybs[i];
+                    hbas[n] = hba;
+                    hbcs[n] = hbc;
+                }
+                ys[n] = ys[i];
+                ms[n] = ms[i];
+                has[n] = has[i];
+                hcs[n] = hc;
+                n += 1;
             }
+            b_done = true;
         } else {
             for i in 0..n {
                 cbi[i] = CbTable::index_fast(f, &ys[i]);
@@ -345,10 +387,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
             }
         }
         // Class-B bound against the best solution so far.
-        let mut ybs = [*xb; N_MOVES];
-        let mut hbas = [0u8; N_MOVES];
-        let mut hbcs = [0u8; N_MOVES];
-        if B && n > 0 {
+        if B && n > 0 && !b_done {
             let best = self.best_len.load(Ordering::Relaxed);
             // a child at depth g+1 with bound h cannot give a solution shorter than g+1+h
             let lim = best.saturating_sub(g + 2);
@@ -356,9 +395,8 @@ impl<'a, I: AeIndex> Shared<'a, I> {
             for i in 0..n {
                 ybs[i] = f.apply(xb, &emb, self.mb[ms[i] as usize]);
             }
-            t.ae_ix.index_batch_fast(f, &ybs[..n], &mut idx[..n]);
+            t.ae_ix.index_batch_fast_pf(f, &ybs[..n], &mut idx[..n], &t.ae.data);
             for i in 0..n {
-                prefetch(&t.ae.data[idx[i] >> 5]);
                 cbi[i] = CbTable::index_fast(f, &ybs[i]);
                 prefetch(&t.cb.tab.data[cbi[i] >> 5]);
             }
