@@ -1438,17 +1438,19 @@ fn solve_n<I: AeIndex, const N: usize>(
     let mut prev_ids: Vec<(u32, u8)> = vec![];
     let mut prev_nodes: Option<u64> = None;
     // Target-length passes: only in optimal mode, when the best is at least this far above the
-    // lower bound (0 = never). On by default for one thread only: there the best stays loose
-    // for long and the passes cut the proof time (1T 17-move set 11.95 -> 5.27 s, 0.44x, when
-    // added); with 48 threads a tight best is found early and the rerun iterations cost more
-    // (19-move set 1.07x, random positions 1.00-1.04x). FTO_TARGET_GAP overrides. Off with
-    // FTO_FULL_PROOF: the passes rest on the same argument as the early proof end.
+    // lower bound (0 = never). On one thread the best stays loose for long and the passes cut
+    // the proof time (1T 17-move set 11.95 -> 5.27 s, 0.44x, when added). With 48 threads they
+    // first cost more (19-move set 1.07x, random positions 1.00-1.04x); since the merged
+    // traversal they gain there too: 19-move set 0.94x, random positions 1-3
+    // 0.99x / 0.97x / 0.95x (two rounds each; gap 3: 0.96x, 0.98x / 0.97x / 0.96x).
+    // FTO_TARGET_GAP overrides. Off with FTO_FULL_PROOF: the passes rest on the same argument
+    // as the early proof end.
     // The argument of the early proof end below: a solving phase-1 path of length best - 1 that
     // ends in a class-B move is found earlier by the class-B side. It fails with slices: a
     // path can end in a slice, which is in neither class, so no side finds it earlier.
     let class_b_argument = !t.moves.slice;
     let target_gap = if limits.is_optimal() && !full_proof() {
-        env_usize("FTO_TARGET_GAP", if threads == 1 { 2 } else { 0 })
+        env_usize("FTO_TARGET_GAP", 2)
     } else {
         0
     };
