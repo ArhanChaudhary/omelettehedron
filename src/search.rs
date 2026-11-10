@@ -1,9 +1,10 @@
 //! Two-phase search.
 //!
-//! Phase 1: IDA* over all 16 moves until the position is in `H_A` = <U, F, BR, BL>, with the
-//! last move outside `H_A`. Phase 2: the exact table gives the optimal A-move completion.
-//! Every solution splits uniquely into (longest prefix ending in a non-A move) + (A-moves),
-//! so exhausting phase-1 depths up to `best - 1` proves optimality.
+//! Phase 1: IDA* over all internal moves (16, or 24 with slices) until the position is in
+//! `H_A` = <U, F, BR, BL>, with the last move outside `H_A`. Phase 2: the exact table gives the
+//! optimal A-move completion. Every solution splits uniquely into (longest prefix ending in a
+//! non-A move) + (A-moves), so exhausting phase-1 depths up to `best - 1` proves optimality.
+//! (Slices are not A-moves, so this holds with slices too.)
 //!
 //! Two variants run side by side: targeting class A, and targeting class B (by conjugating the
 //! position with a 90° rotation that swaps the classes).
@@ -84,7 +85,8 @@ struct Variant {
     hb_cb: u8,
 }
 
-struct Shared<'a, I: AeIndex> {
+/// The state shared by the threads of one solve, for a move set of `N` internal moves.
+struct Shared<'a, I: AeIndex, const N: usize> {
     t: &'a Tables<I>,
     variants: Vec<Variant>,
     frame: Frame,
@@ -106,7 +108,7 @@ struct Shared<'a, I: AeIndex> {
     rejected: AtomicU64,
     stop: AtomicBool,
     best: Mutex<(Option<Vec<PhysMove>>, Vec<Event>)>,
-    mb: [usize; N_MOVES],
+    mb: [usize; N],
     /// largest CB distance (8): with at least this many moves left CB cannot prune
     cb_max: u8,
 }
@@ -124,7 +126,7 @@ struct Task {
 }
 
 /// Internal move on the SWAP_AB-conjugated position matching each move.
-fn swap_moves() -> [usize; N_MOVES] {
+fn swap_moves<const N: usize>() -> [usize; N] {
     std::array::from_fn(|m| conjugate_move(m, &SWAP_AB))
 }
 
@@ -139,30 +141,32 @@ const AE_FIRST: usize = 6;
 /// No deferred CB lookup (see `dfs`).
 const NO_CB: usize = usize::MAX;
 
-/// Scratch arrays of one `dfs` level: the children of a node and their indices and bounds.
+/// Scratch arrays of one `dfs` level: the children of a node and their indices and bounds
+/// (`N` moves; indices are reduced `% N`, which is `& 15` for 16 moves, so that the compiler
+/// sees them in bounds).
 /// They live in a per-worker stack of frames, three per depth (see [`Shared::dfs`]), rather
 /// than on the call stack, so that they are not re-initialised at every node (~3 KB of stores
 /// per node; +1.3% nodes/s at 1T in optimal mode, when added).
 #[derive(Clone)]
-struct Scratch {
-    ys: [Fc; N_MOVES],
+struct Scratch<const N: usize> {
+    ys: [Fc; N],
     /// (the children conjugated by `SWAP_AB`, only with the class-B bound)
-    ybs: [Fc; N_MOVES],
-    ms: [u8; N_MOVES],
-    has: [u8; N_MOVES],
-    hcs: [u8; N_MOVES],
-    hbas: [u8; N_MOVES],
-    hbcs: [u8; N_MOVES],
-    idx: [usize; N_MOVES],
-    cbi: [usize; N_MOVES],
-    pend: [usize; N_MOVES],
-    bidx: [usize; N_MOVES],
-    bcbi: [usize; N_MOVES],
-    ci: [[usize; 4]; N_MOVES],
+    ybs: [Fc; N],
+    ms: [u8; N],
+    has: [u8; N],
+    hcs: [u8; N],
+    hbas: [u8; N],
+    hbcs: [u8; N],
+    idx: [usize; N],
+    cbi: [usize; N],
+    pend: [usize; N],
+    bidx: [usize; N],
+    bcbi: [usize; N],
+    ci: [[usize; 4]; N],
     /// the children still alive after each stage (indices into the arrays above). Stages
     /// compact this list without branching on the prune decision, instead of copying
     /// positions (neutral when added: -1.5% nodes/s at 1T, within noise).
-    sel: [u8; N_MOVES],
+    sel: [u8; N],
     /// number of children
     n: usize,
     /// number alive after `stage2` (in `sel`)
@@ -175,23 +179,23 @@ struct Scratch {
     cbe_done: bool,
 }
 
-impl Scratch {
-    fn new() -> Scratch {
+impl<const N: usize> Scratch<N> {
+    fn new() -> Self {
         Scratch {
-            ys: [Fc::ZERO; N_MOVES],
-            ybs: [Fc::ZERO; N_MOVES],
-            ms: [0; N_MOVES],
-            has: [0; N_MOVES],
-            hcs: [0; N_MOVES],
-            hbas: [0; N_MOVES],
-            hbcs: [0; N_MOVES],
-            idx: [0; N_MOVES],
-            cbi: [0; N_MOVES],
-            pend: [NO_CB; N_MOVES],
-            bidx: [0; N_MOVES],
-            bcbi: [0; N_MOVES],
-            ci: [[0; 4]; N_MOVES],
-            sel: [0; N_MOVES],
+            ys: [Fc::ZERO; N],
+            ybs: [Fc::ZERO; N],
+            ms: [0; N],
+            has: [0; N],
+            hcs: [0; N],
+            hbas: [0; N],
+            hbcs: [0; N],
+            idx: [0; N],
+            cbi: [0; N],
+            pend: [NO_CB; N],
+            bidx: [0; N],
+            bcbi: [0; N],
+            ci: [[0; 4]; N],
+            sel: [0; N],
             n: 0,
             k: 0,
             h_ae: 0,
@@ -202,21 +206,18 @@ impl Scratch {
     }
 }
 
-/// Moves allowed after each move (index `N_MOVES`: no previous move), as bit masks.
-static ALLOWED: [u16; N_MOVES + 1] = {
-    let mut a = [0u16; N_MOVES + 1];
+/// Moves allowed after each move (index `MAX_MOVES`: no previous move) by [`allowed_after`],
+/// as bit masks over the moves of the move set: `[0]` the face metric, `[1]` with slices.
+static ALLOWED: [[u32; MAX_MOVES + 1]; 2] = [allowed_masks(false), allowed_masks(true)];
+
+const fn allowed_masks(slice: bool) -> [u32; MAX_MOVES + 1] {
+    let n = if slice { MAX_MOVES } else { N_MOVES };
+    let mut a = [0u32; MAX_MOVES + 1];
     let mut last = 0;
-    while last <= N_MOVES {
+    while last <= MAX_MOVES {
         let mut m = 0;
-        while m < N_MOVES {
-            // same rule as `allowed_after`
-            let ok = if last == N_MOVES {
-                true
-            } else {
-                let (ls, s) = (last >> 1, m >> 1);
-                !(s == ls || ((s & 3) == (ls & 3) && s < ls))
-            };
-            if ok {
+        while m < n {
+            if allowed_after(slice, last, m) {
                 a[last] |= 1 << m;
             }
             m += 1;
@@ -224,11 +225,11 @@ static ALLOWED: [u16; N_MOVES + 1] = {
         last += 1;
     }
     a
-};
+}
 
 /// The class-A moves as a bit mask.
-static A_MOVES: u16 = {
-    let mut a = 0u16;
+static A_MOVES: u32 = {
+    let mut a = 0u32;
     let mut m = 0;
     while m < N_MOVES {
         if matches!(m >> 1, 1 | 2 | 4 | 7) {
@@ -252,7 +253,7 @@ const STAT_W: [f32; 32] = {
     w
 };
 
-impl<I: AeIndex> Shared<'_, I> {
+impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
     fn time_up(&self) -> bool {
         if let Some(t) = self.limits.time {
             if self.start.elapsed() >= t {
@@ -289,7 +290,7 @@ impl<I: AeIndex> Shared<'_, I> {
                         .chain(p2.iter())
                         .map(|&m| conjugate_move(m, &inv))
                         .collect();
-                    let phys = solution_to_physical(self.frame, &internal, false);
+                    let phys = solution_to_physical(self.frame, &internal, self.t.moves.wide);
                     let t = self.start.elapsed().as_secs_f64();
                     if self.report == Report::Improvements {
                         println!("{:>9.3}s  {:>2}  {}", t, total, format_moves(&phys));
@@ -347,7 +348,7 @@ impl<I: AeIndex> Shared<'_, I> {
         bound: usize,
         nodes: &mut u64,
         stat: &mut f32,
-        frames: &mut [[Scratch; 3]],
+        frames: &mut [[Scratch<N>; 3]],
     ) {
         let g = path.len();
         if g == bound {
@@ -377,20 +378,27 @@ impl<I: AeIndex> Shared<'_, I> {
     /// issues the lookups of all children before reading any of them, so the cache misses of
     /// different children overlap (2.0x nodes/s at 48T and 1T when added, opt/prefetch).
     #[inline(always)]
-    fn expand(&self, x: &Fc, last: usize, budget: usize, fr: &mut Scratch, nodes: &mut u64) {
+    fn expand(&self, x: &Fc, last: usize, budget: usize, fr: &mut Scratch<N>, nodes: &mut u64) {
         let t = self.t;
         let f = fast();
-        let fw = f.flip_word(&masks(&x.e));
+        let em = masks(&x.e);
+        let fw = f.flip_word(&em);
+        // (the slice flips are only needed, and only computed, with slices)
+        let fws = if N > N_MOVES {
+            f.flip_word_slice(&em)
+        } else {
+            0
+        };
         let mut n = 0;
-        let mut moves = ALLOWED[last.min(N_MOVES)];
+        let mut moves = ALLOWED[usize::from(N > N_MOVES)][last.min(MAX_MOVES)];
         if budget == 0 {
             moves &= !A_MOVES;
         }
         while moves != 0 {
             let m = moves.trailing_zeros() as usize;
             moves &= moves - 1;
-            fr.ys[n & 15] = f.apply_w(x, fw, m);
-            fr.ms[n & 15] = m as u8;
+            fr.ys[n % N] = f.apply_any::<N>(x, fw, fws, m);
+            fr.ms[n % N] = m as u8;
             n += 1;
         }
         fr.n = n;
@@ -402,7 +410,7 @@ impl<I: AeIndex> Shared<'_, I> {
         }
         if budget >= AE_FIRST {
             t.ae_ix
-                .index_batch_fast_pf::<N_MOVES>(f, &fr.ys[..n], &mut fr.idx[..n], &t.ae.data);
+                .index_batch_fast_pf::<N>(f, &fr.ys[..n], &mut fr.idx[..n], &t.ae.data);
         } else {
             for i in 0..n {
                 fr.cbi[i] = CbTable::index_fast(f, &fr.ys[i]);
@@ -421,7 +429,7 @@ impl<I: AeIndex> Shared<'_, I> {
         cb_pend: usize,
         xb: &Fc,
         budget: usize,
-        fr: &mut Scratch,
+        fr: &mut Scratch<N>,
     ) {
         let t = self.t;
         let f = fast();
@@ -456,12 +464,12 @@ impl<I: AeIndex> Shared<'_, I> {
                 let ok = ha as usize <= budget;
                 has[i] = ha;
                 min_ha = min_ha.min(if ok { ha } else { u8::MAX });
-                sel[k & 15] = i as u8;
+                sel[k % N] = i as u8;
                 k += usize::from(ok);
             }
             *fmin_ha = min_ha;
             for &i in &sel[..k] {
-                let i = usize::from(i & 15);
+                let i = usize::from(i) % N;
                 cbi[i] = CbTable::index_fast(f, &ys[i]);
                 prefetch_at(&t.cb.tab.data, cbi[i] >> 5);
             }
@@ -473,14 +481,14 @@ impl<I: AeIndex> Shared<'_, I> {
             // CB and joint-table stages (+6% / +4% nodes/s at 48T / 1T, optimal 0.95x time,
             // when added, opt/bpath).
             if B && k > 0 {
-                let fwb = f.flip_word(&masks(&xb.e));
+                let (fwb, fwsb) = Self::flip_words_b(f, xb);
                 for &i in &sel[..k] {
-                    let i = usize::from(i & 15);
-                    ybs[i] = f.apply_w(xb, fwb, self.mb[usize::from(ms[i] & 15)]);
+                    let i = usize::from(i) % N;
+                    ybs[i] = f.apply_any::<N>(xb, fwb, fwsb, self.mb[usize::from(ms[i]) % N]);
                 }
                 t.ae_ix.index_sel_pf(f, ybs, &sel[..k], bidx, &t.ae.data);
                 for &i in &sel[..k] {
-                    let i = usize::from(i & 15);
+                    let i = usize::from(i) % N;
                     bcbi[i] = CbTable::index_fast(f, &ybs[i]);
                     prefetch_at(&t.cb.tab.data, bcbi[i] >> 5);
                 }
@@ -490,7 +498,7 @@ impl<I: AeIndex> Shared<'_, I> {
             if budget <= 8 {
                 if let Some(cbe) = &t.cbe {
                     for &i in &sel[..k] {
-                        let i = usize::from(i & 15);
+                        let i = usize::from(i) % N;
                         cbe.prefetch_all(f, &ys[i], &mut ci[i]);
                     }
                     *cbe_done = true;
@@ -500,7 +508,7 @@ impl<I: AeIndex> Shared<'_, I> {
             for i in 0..n {
                 let hc = decode(h_cb, t.cb.tab.get(cbi[i]));
                 hcs[i] = hc;
-                sel[k & 15] = i as u8;
+                sel[k % N] = i as u8;
                 k += usize::from(hc as usize <= budget);
             }
             t.ae_ix.index_sel_pf(f, ys, &sel[..k], idx, &t.ae.data);
@@ -522,8 +530,8 @@ impl<I: AeIndex> Shared<'_, I> {
         bound: usize,
         nodes: &mut u64,
         stat: &mut f32,
-        fr: &mut Scratch,
-        frames: &mut [[Scratch; 3]],
+        fr: &mut Scratch<N>,
+        frames: &mut [[Scratch<N>; 3]],
     ) {
         if self.stop.load(Ordering::Relaxed) {
             return;
@@ -563,8 +571,8 @@ impl<I: AeIndex> Shared<'_, I> {
                     let mut k2 = 0;
                     for j in 0..k {
                         let i = sel[j];
-                        let ok = cbe.bound(&ci[usize::from(i & 15)]) as usize <= budget;
-                        sel[k2 & 15] = i;
+                        let ok = cbe.bound(&ci[usize::from(i) % N]) as usize <= budget;
+                        sel[k2 % N] = i;
                         k2 += usize::from(ok);
                     }
                     k = k2;
@@ -583,7 +591,7 @@ impl<I: AeIndex> Shared<'_, I> {
             let defer = !cbe_done && budget >= self.cb_max as usize && min_ha >= self.cb_max;
             for j in 0..k {
                 let i = sel[j];
-                let u = usize::from(i & 15);
+                let u = usize::from(i) % N;
                 // (a deferred child carries this node's distance, at most cb_max <= budget)
                 let hc = if defer {
                     h_cb
@@ -600,18 +608,18 @@ impl<I: AeIndex> Shared<'_, I> {
                     hbcs[u] = hbc;
                 }
                 hcs[u] = hc;
-                sel[n & 15] = i;
+                sel[n % N] = i;
                 n += usize::from(ok);
             }
             b_done = true;
         } else {
             for j in 0..k {
                 let i = sel[j];
-                let u = usize::from(i & 15);
+                let u = usize::from(i) % N;
                 let ha = decode(h_ae, t.ae.get(idx[u]));
                 has[u] = ha;
                 pend[u] = NO_CB;
-                sel[n & 15] = i;
+                sel[n % N] = i;
                 n += usize::from(ha as usize <= budget);
             }
         }
@@ -619,14 +627,14 @@ impl<I: AeIndex> Shared<'_, I> {
         if budget <= 8 && !cbe_done {
             if let Some(cbe) = &t.cbe {
                 for &i in &sel[..n] {
-                    let i = usize::from(i & 15);
+                    let i = usize::from(i) % N;
                     cbe.prefetch_all(f, &ys[i], &mut ci[i]);
                 }
                 let mut k = 0;
                 for j in 0..n {
                     let i = sel[j];
-                    let ok = cbe.bound(&ci[usize::from(i & 15)]) as usize <= budget;
-                    sel[k & 15] = i;
+                    let ok = cbe.bound(&ci[usize::from(i) % N]) as usize <= budget;
+                    sel[k % N] = i;
                     k += usize::from(ok);
                 }
                 n = k;
@@ -638,39 +646,39 @@ impl<I: AeIndex> Shared<'_, I> {
             let best = self.prune_len.load(Ordering::Relaxed);
             // a child at depth g+1 with bound h cannot give a solution shorter than g+1+h
             let lim = best.saturating_sub(g + 2);
-            let fwb = f.flip_word(&masks(&xb.e));
+            let (fwb, fwsb) = Self::flip_words_b(f, xb);
             for &i in &sel[..n] {
-                let i = usize::from(i & 15);
-                ybs[i] = f.apply_w(xb, fwb, self.mb[usize::from(ms[i] & 15)]);
+                let i = usize::from(i) % N;
+                ybs[i] = f.apply_any::<N>(xb, fwb, fwsb, self.mb[usize::from(ms[i]) % N]);
             }
             t.ae_ix.index_sel_pf(f, ybs, &sel[..n], idx, &t.ae.data);
             for &i in &sel[..n] {
-                let i = usize::from(i & 15);
+                let i = usize::from(i) % N;
                 cbi[i] = CbTable::index_fast(f, &ybs[i]);
                 prefetch_at(&t.cb.tab.data, cbi[i] >> 5);
             }
             let mut k = 0;
             for j in 0..n {
                 let i = sel[j];
-                let u = usize::from(i & 15);
+                let u = usize::from(i) % N;
                 let hba = decode(hb_ae, t.ae.get(idx[u]));
                 let hbc = decode(hb_cb, t.cb.tab.get(cbi[u]));
                 hbas[u] = hba;
                 hbcs[u] = hbc;
-                sel[k & 15] = i;
+                sel[k % N] = i;
                 k += usize::from(hba.max(hbc) as usize <= lim);
             }
             n = k;
         }
         // Ordering statistic of the task: how close its subtree gets to the phase-1 target.
         for &i in &sel[..n] {
-            let i = usize::from(i & 15);
+            let i = usize::from(i) % N;
             *stat += STAT_W[has[i].max(hcs[i]) as usize];
         }
         if budget == 0 {
             // the children are leaves
             for &i in &sel[..n] {
-                let i = usize::from(i & 15);
+                let i = usize::from(i) % N;
                 let m = ms[i] as usize;
                 if has[i] == 0 && hcs[i] == 0 && !is_a_move(m) {
                     path.push(m);
@@ -693,7 +701,7 @@ impl<I: AeIndex> Shared<'_, I> {
         let [mut f0, mut f1, mut f2] = trio.each_mut();
         let cb = budget - 1;
         let sel = *sel;
-        let child = |j: usize| usize::from(sel[j & 15] & 15);
+        let child = |j: usize| usize::from(sel[j % N]) % N;
         let yb_of = |i: usize| if B { &ybs[i] } else { xb };
         if n > 0 {
             let i = child(0);
@@ -738,6 +746,19 @@ impl<I: AeIndex> Shared<'_, I> {
         }
     }
 
+    /// The chirality flip words of the class-B position `xb` (the slice word only with
+    /// slices; see [`FastTables::apply_any`]).
+    #[inline(always)]
+    fn flip_words_b(f: &FastTables, xb: &Fc) -> (u64, u32) {
+        let emb = masks(&xb.e);
+        let fwsb = if N > N_MOVES {
+            f.flip_word_slice(&emb)
+        } else {
+            0
+        };
+        (f.flip_word(&emb), fwsb)
+    }
+
     /// All children of a task (unpruned), with their exact bounds on both classes. The
     /// lookups of all children are issued before any is read.
     fn expand_all(&self, t: &Task) -> Vec<Task> {
@@ -746,27 +767,27 @@ impl<I: AeIndex> Shared<'_, I> {
         let last = t.path.last().copied().unwrap_or(usize::MAX);
         let em = masks(&t.x.e);
         let emb = masks(&t.xb.e);
-        let mut ys = [t.x; N_MOVES];
-        let mut yb = [t.xb; N_MOVES];
-        let mut ms = [0usize; N_MOVES];
+        let mut ys = [t.x; N];
+        let mut yb = [t.xb; N];
+        let mut ms = [0usize; N];
         let mut n = 0;
-        for m in 0..N_MOVES {
-            if !allowed_after(false, last, m) {
+        for m in 0..N {
+            if !allowed_after(N > N_MOVES, last, m) {
                 continue;
             }
-            ys[n] = f.apply(&t.x, &em, m);
-            yb[n] = f.apply(&t.xb, &emb, self.mb[m]);
+            ys[n] = f.apply_m(&t.x, &em, m);
+            yb[n] = f.apply_m(&t.xb, &emb, self.mb[m]);
             ms[n] = m;
             n += 1;
         }
-        let mut ia = [0usize; N_MOVES];
-        let mut iab = [0usize; N_MOVES];
-        let mut ic = [0usize; N_MOVES];
-        let mut icb = [0usize; N_MOVES];
+        let mut ia = [0usize; N];
+        let mut iab = [0usize; N];
+        let mut ic = [0usize; N];
+        let mut icb = [0usize; N];
         tb.ae_ix
-            .index_batch_fast_pf::<N_MOVES>(f, &ys[..n], &mut ia[..n], &tb.ae.data);
+            .index_batch_fast_pf::<N>(f, &ys[..n], &mut ia[..n], &tb.ae.data);
         tb.ae_ix
-            .index_batch_fast_pf::<N_MOVES>(f, &yb[..n], &mut iab[..n], &tb.ae.data);
+            .index_batch_fast_pf::<N>(f, &yb[..n], &mut iab[..n], &tb.ae.data);
         for i in 0..n {
             ic[i] = CbTable::index_fast(f, &ys[i]);
             prefetch(&tb.cb.tab.data[ic[i] >> 5]);
@@ -846,7 +867,7 @@ impl<I: AeIndex> Shared<'_, I> {
                 }
                 tree.kids.resize(tree.nodes.len(), None);
             }
-            let mut next = Vec::with_capacity(front.len() * 13);
+            let mut next = Vec::with_capacity(front.len() * if N > N_MOVES { 19 } else { 13 });
             for &i in &front {
                 // (every front node has been expanded above)
                 if let Some((lo, hi)) = tree.kids[i as usize] {
@@ -903,8 +924,26 @@ fn task_nodes() -> u64 {
 /// Deepest level at which an iteration is split into parallel tasks.
 const MAX_SPLIT: usize = 4;
 
-/// Solve one position. `frame` is the physical frame of the scrambled position.
+/// Solve one position with the move set of the tables (`t.moves`). `frame` is the physical
+/// frame of the scrambled position.
 pub fn solve<I: AeIndex>(
+    t: &Tables<I>,
+    cube: Cube,
+    frame: Frame,
+    limits: &Limits,
+    report: Report,
+) -> Outcome {
+    // The search is compiled once per move-set size, so the face metric runs the same code as
+    // without slices.
+    if t.moves.slice {
+        solve_n::<I, MAX_MOVES>(t, cube, frame, limits, report)
+    } else {
+        solve_n::<I, N_MOVES>(t, cube, frame, limits, report)
+    }
+}
+
+/// [`solve`] with `N` internal moves (`t.moves.n_moves()`).
+fn solve_n<I: AeIndex, const N: usize>(
     t: &Tables<I>,
     cube: Cube,
     frame: Frame,
@@ -953,7 +992,7 @@ pub fn solve<I: AeIndex>(
     // prove optimality; both are kept because the earlier a short solution is found, the more
     // the class-B bound prunes (measured: one variant was 1.9-3.9x slower in optimal mode),
     // and because with both the proof can stop one iteration early (see the main loop).
-    let sh = Shared {
+    let sh = Shared::<I, N> {
         t,
         variants,
         frame,
@@ -969,7 +1008,7 @@ pub fn solve<I: AeIndex>(
         rejected: AtomicU64::new(0),
         stop: AtomicBool::new(false),
         best: Mutex::new((None, vec![])),
-        mb: swap_moves(),
+        mb: swap_moves::<N>(),
         cb_max: (t.cb.tab.hist.len() - 1) as u8,
     };
     let lo = sh
@@ -991,6 +1030,10 @@ pub fn solve<I: AeIndex>(
     // added); with 48 threads a tight best is found early and the rerun iterations cost more
     // (19-move set 1.07x, random positions 1.00-1.04x). FTO_TARGET_GAP overrides. Off with
     // FTO_FULL_PROOF: the passes rest on the same argument as the early proof end.
+    // The argument of the early proof end below: a solving phase-1 path of length best - 1 that
+    // ends in a class-B move is found earlier by the class-B variant. It fails with slices: a
+    // path can end in a slice, which is in neither class, so no variant finds it earlier.
+    let class_b_argument = !t.moves.slice;
     let target_gap = if limits.is_optimal() && !full_proof() {
         env_usize("FTO_TARGET_GAP", if threads == 1 { 2 } else { 0 })
     } else {
@@ -1004,8 +1047,11 @@ pub fn solve<I: AeIndex>(
         // puzzle. Such a path is a prefix ending in a class-A move followed by class-B moves, so
         // the class-B variant already found it at a smaller depth, in an iteration completed
         // before this one. (This needs both variants in every iteration.) When solutions are
-        // counted, that iteration still yields completions (longer ones), so it is run.
-        let proof_depth = depth + usize::from(limits.max_solutions.is_none() && !full_proof());
+        // counted, that iteration still yields completions (longer ones), so it is run. With
+        // slices the argument fails (see `class_b_argument`), and the full proof runs (checked
+        // by scripts/check-optimal.sh and the brute-force tests).
+        let early = limits.max_solutions.is_none() && !full_proof() && class_b_argument;
+        let proof_depth = depth + usize::from(early);
         if proof_depth >= sh.best_len.load(Ordering::Relaxed) {
             optimal = true;
             break;
@@ -1017,8 +1063,10 @@ pub fn solve<I: AeIndex>(
         // with the class-B bound set for solutions of at most T moves instead of against a
         // loose best, which prunes far more. By the argument above every solution of at most
         // T moves is found at a depth below T, so a completed pass proves that none exists.
+        // With slices the pass also runs depth T (a solution of T moves may need a phase-1
+        // path of T moves ending in a slice).
         if let Some(t) = target {
-            if depth >= t {
+            if depth >= t + usize::from(!class_b_argument) {
                 // pass T complete: no solution of at most T moves
                 if sh.best_len.load(Ordering::Relaxed) <= t + 1 {
                     optimal = true;
@@ -1037,7 +1085,8 @@ pub fn solve<I: AeIndex>(
             sh.proof_len.store(t, Ordering::Relaxed);
         } else {
             // the iterations below `depth` are complete: no solution of at most `depth` moves
-            let lower = depth + 1;
+            // (of at most `depth - 1` with slices)
+            let lower = depth + usize::from(class_b_argument);
             if target_gap > 0
                 && depth > lo
                 && sh.best_len.load(Ordering::Relaxed) >= lower + target_gap
@@ -1058,7 +1107,7 @@ pub fn solve<I: AeIndex>(
             // is optimal at once (no shorter one exists after the iterations below), and the
             // search stops there instead of finishing the iteration.
             sh.proof_len
-                .store(if full_proof() { 0 } else { depth + 1 }, Ordering::Relaxed);
+                .store(if early { depth + 1 } else { 0 }, Ordering::Relaxed);
         }
         // Small iterations run on this thread: waking the pool costs more than they do.
         let predicted = prev_nodes.map_or(if depth < 14 { 0 } else { u64::MAX }, |n| {
@@ -1096,7 +1145,7 @@ pub fn solve<I: AeIndex>(
         let worker = || {
             let mut path: Vec<usize> = Vec::with_capacity(64);
             // one frame per level below a task (tasks are at depth >= 0)
-            let mut frames = vec![[Scratch::new(), Scratch::new(), Scratch::new()]; depth + 1];
+            let mut frames = vec![[Scratch::<N>::new(), Scratch::new(), Scratch::new()]; depth + 1];
             // the per-thread counter persists across tasks so time checks happen regularly
             let mut nodes = 0u64;
             loop {
@@ -1215,13 +1264,23 @@ mod tests {
 
     #[test]
     fn move_masks_match_rules() {
-        for last in 0..=N_MOVES {
-            for m in 0..N_MOVES {
-                let l = if last == N_MOVES { usize::MAX } else { last };
-                assert_eq!(ALLOWED[last] >> m & 1 == 1, allowed_after(false, l, m));
+        for moves in [
+            MoveSet::FACE,
+            MoveSet {
+                wide: false,
+                slice: true,
+            },
+        ] {
+            let tab = &ALLOWED[usize::from(moves.slice)];
+            let n = moves.n_moves();
+            for last in (0..n).chain([MAX_MOVES]) {
+                for m in 0..MAX_MOVES {
+                    let l = if last == MAX_MOVES { usize::MAX } else { last };
+                    assert_eq!(tab[last] >> m & 1 == 1, m < n && moves.allowed_after(l, m));
+                }
             }
         }
-        for m in 0..N_MOVES {
+        for m in 0..MAX_MOVES {
             assert_eq!(A_MOVES >> m & 1 == 1, is_a_move(m));
         }
     }
