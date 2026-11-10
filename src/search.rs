@@ -1449,12 +1449,25 @@ fn solve_n<I: AeIndex, const N: usize>(
     // ends in a class-B move is found earlier by the class-B side. It fails with slices: a
     // path can end in a slice, which is in neither class, so no side finds it earlier.
     let class_b_argument = !t.moves.slice;
-    let target_gap = if limits.is_optimal() && !full_proof() {
+    // EXPERIMENT: passes under a time limit (FTO_TL_PASSES: 0 off, 1 on, 2 once an iteration
+    // ends without improving the best).
+    let tl_mode = if !limits.is_optimal()
+        && limits.max_solutions.is_none()
+        && limits.max_depth.is_none()
+    {
+        env_usize("FTO_TL_PASSES", 0)
+    } else {
+        0
+    };
+    let target_gap = if (limits.is_optimal() || tl_mode > 0) && !full_proof() {
         env_usize("FTO_TARGET_GAP", 2)
     } else {
         0
     };
     let mut target: Option<usize> = None;
+    let mut last_best = usize::MAX;
+    // node counts of the last two completed iterations (for the forecast of mode 3)
+    let mut iter_nodes: (Option<u64>, Option<u64>) = (None, None);
     loop {
         // Optimality is proven one iteration before depth reaches the best length. The
         // iteration at depth best - 1 could only improve on the best with a leaf that is solved
@@ -1503,9 +1516,40 @@ fn solve_n<I: AeIndex, const N: usize>(
             // the iterations below `depth` are complete: no solution of at most `depth` moves
             // (of at most `depth - 1` with slices)
             let lower = depth + usize::from(class_b_argument);
+            let best_now = sh.best_len.load(Ordering::Relaxed);
+            let stalled = best_now == last_best;
+            last_best = best_now;
+            // (with a time limit the passes wait for a first solution, so that the search always
+            // has one to return)
             if target_gap > 0
                 && depth > lo
-                && sh.best_len.load(Ordering::Relaxed) >= lower + target_gap
+                && best_now >= lower + target_gap
+                && ((tl_mode == 0 && env_usize("FTO_PASS_GUARD", 0) == 0) || best_now < usize::MAX)
+                && (tl_mode != 2 || stalled)
+                && (tl_mode != 3 || {
+                    // forecast of the rest of the proof without passes: the remaining
+                    // iterations, each the last one times the last growth ratio
+                    match (limits.time, iter_nodes) {
+                        (Some(tl), (n0, Some(n1))) => {
+                            let el = start.elapsed().as_secs_f64();
+                            let rate = sh.nodes.load(Ordering::Relaxed) as f64 / el.max(1e-6);
+                            let ratio = n0
+                                .filter(|&n| n > 0)
+                                .map_or(16.0, |n0| (n1 as f64 / n0 as f64).clamp(4.0, 32.0));
+                            let count = best_now.saturating_sub(depth + usize::from(early));
+                            let (mut next, mut sum) = (n1 as f64 * ratio, 0.0);
+                            for _ in 0..count {
+                                sum += next;
+                                next *= ratio;
+                            }
+                            if std::env::var_os("FTO_DEBUG").is_some() {
+                                eprintln!("  forecast: depth {depth} best {best_now} lower {lower} count {count} ratio {ratio:.1} rest {:.3}s left {:.3}s", sum / rate, tl.as_secs_f64() - el);
+                            }
+                            el + 2.0 * sum / rate < tl.as_secs_f64()
+                        }
+                        _ => false,
+                    }
+                })
             {
                 target = Some(lower);
                 sh.prune_len.store(lower + 1, Ordering::Relaxed);
@@ -1614,6 +1658,7 @@ fn solve_n<I: AeIndex, const N: usize>(
             });
         }
         prev_nodes = Some(sh.nodes.load(Ordering::Relaxed) - nodes_before);
+        iter_nodes = (iter_nodes.1, prev_nodes);
         for &(i, _) in &prev_ids {
             node_stat[i as usize] = 0.0;
         }
