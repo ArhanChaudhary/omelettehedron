@@ -121,6 +121,23 @@ pub fn bfs<F>(n: usize, targets: &[usize], nbrs: F, name: &str, verbose: bool) -
 where
     F: Fn(usize, &mut Vec<usize>) + Sync,
 {
+    bfs_with(n, targets, nbrs, |_, _| {}, name, verbose)
+}
+
+/// [`bfs`] that also calls `on_set(index, depth)` for every entry when its depth is found
+/// (depth >= 1; targets are depth 0).
+pub fn bfs_with<F, S>(
+    n: usize,
+    targets: &[usize],
+    nbrs: F,
+    on_set: S,
+    name: &str,
+    verbose: bool,
+) -> Table2
+where
+    F: Fn(usize, &mut Vec<usize>) + Sync,
+    S: Fn(usize, usize) + Sync,
+{
     let t0 = std::time::Instant::now();
     let words = n.div_ceil(32);
     let mut raw = alloc_words(words);
@@ -191,10 +208,12 @@ where
                         if forward {
                             for &k in nb.iter() {
                                 if set_if_empty(k, next) {
+                                    on_set(k, d + 1);
                                     cnt += 1;
                                 }
                             }
                         } else if nb.iter().any(|&k| get(k) == cur) && set_if_empty(j, next) {
+                            on_set(j, d + 1);
                             cnt += 1;
                         }
                     }

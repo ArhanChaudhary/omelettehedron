@@ -21,8 +21,10 @@ pub enum Tier {
     Small,
     /// ~1.2 GB: full edge coset, 288-fold symmetry
     Medium,
-    /// ~23 GB: full edge coset, only colour-relabelling symmetry (fewer lookups per node)
+    /// medium + the joint corner/B-centre/edge-triple table (~8 GB)
     Large,
+    /// relabel-only edge-coset table (~23 GB) + the joint table (~31 GB in total)
+    Huge,
 }
 
 /// Index function of an AE table.
@@ -518,6 +520,7 @@ pub struct Tables<I: AeIndex> {
     pub ae_targets: Vec<usize>,
     pub cb: CbTable,
     pub p2: Phase2,
+    pub cbe: Option<crate::cbe::CbeTable>,
 }
 
 pub fn table_dir(dir: Option<&Path>) -> PathBuf {
@@ -571,10 +574,21 @@ impl<I: AeIndex> Tables<I> {
             ae_targets,
             cb,
             p2: Phase2::new(),
+            cbe: None,
         }
     }
 
     pub fn load(dir: &Path, ae_ix: I, verbose: bool) -> std::io::Result<Tables<I>> {
+        Self::load_with(dir, ae_ix, false, verbose)
+    }
+
+    /// Load (generating if needed) the tables, optionally with the joint CBE table.
+    pub fn load_with(
+        dir: &Path,
+        ae_ix: I,
+        with_cbe: bool,
+        verbose: bool,
+    ) -> std::io::Result<Tables<I>> {
         let ae_path = dir.join(format!("{}.prun", ae_ix.name()));
         let ae = load_or_build(&ae_path, ae_ix.size(), verbose, || {
             build_ae(&ae_ix, verbose)
@@ -587,12 +601,39 @@ impl<I: AeIndex> Tables<I> {
             attach: CbTable::attach_targets(),
         };
         let ae_targets = ae_targets(&ae_ix);
+        let cbe = if with_cbe {
+            let path = dir.join("cbe.prun");
+            Some(match crate::cbe::CbeTable::load(&path) {
+                Ok(t) => {
+                    if verbose {
+                        eprintln!(
+                            "loaded {} ({:.1} MB)",
+                            path.display(),
+                            t.codes.len() as f64 * 8e-6
+                        );
+                    }
+                    t
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    if verbose {
+                        eprintln!("generating {} ...", path.display());
+                    }
+                    let t = crate::cbe::CbeTable::build(verbose);
+                    t.save(&path)?;
+                    t
+                }
+                Err(e) => return Err(e),
+            })
+        } else {
+            None
+        };
         Ok(Tables {
             ae_ix,
             ae,
             ae_targets,
             cb,
             p2: Phase2::new(),
+            cbe,
         })
     }
 

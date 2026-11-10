@@ -20,7 +20,7 @@ struct Cli {
 
 #[derive(clap::Args, Clone)]
 struct TableArgs {
-    /// Pruning-table size: small (~260 MB), medium (~1.2 GB) or large (~23 GB, fastest)
+    /// Pruning-table size: small (~260 MB), medium (~1.2 GB), large (~8 GB) or huge (~31 GB)
     #[arg(long, value_enum, default_value = "medium")]
     tier: Tier,
     /// Directory for pruning tables (default: $FTO_TABLES or ./tables)
@@ -154,8 +154,15 @@ macro_rules! dispatch {
                 $body
             }
             Tier::Large => {
-                let $t = Tables::load(&dir, AeRelabel::new(), $tab.verbose).expect("tables");
+                let $t =
+                    Tables::load_with(&dir, AeSym::new(true), true, $tab.verbose).expect("tables");
                 let $name = "large";
+                $body
+            }
+            Tier::Huge => {
+                let $t =
+                    Tables::load_with(&dir, AeRelabel::new(), true, $tab.verbose).expect("tables");
+                let $name = "huge";
                 $body
             }
         }
