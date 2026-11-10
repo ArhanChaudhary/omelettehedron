@@ -476,7 +476,27 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         for i in 0..n {
             *stat += STAT_W[has[i].max(hcs[i]) as usize];
         }
+        // Visit the children with the smallest bounds first, so that leaves (and with them
+        // shorter solutions, which tighten the bound against the best) are reached sooner. The
+        // key uses only exact child bounds: a deferred CB value is still the parent's.
+        let mut order = [0u8; N_MOVES];
         for i in 0..n {
+            order[i] = i as u8;
+        }
+        if n > 1 {
+            let key = |i: usize| -> u8 {
+                let hc = if pend[i] == NO_CB { hcs[i] } else { 0 };
+                let a = has[i].max(hc);
+                if B {
+                    a + hbas[i].max(hbcs[i])
+                } else {
+                    a
+                }
+            };
+            order[..n].sort_by_key(|&i| key(i as usize));
+        }
+        for &oi in &order[..n] {
+            let i = oi as usize;
             path.push(ms[i] as usize);
             // (without B the class-B position is not tracked)
             let yb = if B { &ybs[i] } else { xb };
