@@ -127,13 +127,19 @@ fn swap_moves() -> [usize; N_MOVES] {
 
 const CHECK_EVERY: u64 = 1 << 14;
 
+/// The AE table is checked first (before CB) with at least this many moves left after the
+/// children: the CB table (max 8) prunes almost nothing there (+7% / +10% nodes/s at 48T / 1T
+/// when added with 7+ moves, opt/ae-first; lowered to 6 in the opt/stages stack, measured
+/// only as part of it: +10% / +14% nodes/s).
+const AE_FIRST: usize = 6;
+
 /// No deferred CB lookup (see `dfs`).
 const NO_CB: usize = usize::MAX;
 
 /// Scratch arrays of one `dfs` level: the children of a node and their indices and bounds.
-/// They live in a per-worker stack of frames, one per depth, rather than on the call stack, so
-/// that they are not re-initialised at every node (~3 KB of stores per node; +1.3% nodes/s at
-/// 1T in optimal mode, when added).
+/// They live in a per-worker stack of frames, three per depth (see [`Shared::dfs`]), rather
+/// than on the call stack, so that they are not re-initialised at every node (~3 KB of stores
+/// per node; +1.3% nodes/s at 1T in optimal mode, when added).
 #[derive(Clone)]
 struct Scratch {
     ys: [Fc; N_MOVES],
@@ -150,6 +156,20 @@ struct Scratch {
     bidx: [usize; N_MOVES],
     bcbi: [usize; N_MOVES],
     ci: [[usize; 4]; N_MOVES],
+    /// the children still alive after each stage (indices into the arrays above). Stages
+    /// compact this list without branching on the prune decision, instead of copying
+    /// positions (neutral when added: -1.5% nodes/s at 1T, within noise).
+    sel: [u8; N_MOVES],
+    /// number of children
+    n: usize,
+    /// number alive after `stage2` (in `sel`)
+    k: usize,
+    /// the node's own exact distances and the smallest AE distance of a child after
+    /// `stage2`, and whether `stage2` issued the joint-table lookups
+    h_ae: u8,
+    h_cb: u8,
+    min_ha: u8,
+    cbe_done: bool,
 }
 
 impl Scratch {
@@ -168,6 +188,13 @@ impl Scratch {
             bidx: [0; N_MOVES],
             bcbi: [0; N_MOVES],
             ci: [[0; 4]; N_MOVES],
+            sel: [0; N_MOVES],
+            n: 0,
+            k: 0,
+            h_ae: 0,
+            h_cb: 0,
+            min_ha: 0,
+            cbe_done: false,
         }
     }
 }
@@ -293,6 +320,15 @@ impl<I: AeIndex> Shared<'_, I> {
     /// a solution shorter than the best one found so far.
     /// If `cb_pend` is not `NO_CB`, `h_cb` is the parent's CB distance and this node's CB
     /// entry (already prefetched by the parent) is at `cb_pend`.
+    ///
+    /// A node is evaluated in three steps: [`Self::expand`] generates its children and issues
+    /// their first table lookups, [`Self::stage2`] reads them and issues the second round,
+    /// and [`Self::finish`] reads that and searches below the surviving children. Siblings
+    /// are pipelined: the next sibling's first two steps run before a child's subtree is
+    /// searched, so that their table reads find the data in cache. The search waited on
+    /// memory about half of the time; when added: +40% nodes/s at 48T and +45% at 1T
+    /// (time-limited benchmark), optimal-mode time 0.70x / 0.72x (pipelining only the first
+    /// step: +22% / +18% nodes/s in a quick optimal-mode test).
     fn dfs<const B: bool>(
         &self,
         v: usize,
@@ -307,7 +343,7 @@ impl<I: AeIndex> Shared<'_, I> {
         bound: usize,
         nodes: &mut u64,
         stat: &mut f32,
-        frames: &mut [Scratch],
+        frames: &mut [[Scratch; 3]],
     ) {
         let g = path.len();
         if g == bound {
@@ -319,34 +355,28 @@ impl<I: AeIndex> Shared<'_, I> {
         if self.stop.load(Ordering::Relaxed) {
             return;
         }
-        // (the caller provides one frame per remaining level)
-        let Some((fr, frames)) = frames.split_first_mut() else {
+        // (the caller provides three frames per remaining level)
+        let Some(([fr, _, _], frames)) = frames.split_first_mut() else {
             debug_assert!(false, "out of search frames");
             return;
         };
-        let Scratch {
-            ys,
-            ybs,
-            ms,
-            has,
-            hcs,
-            hbas,
-            hbcs,
-            idx,
-            cbi,
-            pend,
-            bidx,
-            bcbi,
-            ci,
-        } = fr;
         let last = path.last().copied().unwrap_or(usize::MAX);
         let budget = bound - g - 1;
+        self.expand(x, last, budget, fr, nodes);
+        self.stage2::<B>(h_ae, h_cb, cb_pend, xb, budget, fr);
+        self.finish::<B>(v, path, xb, hb_ae, hb_cb, bound, nodes, stat, fr, frames);
+    }
+
+    /// First step of the evaluation of a node with `budget` moves left after its children
+    /// (`last`: the move leading to it): generate the children into `fr`, count them, and
+    /// issue their first table lookups (AE with 6+ moves left, CB otherwise). Every stage
+    /// issues the lookups of all children before reading any of them, so the cache misses of
+    /// different children overlap (2.0x nodes/s at 48T and 1T when added, opt/prefetch).
+    #[inline(always)]
+    fn expand(&self, x: &Fc, last: usize, budget: usize, fr: &mut Scratch, nodes: &mut u64) {
         let t = self.t;
         let f = fast();
         let fw = f.flip_word(&masks(&x.e));
-        // Evaluate all children as a batch: every stage issues prefetches for all children
-        // before reading any of them, so the cache misses of different children overlap
-        // (2.0x nodes/s at 48T and 1T when added, opt/prefetch).
         let mut n = 0;
         let mut moves = ALLOWED[last.min(N_MOVES)];
         if budget == 0 {
@@ -355,31 +385,67 @@ impl<I: AeIndex> Shared<'_, I> {
         while moves != 0 {
             let m = moves.trailing_zeros() as usize;
             moves &= moves - 1;
-            ys[n & 15] = f.apply_w(x, fw, m);
-            ms[n & 15] = m as u8;
+            fr.ys[n & 15] = f.apply_w(x, fw, m);
+            fr.ms[n & 15] = m as u8;
             n += 1;
         }
-        // count every evaluated node; check the clock regularly
+        fr.n = n;
+        // count every evaluated node; check the clock regularly (`finish` sees the stop)
         let before = *nodes;
         *nodes += n as u64;
-        if before / CHECK_EVERY != *nodes / CHECK_EVERY && self.time_up() {
-            return;
+        if before / CHECK_EVERY != *nodes / CHECK_EVERY {
+            self.time_up();
         }
-        // The children still alive after each stage, as indices into the frame's arrays.
-        // Stages compact this list without branching on the prune decision, instead of
-        // copying positions (neutral when added: -1.5% nodes/s at 1T, within noise).
-        let mut sel = [0u8; N_MOVES];
+        if budget >= AE_FIRST {
+            t.ae_ix
+                .index_batch_fast_pf(f, &fr.ys[..n], &mut fr.idx[..n], &t.ae.data);
+        } else {
+            for i in 0..n {
+                fr.cbi[i] = CbTable::index_fast(f, &fr.ys[i]);
+                prefetch_at(&t.cb.tab.data, fr.cbi[i] >> 5);
+            }
+        }
+    }
+
+    /// Second step (see [`Self::dfs`]): read the first lookups of the children in `fr`, and
+    /// issue the lookups of the next stages for those still alive.
+    #[inline(always)]
+    fn stage2<const B: bool>(
+        &self,
+        h_ae: u8,
+        h_cb: u8,
+        cb_pend: usize,
+        xb: &Fc,
+        budget: usize,
+        fr: &mut Scratch,
+    ) {
+        let t = self.t;
+        let f = fast();
+        let Scratch {
+            ys,
+            ybs,
+            ms,
+            has,
+            hcs,
+            idx,
+            cbi,
+            bidx,
+            bcbi,
+            ci,
+            sel,
+            n,
+            k: kk,
+            h_ae: fh_ae,
+            h_cb: fh_cb,
+            min_ha: fmin_ha,
+            cbe_done,
+            ..
+        } = fr;
+        let n = *n;
         let mut k = 0;
         let mut h_cb = h_cb;
-        // The CB table (max 8) prunes almost nothing with 6+ moves left: check AE first there
-        // (+7% / +10% nodes/s at 48T / 1T when added with 7+ moves, opt/ae-first; lowered to 6
-        // in the opt/stages stack, measured only as part of it: +10% / +14% nodes/s).
-        let ae_first = budget >= 6;
-        let mut cbe_done = false;
-        let mut b_done = false;
-        if ae_first {
-            t.ae_ix
-                .index_batch_fast_pf(f, &ys[..n], &mut idx[..n], &t.ae.data);
+        *cbe_done = false;
+        if budget >= AE_FIRST {
             let mut min_ha = u8::MAX;
             for i in 0..n {
                 let ha = decode(h_ae, t.ae.get(idx[i]));
@@ -389,6 +455,7 @@ impl<I: AeIndex> Shared<'_, I> {
                 sel[k & 15] = i as u8;
                 k += usize::from(ok);
             }
+            *fmin_ha = min_ha;
             for &i in &sel[..k] {
                 let i = usize::from(i & 15);
                 cbi[i] = CbTable::index_fast(f, &ys[i]);
@@ -401,12 +468,6 @@ impl<I: AeIndex> Shared<'_, I> {
             // The class-B lookups are issued here too, so that their latency overlaps the
             // CB and joint-table stages (+6% / +4% nodes/s at 48T / 1T, optimal 0.95x time,
             // when added, opt/bpath).
-            let lim = if B {
-                // a child at depth g+1 with bound h cannot give a solution shorter than g+1+h
-                self.best_len.load(Ordering::Relaxed).saturating_sub(g + 2)
-            } else {
-                0
-            };
             if B && k > 0 {
                 let fwb = f.flip_word(&masks(&xb.e));
                 for &i in &sel[..k] {
@@ -428,6 +489,73 @@ impl<I: AeIndex> Shared<'_, I> {
                         let i = usize::from(i & 15);
                         cbe.prefetch_all(f, &ys[i], &mut ci[i]);
                     }
+                    *cbe_done = true;
+                }
+            }
+        } else {
+            for i in 0..n {
+                let hc = decode(h_cb, t.cb.tab.get(cbi[i]));
+                hcs[i] = hc;
+                sel[k & 15] = i as u8;
+                k += usize::from(hc as usize <= budget);
+            }
+            t.ae_ix.index_sel_pf(f, ys, &sel[..k], idx, &t.ae.data);
+        }
+        *kk = k;
+        *fh_ae = h_ae;
+        *fh_cb = h_cb;
+    }
+
+    /// Last step of the evaluation of a node at depth `g = path.len()` (see [`Self::dfs`]),
+    /// after [`Self::expand`] and [`Self::stage2`] on `fr`, and the search below it.
+    fn finish<const B: bool>(
+        &self,
+        v: usize,
+        path: &mut Vec<usize>,
+        xb: &Fc,
+        hb_ae: u8,
+        hb_cb: u8,
+        bound: usize,
+        nodes: &mut u64,
+        stat: &mut f32,
+        fr: &mut Scratch,
+        frames: &mut [[Scratch; 3]],
+    ) {
+        if self.stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let g = path.len();
+        let budget = bound - g - 1;
+        let t = self.t;
+        let f = fast();
+        let Scratch {
+            ys,
+            ybs,
+            ms,
+            has,
+            hcs,
+            hbas,
+            hbcs,
+            idx,
+            cbi,
+            pend,
+            bidx,
+            bcbi,
+            ci,
+            sel,
+            n: _,
+            k,
+            h_ae,
+            h_cb,
+            min_ha,
+            cbe_done,
+        } = fr;
+        let (mut k, h_ae, h_cb, min_ha, cbe_done) = (*k, *h_ae, *h_cb, *min_ha, *cbe_done);
+        let mut n = 0;
+        let mut b_done = false;
+        if budget >= AE_FIRST {
+            if cbe_done {
+                if let Some(cbe) = &t.cbe {
                     let mut k2 = 0;
                     for j in 0..k {
                         let i = sel[j];
@@ -436,15 +564,19 @@ impl<I: AeIndex> Shared<'_, I> {
                         k2 += usize::from(ok);
                     }
                     k = k2;
-                    cbe_done = true;
                 }
             }
+            let lim = if B {
+                // a child at depth g+1 with bound h cannot give a solution shorter than g+1+h
+                self.best_len.load(Ordering::Relaxed).saturating_sub(g + 2)
+            } else {
+                0
+            };
             // Without a joint-table stage, CB values that can neither prune nor change the
             // ordering statistic (max(ha, hc) = ha) are read by each child itself, after its
             // own AE stage, when the prefetch issued here has completed (part of the
             // opt/micro-compute stack: 1.29x / 1.28x nodes/s at 48T / 1T as a whole).
             let defer = !cbe_done && budget >= self.cb_max as usize && min_ha >= self.cb_max;
-            n = 0;
             for j in 0..k {
                 let i = sel[j];
                 let u = usize::from(i & 15);
@@ -469,18 +601,6 @@ impl<I: AeIndex> Shared<'_, I> {
             }
             b_done = true;
         } else {
-            for i in 0..n {
-                cbi[i] = CbTable::index_fast(f, &ys[i]);
-                prefetch_at(&t.cb.tab.data, cbi[i] >> 5);
-            }
-            for i in 0..n {
-                let hc = decode(h_cb, t.cb.tab.get(cbi[i]));
-                hcs[i] = hc;
-                sel[k & 15] = i as u8;
-                k += usize::from(hc as usize <= budget);
-            }
-            t.ae_ix.index_sel_pf(f, ys, &sel[..k], idx, &t.ae.data);
-            n = 0;
             for j in 0..k {
                 let i = sel[j];
                 let u = usize::from(i & 15);
@@ -543,19 +663,74 @@ impl<I: AeIndex> Shared<'_, I> {
             let i = usize::from(i & 15);
             *stat += STAT_W[has[i].max(hcs[i]) as usize];
         }
-        for &i in &sel[..n] {
-            let i = usize::from(i & 15);
+        if budget == 0 {
+            // the children are leaves
+            for &i in &sel[..n] {
+                let i = usize::from(i & 15);
+                let m = ms[i] as usize;
+                if has[i] == 0 && hcs[i] == 0 && !is_a_move(m) {
+                    path.push(m);
+                    self.leaf(v, path);
+                    path.pop();
+                }
+                if self.stop.load(Ordering::Relaxed) {
+                    return;
+                }
+            }
+            return;
+        }
+        // (the caller provides three frames per remaining level)
+        let Some((trio, frames)) = frames.split_first_mut() else {
+            debug_assert!(false, "out of search frames");
+            return;
+        };
+        // Sibling pipeline: child j is finished in `f0` while child j+1 has had its first
+        // lookups read (`f1`) and child j+2 its first lookups issued (`f2`).
+        let [mut f0, mut f1, mut f2] = trio.each_mut();
+        let cb = budget - 1;
+        let sel = *sel;
+        let child = |j: usize| usize::from(sel[j & 15] & 15);
+        let yb_of = |i: usize| if B { &ybs[i] } else { xb };
+        if n > 0 {
+            let i = child(0);
+            self.expand(&ys[i], ms[i] as usize, cb, f0, nodes);
+        }
+        if n > 1 {
+            let i = child(1);
+            self.expand(&ys[i], ms[i] as usize, cb, f1, nodes);
+        }
+        if n > 0 {
+            let i = child(0);
+            self.stage2::<B>(has[i], hcs[i], pend[i], yb_of(i), cb, f0);
+        }
+        for j in 0..n {
+            if j + 2 < n {
+                let i = child(j + 2);
+                self.expand(&ys[i], ms[i] as usize, cb, f2, nodes);
+            }
+            if j + 1 < n {
+                let i = child(j + 1);
+                self.stage2::<B>(has[i], hcs[i], pend[i], yb_of(i), cb, f1);
+            }
+            let i = child(j);
             path.push(ms[i] as usize);
-            // (without B the class-B position is not tracked)
-            let yb = if B { &ybs[i] } else { xb };
-            self.dfs::<B>(
-                v, path, &ys[i], has[i], hcs[i], pend[i], yb, hbas[i], hbcs[i], bound, nodes, stat,
+            self.finish::<B>(
+                v,
+                path,
+                yb_of(i),
+                hbas[i],
+                hbcs[i],
+                bound,
+                nodes,
+                stat,
+                f0,
                 frames,
             );
             path.pop();
             if self.stop.load(Ordering::Relaxed) {
                 return;
             }
+            (f0, f1, f2) = (f1, f2, f0);
         }
     }
 
@@ -862,7 +1037,7 @@ pub fn solve<I: AeIndex>(
         let worker = || {
             let mut path: Vec<usize> = Vec::with_capacity(64);
             // one frame per level below a task (tasks are at depth >= 0)
-            let mut frames = vec![Scratch::new(); depth + 1];
+            let mut frames = vec![[Scratch::new(), Scratch::new(), Scratch::new()]; depth + 1];
             // the per-thread counter persists across tasks so time checks happen regularly
             let mut nodes = 0u64;
             loop {
