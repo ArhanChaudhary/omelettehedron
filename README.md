@@ -200,6 +200,7 @@ warm-up solve runs for V8.
 
 ```sh
 cargo test --release
+cargo test --release -- --ignored   # the slow ones: 400-position brute force, stress tests
 scripts/check.sh      # fmt, clippy (pedantic, -D warnings), tests, no runtime asserts
 ```
 
@@ -219,4 +220,7 @@ The tests cover:
   reached exactly once (checked against exact counts, at 1 and 8 threads, with and without
   slices);
 * phase-2 membership, including the centres;
-* every stopping rule.
+* every stopping rule;
+* randomised stress (ignored by default): every move set with random stopping rules and thread
+  counts, solutions checked on the sticker model, move families, improvement events, and
+  optimal lengths independent of the thread count.
