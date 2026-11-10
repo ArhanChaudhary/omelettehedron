@@ -40,6 +40,7 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | Faster table generation (egg-solver's techniques) | `opt/gen` | large tier 121 -> 30 s and peak 14.9 -> 8.1 GB; medium 16.0 -> 6.6 s (48T); tables byte-identical | yes |
 | Start-up move and symmetry tables from label masks (6-bit compress/expand tables, `MaskPerm`) | `opt/startup` | start-up (2-move solve) 1T 2.66 -> 1.38 s large, 1.69 -> 0.41 s small; 48T 0.29 -> 0.26 s; WebAssembly table load (1 thread, Bun) 2.08 -> 0.54 s; search unchanged (nodes/s 1.01x / 1.01x, optimal 1.00x / 0.99x) | yes |
 | With slices, last proof iteration restricted to paths ending in a slice | `neg/slicelast` | neutral: few nodes reach the last level (48T node counts within 0.1%); slice optimal 0.97x (48T) / 1.05x (1T) | no |
+| Profile-guided build (LLVM PGO, training on other seeds) | `neg/pgo` | nodes/s 0.987x (48T) / 0.947x (1T); optimal 1.002x / 0.978x time | no |
 
 Cumulative, first working version -> main of 2026-11-10 ~13:30 (r10 and rc runs; 48 threads, 40
 random positions, 5 s): mean best length 21.60 -> 21.10; first solution 86 ms -> 6.1 ms; 1.70e9
