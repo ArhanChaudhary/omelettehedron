@@ -197,7 +197,78 @@ pub struct AClasses {
 
 impl AClasses {
     /// Classes under the given list of (g, t) pairs (first pair must be the identity).
+    ///
+    /// When the pairs form a group, each class is enumerated once from its representative
+    /// (the smallest rank of the orbit, met first in rank order): `pairs.len()` rank
+    /// computations per class instead of per rank. The result equals [`Self::new_brute`].
     pub fn new(pairs: &[(u8, u8)]) -> AClasses {
+        let s = syms();
+        let np = pairs.len();
+        // a pair acts as (colour permutation, position permutation); composition table
+        let key = |i: usize| -> ([u8; 4], [u8; 12]) {
+            let (g, t) = pairs[i];
+            (s.a_col[g as usize], s.a_pos[t as usize])
+        };
+        let index: HashMap<([u8; 4], [u8; 12]), u16> =
+            (0..np).map(|i| (key(i), i as u16)).collect();
+        if index.len() != np {
+            return Self::new_brute(pairs);
+        }
+        // mul[i * np + j]: pair applying j first, then i
+        let mut mul = vec![0u16; np * np];
+        for i in 0..np {
+            let (ci, pi) = key(i);
+            for j in 0..np {
+                let (cj, pj) = key(j);
+                let c: [u8; 4] = std::array::from_fn(|x| ci[cj[x] as usize]);
+                let p: [u8; 12] = std::array::from_fn(|x| pi[pj[x] as usize]);
+                match index.get(&(c, p)) {
+                    Some(&k) => mul[i * np + j] = k,
+                    None => return Self::new_brute(pairs),
+                }
+            }
+        }
+        let inv: Vec<u16> = (0..np)
+            .map(|j| (0..np).find(|&k| mul[k * np + j] == 0).unwrap() as u16)
+            .collect();
+        let ms = mset();
+        let mut sym = vec![u32::MAX; N_MSET];
+        let mut rep = vec![];
+        let mut image = vec![0u32; np];
+        for r in 0..N_MSET {
+            if sym[r] != u32::MAX {
+                continue;
+            }
+            // r is the smallest rank of its orbit
+            let c = rep.len() as u32;
+            rep.push(r as u32);
+            let l = ms.unrank(r as u32);
+            for (j, &(g, t)) in pairs.iter().enumerate() {
+                image[j] = ms.rank(&s.apply_a(g as usize, t as usize, &l));
+            }
+            let stab: Vec<usize> = (0..np).filter(|&j| image[j] == r as u32).collect();
+            for j in 0..np {
+                let y = image[j] as usize;
+                if sym[y] != u32::MAX {
+                    continue;
+                }
+                // the pairs mapping y to r are stab * j^-1; take the first in the list
+                let si = stab
+                    .iter()
+                    .map(|&st| mul[st * np + inv[j] as usize])
+                    .min()
+                    .unwrap();
+                sym[y] = c | (si as u32) << 16;
+            }
+        }
+        AClasses {
+            sym: HugeBuf::from_slice(&sym),
+            rep,
+        }
+    }
+
+    /// Brute force: the smallest image of every rank under every pair.
+    pub fn new_brute(pairs: &[(u8, u8)]) -> AClasses {
         let s = syms();
         let ms = mset();
         let best: Vec<(u32, u16)> = (0..N_MSET as u32)
@@ -284,6 +355,21 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn classes_match_brute_force() {
+        let s = syms();
+        let rot: Vec<(u8, u8)> = (0..N_GEO as u8)
+            .filter(|&g| crate::geometry::det(&s.mats[g as usize]) == 1)
+            .map(|g| (g, 0))
+            .collect();
+        for pairs in [s.pairs.clone(), rot] {
+            let a = AClasses::new(&pairs);
+            let b = AClasses::new_brute(&pairs);
+            assert_eq!(a.rep, b.rep);
+            assert!(a.sym.iter().eq(b.sym.iter()));
         }
     }
 
