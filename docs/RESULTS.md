@@ -23,22 +23,28 @@ Mean best length, 40 random positions (48 threads) / 20 (1 thread):
 | after 5 s | 21.10 | 22.00 |
 | search speed | 1.71e9 nodes/s | 3.8e7 nodes/s |
 
+Since the merged traversal (`opt/merged`, main ddcb5ba; two interleaved rounds against the
+two-variant search): best after 5 s 21.19 at 48 threads (two of 40 positions reach their best
+later) and 22.00 at 1 thread; first solution 7.2 ms / 0.17 s; 1.55e9 / 3.6e7 nodes/s (a node
+alive in both variants now counts once).
+
 ## Proven optimal solutions
 
 | set | threads | time to prove (total) | mean optimal length |
 |---|---|---|---|
-| 10 x 19-move scrambles | 48 | 12.5 s (1.25 s per position) | 18.1 |
-| 10 x 17-move scrambles | 1 | 3.6 s (0.36 s per position; target-length passes) | 16.5 |
+| 10 x 19-move scrambles | 48 | 8.5 s (0.85 s per position; 12.5 s before `opt/merged`) | 18.1 |
+| 10 x 17-move scrambles | 1 | 2.8 s (0.28 s per position; target-length passes; 3.6 s before) | 16.5 |
 
-Random positions (48 threads, single runs; in brackets the same proof before the early proof end
-and the sibling pipeline). The last column proves the same positions with `FTO_FULL_PROOF=1`
-(no early end, no target passes), main 496b389: the proven lengths agree.
+Random positions (48 threads). "Proof": main ddcb5ba with the merged traversal (mean of two
+runs); in brackets main 496b389 before it, and the morning of 2026-11-10 before the early proof
+end and the sibling pipeline. The last column proves the same positions with
+`FTO_FULL_PROOF=1` (no early end, no target passes) on main 496b389: the proven lengths agree.
 
 | seed | optimal | first solution | proof | full proof |
 |---|---|---|---|---|
-| 1 | 21 | 25 @ 12 ms | 64.8 s (419 s on 2026-11-10 morning) | 275.6 s |
-| 2 | 21 | 24 @ 3 ms | 64.6 s (481 s) | 316.2 s |
-| 3 | 20 | 23 @ 6 ms | 5.2 s (39 s) | 26.1 s |
+| 1 | 21 | 25 @ 12 ms | 54.0 s (64.8 s; 419 s) | 275.6 s |
+| 2 | 21 | 24 @ 3 ms | 61.8 s (64.6 s; 481 s) | 316.2 s |
+| 3 | 20 | 23 @ 6 ms | 4.96 s (5.2 s; 39 s) | 26.1 s |
 
 ## Move sets (`--moves`)
 
@@ -52,7 +58,8 @@ Large tier; wide turns never shorten a solution, so only slices are measured.
 | random positions, best after 5 s (1 thread) | 22.00 | 19.80 |
 | large-tier table generation (48 threads) | 30 s | 43 s |
 
-With slices the early end of the proof is off (see docs/PHASES.md section 8) and the branching
+(Measured before `opt/merged`; with it, slice proofs take 0.85x the time on the 17-move set at 48
+threads and 0.67x on the 15-move set at 1 thread.) With slices the early end of the proof is off (see docs/PHASES.md section 8) and the branching
 factor rises from 12.9 to about 18.3, so proofs take about 20 times as long as the full proof
 without slices.
 
