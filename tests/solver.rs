@@ -227,3 +227,43 @@ fn table_histograms_match_reference() {
     );
     assert_eq!(tables().ae.hist.len(), 13);
 }
+
+/// Optimal mode stops one iteration early (see `solve`). The argument assumes that the
+/// conjugation swapping the classes maps single turns to single turns and wide turns to wide
+/// turns, keeping each axis's pair together, so that both variants order a commuting pair at
+/// the end of a solution the same way.
+#[test]
+fn class_swap_keeps_single_and_wide_pairs() {
+    for m in 0..N_MOVES {
+        let c = conjugate_move(m, &SWAP_AB);
+        assert_eq!(slot_is_wide(slot(m)), slot_is_wide(slot(c)), "move {m}");
+        // the partner on the same axis maps to the partner of the image
+        let partner = m ^ (4 << 1);
+        assert_eq!(
+            slot(conjugate_move(partner, &SWAP_AB)),
+            slot(c) ^ 4,
+            "move {m}"
+        );
+    }
+}
+
+/// Optimal lengths against meet-in-the-middle distances on many positions (release builds:
+/// `cargo test --release -- --ignored`).
+#[test]
+#[ignore]
+fn optimal_matches_brute_force_many() {
+    let t = tables();
+    let mitm = Mitm::new();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(2027);
+    for i in 0..400 {
+        let scr = random_scramble(&mut rng, 4 + i % 9);
+        let (c, fr) = scramble_to_cube(&scr);
+        let Some(truth) = mitm.distance(&c) else {
+            continue;
+        };
+        let o = solve(t, c, fr, &Limits::default(), Report::Quiet);
+        assert!(o.optimal);
+        assert_eq!(o.length, Some(truth), "scramble {}", format_moves(&scr));
+        check_solution(&scr, o.solution.as_ref().unwrap());
+    }
+}
