@@ -275,6 +275,26 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                 }
             }
         }
+        // The joint corner/B-centre/edge-triple table only adds information near the leaves.
+        if budget <= 8 {
+            if let Some(cbe) = &t.cbe {
+                let mut ci = [[0usize; 4]; N_MOVES];
+                for i in 0..n {
+                    cbe.prefetch_all(f, &ys[i], &mut ci[i]);
+                }
+                let mut k = 0;
+                for i in 0..n {
+                    if cbe.bound(&ci[i]) as usize <= budget {
+                        ys[k] = ys[i];
+                        ms[k] = ms[i];
+                        hcs[k] = hcs[i];
+                        has[k] = has[i];
+                        k += 1;
+                    }
+                }
+                n = k;
+            }
+        }
         for i in 0..n {
             path.push(ms[i] as usize);
             self.dfs(v, path, &ys[i], has[i], hcs[i], bound, nodes);

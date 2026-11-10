@@ -30,14 +30,14 @@ pub struct FastTables {
     /// chirality flip of a triple occupying a 12-bit position mask, per move (bitsets)
     flip_m: Vec<[u64; 64]>,
     corner: Vec<[u16; N_MOVES]>,
-    c12: Vec<u16>,
+    pub(crate) c12: Vec<u16>,
     c9: Vec<u16>,
     c6: Vec<u16>,
     cmp6: Vec<[u8; 64]>,
     /// per geometric symmetry: label map (relabel), position gather (reposition), flips
     relab_map: [[u8; 16]; N_GEO],
     repos_gather: [[u8; 16]; N_GEO],
-    flip_t: Vec<[u64; 64]>,
+    pub(crate) flip_t: Vec<[u64; 64]>,
 }
 
 fn comb_rank(n: usize) -> Vec<u16> {

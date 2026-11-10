@@ -28,6 +28,12 @@ pub struct Syms {
     pub e_pos: [[u8; 12]; N_GEO],
     /// edge piece relabelling
     pub e_piece: [[u8; 12]; N_GEO],
+    /// B-colour relabelling
+    pub b_col: [[u8; 4]; N_GEO],
+    /// B-centre position map p -> t(p)
+    pub b_pos: [[u8; 12]; N_GEO],
+    /// index of the matrix product mats[i] * mats[j]
+    pub mul: [[u8; N_GEO]; N_GEO],
     /// chirality bits after relabelling with g: relab_bits[g][bits]
     pub relab_bits: [[u8; 16]; N_GEO],
     /// the 288 (g, t) pairs
@@ -47,6 +53,8 @@ fn build() -> Syms {
     let mut a_pos = [[0u8; 12]; N_GEO];
     let mut e_pos = [[0u8; 12]; N_GEO];
     let mut e_piece = [[0u8; 12]; N_GEO];
+    let mut b_col = [[0u8; 4]; N_GEO];
+    let mut b_pos = [[0u8; 12]; N_GEO];
     let edir = |e: usize| -> V3 {
         let p1 = sm.st[d.edge_slots[e][0]].p;
         let p2 = sm.st[d.edge_slots[e][1]].p;
@@ -72,6 +80,14 @@ fn build() -> Syms {
         }
         // edge pieces are named by their home position
         e_piece[gi] = e_pos[gi];
+        for i in 0..4 {
+            let f = face_of_normal(mat_vec(m, FACES[B_FACES[i]]));
+            b_col[gi][i] = B_FACES.iter().position(|&x| x == f).unwrap() as u8;
+        }
+        for p in 0..12 {
+            let q = sm.index_of(mat_vec(m, sm.st[d.b_pos[p]].p));
+            b_pos[gi][p] = d.b_pos.iter().position(|&x| x == q).unwrap() as u8;
+        }
     }
     let tp = triple_pieces();
     let mut relab_bits = [[0u8; 16]; N_GEO];
@@ -124,8 +140,18 @@ fn build() -> Syms {
         .collect();
     let relab_e = HugeBuf::from_slice(&relab_e.concat());
     let repos_e = HugeBuf::from_slice(&repos_e.concat());
+    let mut mul = [[0u8; N_GEO]; N_GEO];
+    for i in 0..N_GEO {
+        for j in 0..N_GEO {
+            let pr = mat_mul(&mats[i], &mats[j]);
+            mul[i][j] = mats.iter().position(|m| *m == pr).unwrap() as u8;
+        }
+    }
     Syms {
         mats,
+        b_col,
+        b_pos,
+        mul,
         a_col,
         a_pos,
         e_pos,
