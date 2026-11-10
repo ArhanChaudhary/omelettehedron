@@ -66,35 +66,59 @@ fn canonical_leaves(depth: usize) -> u64 {
         .sum()
 }
 
-#[test]
-fn search_reaches_every_canonical_leaf_once() {
-    const D: usize = 6;
-    let t = null_tables();
-    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(99);
-    let cube = Cube::random(&mut rng);
+/// Runs the search on `cube` up to depth `d` with each thread count and checks the leaf count.
+fn check_leaves(t: &Tables<AeSym>, cube: Cube, expect_solution: bool, d: usize, threads: &[usize]) {
     // two variants (targets H_A and H_B), each searched at every depth 0..=D
-    let expected: u64 = 2 * (0..=D).map(canonical_leaves).sum::<u64>();
-    for threads in [1, 8] {
+    let expected: u64 = 2 * (0..=d).map(canonical_leaves).sum::<u64>();
+    for &threads in threads {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
             .expect("thread pool");
         let o = pool.install(|| {
             solve(
-                &t,
+                t,
                 cube,
                 Frame::identity(),
                 &Limits {
-                    max_depth: Some(D),
+                    max_depth: Some(d),
                     ..Default::default()
                 },
                 Report::Quiet,
             )
         });
-        // a random position is about 15 moves from H_A, so no leaf here is a solution
-        assert!(o.solution.is_none());
+        assert_eq!(o.solution.is_some(), expect_solution);
         assert_eq!(o.leaves, expected, "{threads} threads");
     }
+}
+
+#[test]
+fn search_reaches_every_canonical_leaf_once() {
+    let t = null_tables();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(99);
+    // a random position is about 15 moves from H_A, so no leaf is a solution and the search
+    // never prunes against a best solution
+    check_leaves(&t, Cube::random(&mut rng), false, 6, &[1, 8]);
+}
+
+/// The same with the bound against the best solution active: the position is in `H_A` with
+/// phase-2 length at least 8, so depth 0 already finds a solution of length >= 8, and with all
+/// bounds 0 that bound cannot prune anything up to depth 6.
+#[test]
+fn search_with_best_bound_reaches_every_canonical_leaf_once() {
+    let t = null_tables();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(7);
+    let a_moves: Vec<usize> = (0..N_MOVES).filter(|&m| is_a_move(m)).collect();
+    let cube = loop {
+        let mut c = Cube::solved();
+        for _ in 0..30 {
+            c = c.apply(a_moves[rand::Rng::gen_range(&mut rng, 0..a_moves.len())]);
+        }
+        if t.p2.length(&c).is_some_and(|d| d >= 8) {
+            break c;
+        }
+    };
+    check_leaves(&t, cube, true, 6, &[1, 8]);
 }
 
 /// Phase-2 membership must look at the whole position: a position whose edges and corners
@@ -110,4 +134,14 @@ fn phase2_membership_checks_centres() {
     let mut c = s0;
     c.xb.swap(0, 3);
     assert_eq!(p2.length(&c), None);
+}
+
+/// Depth 7 also covers the AE-first stage (used with at least 6 moves left). About 1.6e8
+/// leaves, so it is not part of the default run: `cargo test --release -- --ignored`.
+#[test]
+#[ignore]
+fn search_reaches_every_canonical_leaf_once_depth7() {
+    let t = null_tables();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(99);
+    check_leaves(&t, Cube::random(&mut rng), false, 7, &[8]);
 }
