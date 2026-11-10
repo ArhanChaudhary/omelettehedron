@@ -38,6 +38,7 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | Target-length passes in optimal mode (default with one thread) | `opt/target2` | optimal 1T 0.39x, 48T 0.98x | yes |
 | Optional 1 GiB pages for large tables (`FTO_HUGE1G=1`) | `opt/huge1g` | A-centre/edge table on a 1 GiB page: optimal 0.96x / 0.97x, nodes/s 1.01x / 1.03x (opt-in) | yes |
 | Faster table generation (egg-solver's techniques) | `opt/gen` | large tier 121 -> 30 s and peak 14.9 -> 8.1 GB; medium 16.0 -> 6.6 s (48T); tables byte-identical | yes |
+| Start-up move and symmetry tables from label masks (6-bit compress/expand tables, `MaskPerm`) | `opt/startup` | start-up (2-move solve) 1T 2.66 -> 1.38 s large, 1.69 -> 0.41 s small; 48T 0.29 -> 0.26 s; WebAssembly table load (1 thread, Bun) 2.08 -> 0.54 s; search unchanged (nodes/s 1.01x / 1.01x, optimal 1.00x / 0.99x) | yes |
 
 Cumulative (48 threads, 40 random positions, 5 s): mean best length 21.60 -> 21.20; first
 solution 86 ms -> 6.8 ms. Optimal mode (19-move scrambles, 48 threads): 15.1 s -> 2.76 s mean.

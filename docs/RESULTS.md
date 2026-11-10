@@ -39,6 +39,16 @@ and the sibling pipeline):
 | 2 | 21 | 24 @ 3 ms | 64.6 s (481 s) |
 | 3 | 20 | 23 @ 6 ms | 5.2 s (39 s) |
 
+## Start-up
+
+Wall time of a solve of a 2-move scramble, tables already on disk (mostly loading the tables and
+building the move and symmetry tables; `bench` leaves it out of its per-position times):
+
+| tier | 1 thread | 48 threads |
+|---|---|---|
+| small | 0.41 s | 0.13 s |
+| large | 1.38 s | 0.26 s |
+
 ## Tables
 
 | tier | memory while solving | generation (48 threads) | generation (1 thread) | peak memory generating |
