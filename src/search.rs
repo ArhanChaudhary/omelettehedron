@@ -70,6 +70,11 @@ struct Variant {
     root: Fc,
     h_ae: u8,
     h_cb: u8,
+    /// The root conjugated by SWAP_AB (its H_A distance is this root's H_B distance), and
+    /// its bounds: a second lower bound on the distance to solved.
+    root_b: Fc,
+    hb_ae: u8,
+    hb_cb: u8,
 }
 
 struct Shared<'a, I: AeIndex> {
@@ -84,6 +89,7 @@ struct Shared<'a, I: AeIndex> {
     nodes: AtomicU64,
     stop: AtomicBool,
     best: Mutex<(Option<Vec<PhysMove>>, Vec<Event>)>,
+    mb: [usize; N_MOVES],
 }
 
 #[derive(Clone)]
@@ -93,6 +99,14 @@ struct Task {
     x: Fc,
     h_ae: u8,
     h_cb: u8,
+    xb: Fc,
+    hb_ae: u8,
+    hb_cb: u8,
+}
+
+/// Internal move on the SWAP_AB-conjugated position matching each move.
+fn swap_moves() -> [usize; N_MOVES] {
+    std::array::from_fn(|m| conjugate_move(m, &SWAP_AB))
 }
 
 const CHECK_EVERY: u64 = 1 << 14;
@@ -109,19 +123,37 @@ impl<'a, I: AeIndex> Shared<'a, I> {
     }
 
     #[inline(always)]
-    fn child(&self, x: &Fc, h_ae: u8, h_cb: u8, m: usize, budget: usize) -> Option<(Fc, u8, u8)> {
-        let t = self.t;
+    /// A child that survives the phase-1 bound, with its exact bounds on both classes.
+    fn child(&self, t: &Task, m: usize, budget: usize) -> Option<Task> {
+        let tb = self.t;
         let f = fast();
-        let y = f.apply(x, &masks(&x.e), m);
-        let hc = decode(h_cb, t.cb.tab.get(CbTable::index_fast(f, &y)));
+        let y = f.apply(&t.x, &masks(&t.x.e), m);
+        let hc = decode(t.h_cb, tb.cb.tab.get(CbTable::index_fast(f, &y)));
         if hc as usize > budget {
             return None;
         }
-        let ha = decode(h_ae, t.ae.get(t.ae_ix.index_fast(f, &y, f.a_rank(&y))));
+        let ha = decode(t.h_ae, tb.ae.get(tb.ae_ix.index_fast(f, &y, f.a_rank(&y))));
         if ha as usize > budget {
             return None;
         }
-        Some((y, ha, hc))
+        let yb = f.apply(&t.xb, &masks(&t.xb.e), self.mb[m]);
+        let hbc = decode(t.hb_cb, tb.cb.tab.get(CbTable::index_fast(f, &yb)));
+        let hba = decode(
+            t.hb_ae,
+            tb.ae.get(tb.ae_ix.index_fast(f, &yb, f.a_rank(&yb))),
+        );
+        let mut path = t.path.clone();
+        path.push(m);
+        Some(Task {
+            v: t.v,
+            path,
+            x: y,
+            h_ae: ha,
+            h_cb: hc,
+            xb: yb,
+            hb_ae: hba,
+            hb_cb: hbc,
+        })
     }
 
     fn leaf(&self, v: usize, path: &[usize]) {
@@ -166,13 +198,18 @@ impl<'a, I: AeIndex> Shared<'a, I> {
     }
 
     /// Depth-first search below a node at depth `g` with bound `bound`.
-    fn dfs(
+    /// With `B`, children are also pruned when their class-B bound shows they cannot lead to
+    /// a solution shorter than the best one found so far.
+    fn dfs<const B: bool>(
         &self,
         v: usize,
         path: &mut Vec<usize>,
         x: &Fc,
         h_ae: u8,
         h_cb: u8,
+        xb: &Fc,
+        hb_ae: u8,
+        hb_cb: u8,
         bound: usize,
         nodes: &mut u64,
     ) {
@@ -295,9 +332,46 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                 n = k;
             }
         }
+        // Class-B bound against the best solution so far.
+        let mut ybs = [*xb; N_MOVES];
+        let mut hbas = [0u8; N_MOVES];
+        let mut hbcs = [0u8; N_MOVES];
+        if B && n > 0 {
+            let best = self.best_len.load(Ordering::Relaxed);
+            // a child at depth g+1 with bound h cannot give a solution shorter than g+1+h
+            let lim = best.saturating_sub(g + 2);
+            let emb = masks(&xb.e);
+            for i in 0..n {
+                ybs[i] = f.apply(xb, &emb, self.mb[ms[i] as usize]);
+            }
+            t.ae_ix.index_batch_fast(f, &ybs[..n], &mut idx[..n]);
+            for i in 0..n {
+                prefetch(&t.ae.data[idx[i] >> 5]);
+                cbi[i] = CbTable::index_fast(f, &ybs[i]);
+                prefetch(&t.cb.tab.data[cbi[i] >> 5]);
+            }
+            let mut k = 0;
+            for i in 0..n {
+                let hba = decode(hb_ae, t.ae.get(idx[i]));
+                let hbc = decode(hb_cb, t.cb.tab.get(cbi[i]));
+                if (hba.max(hbc) as usize) <= lim {
+                    ys[k] = ys[i];
+                    ms[k] = ms[i];
+                    hcs[k] = hcs[i];
+                    has[k] = has[i];
+                    ybs[k] = ybs[i];
+                    hbas[k] = hba;
+                    hbcs[k] = hbc;
+                    k += 1;
+                }
+            }
+            n = k;
+        }
         for i in 0..n {
             path.push(ms[i] as usize);
-            self.dfs(v, path, &ys[i], has[i], hcs[i], bound, nodes);
+            self.dfs::<B>(
+                v, path, &ys[i], has[i], hcs[i], &ybs[i], hbas[i], hbcs[i], bound, nodes,
+            );
             path.pop();
             if self.stop.load(Ordering::Relaxed) {
                 return;
@@ -315,16 +389,8 @@ impl<'a, I: AeIndex> Shared<'a, I> {
             if !allowed_after(last, m) || (budget == 0 && is_a_move(m)) {
                 continue;
             }
-            if let Some((y, ha, hc)) = self.child(&t.x, t.h_ae, t.h_cb, m, budget) {
-                let mut p = t.path.clone();
-                p.push(m);
-                out.push(Task {
-                    v: t.v,
-                    path: p,
-                    x: y,
-                    h_ae: ha,
-                    h_cb: hc,
-                });
+            if let Some(c) = self.child(t, m, budget) {
+                out.push(c);
             }
         }
         out
@@ -345,11 +411,15 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                 x: var.root,
                 h_ae: var.h_ae,
                 h_cb: var.h_cb,
+                xb: var.root_b,
+                hb_ae: var.hb_ae,
+                hb_cb: var.hb_cb,
             })
             .collect();
         let max_k = bound.saturating_sub(4).min(MAX_SPLIT);
         let mut k = 0;
-        while threads > 1 && tasks.len() < 64 * threads && k < max_k {
+        // (single-threaded runs are split too, so per-task decisions can change mid-iteration)
+        while tasks.len() < 64 * threads && k < max_k {
             tasks = tasks
                 .par_iter()
                 .flat_map_iter(|t| self.expand(t, bound))
@@ -382,15 +452,23 @@ pub fn solve<I: AeIndex>(
             };
             let root = fast().of(&c);
             let (h_ae, h_cb) = t.exact_fast(&root);
+            let root_b = fast().of(&c.conjugate(&SWAP_AB));
+            let (hb_ae, hb_cb) = t.exact_fast(&root_b);
             Variant {
                 cube: c,
                 sym: *sym,
                 root,
                 h_ae,
                 h_cb,
+                root_b,
+                hb_ae,
+                hb_cb,
             }
         })
         .collect();
+    // Every solution is a prefix followed by class-A moves, so one variant would suffice to
+    // prove optimality; both are kept because the earlier a short solution is found, the more
+    // the class-B bound prunes (measured: one variant was 1.9-3.9x slower in optimal mode).
     let sh = Shared {
         t,
         variants,
@@ -403,6 +481,7 @@ pub fn solve<I: AeIndex>(
         nodes: AtomicU64::new(0),
         stop: AtomicBool::new(false),
         best: Mutex::new((None, vec![])),
+        mb: swap_moves(),
     };
     let lo = sh
         .variants
@@ -419,6 +498,9 @@ pub fn solve<I: AeIndex>(
             break;
         }
         let tasks = sh.tasks(depth, threads);
+        // Pruning against the best length changes how many (non-improving) solutions are
+        // reached, so it is off when the user counts solutions.
+        let count_mode = limits.max_solutions.is_some();
         let t_split = start.elapsed().as_secs_f64();
         tasks.par_iter().for_each_init(
             || (Vec::with_capacity(64), 0u64),
@@ -430,7 +512,18 @@ pub fn solve<I: AeIndex>(
                 path.extend_from_slice(&task.path);
                 let before = *nodes;
                 // the per-thread counter persists across tasks so time checks happen regularly
-                sh.dfs(task.v, path, &task.x, task.h_ae, task.h_cb, depth, nodes);
+                let use_b = !count_mode && sh.best_len.load(Ordering::Relaxed) < usize::MAX;
+                if use_b {
+                    sh.dfs::<true>(
+                        task.v, path, &task.x, task.h_ae, task.h_cb, &task.xb, task.hb_ae,
+                        task.hb_cb, depth, nodes,
+                    );
+                } else {
+                    sh.dfs::<false>(
+                        task.v, path, &task.x, task.h_ae, task.h_cb, &task.xb, task.hb_ae,
+                        task.hb_cb, depth, nodes,
+                    );
+                }
                 sh.nodes.fetch_add(*nodes - before, Ordering::Relaxed);
             },
         );
