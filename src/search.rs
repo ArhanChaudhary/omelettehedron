@@ -92,6 +92,9 @@ struct Shared<'a, I: AeIndex> {
     report: Report,
     start: Instant,
     best_len: AtomicUsize,
+    /// length the class-B bound prunes against: the best length, or `target + 1` in a
+    /// target-length pass (see `solve`)
+    prune_len: AtomicUsize,
     count: AtomicU64,
     /// a solution of at most this length is optimal (depth + 1 of the iteration in progress,
     /// 0 before the first): see `solve`
@@ -297,6 +300,7 @@ impl<I: AeIndex> Shared<'_, I> {
                         length: total,
                     });
                     self.best_len.store(total, Ordering::Relaxed);
+                    self.prune_len.fetch_min(total, Ordering::Relaxed);
                     // Every iteration below the current one is complete, so a solution of
                     // length depth + 1 is optimal at once (see `solve`): stop the iteration.
                     if self.limits.max_solutions.is_none()
@@ -568,7 +572,7 @@ impl<I: AeIndex> Shared<'_, I> {
             }
             let lim = if B {
                 // a child at depth g+1 with bound h cannot give a solution shorter than g+1+h
-                self.best_len.load(Ordering::Relaxed).saturating_sub(g + 2)
+                self.prune_len.load(Ordering::Relaxed).saturating_sub(g + 2)
             } else {
                 0
             };
@@ -631,7 +635,7 @@ impl<I: AeIndex> Shared<'_, I> {
         // Class-B bound against the best solution so far (optimal mode 0.29x / 0.67x time at
         // 48T / 1T when added, opt/classb).
         if B && n > 0 && !b_done {
-            let best = self.best_len.load(Ordering::Relaxed);
+            let best = self.prune_len.load(Ordering::Relaxed);
             // a child at depth g+1 with bound h cannot give a solution shorter than g+1+h
             let lim = best.saturating_sub(g + 2);
             let fwb = f.flip_word(&masks(&xb.e));
@@ -957,6 +961,7 @@ pub fn solve<I: AeIndex>(
         report,
         start,
         best_len: AtomicUsize::new(usize::MAX),
+        prune_len: AtomicUsize::new(usize::MAX),
         count: AtomicU64::new(0),
         proof_len: AtomicUsize::new(0),
         proven: AtomicBool::new(false),
@@ -980,6 +985,18 @@ pub fn solve<I: AeIndex>(
     let mut node_stat: Vec<f32> = vec![];
     let mut prev_ids: Vec<u32> = vec![];
     let mut prev_nodes: Option<u64> = None;
+    // Target-length passes: only in optimal mode, when the best is at least this far above the
+    // lower bound (0 = never). On by default for one thread only: there the best stays loose
+    // for long and the passes cut the proof time (1T 17-move set 11.95 -> 5.27 s, 0.44x, when
+    // added); with 48 threads a tight best is found early and the rerun iterations cost more
+    // (19-move set 1.07x, random positions 1.00-1.04x). FTO_TARGET_GAP overrides. Off with
+    // FTO_FULL_PROOF: the passes rest on the same argument as the early proof end.
+    let target_gap = if limits.is_optimal() && !full_proof() {
+        env_usize("FTO_TARGET_GAP", if threads == 1 { 2 } else { 0 })
+    } else {
+        0
+    };
+    let mut target: Option<usize> = None;
     loop {
         // Optimality is proven one iteration before depth reaches the best length. The
         // iteration at depth best - 1 could only improve on the best with a leaf that is solved
@@ -996,11 +1013,53 @@ pub fn solve<I: AeIndex>(
         if limits.max_depth.is_some_and(|d| depth > d) {
             break;
         }
-        // For the same reason a solution of length depth + 1 found during this iteration is
-        // optimal at once (no shorter one exists after the iterations below), and the search
-        // stops there instead of finishing the iteration.
-        sh.proof_len
-            .store(if full_proof() { 0 } else { depth + 1 }, Ordering::Relaxed);
+        // Target-length passes (optimal mode, FTO_TARGET_GAP): pass T runs the depths lo..T-1
+        // with the class-B bound set for solutions of at most T moves instead of against a
+        // loose best, which prunes far more. By the argument above every solution of at most
+        // T moves is found at a depth below T, so a completed pass proves that none exists.
+        if let Some(t) = target {
+            if depth >= t {
+                // pass T complete: no solution of at most T moves
+                if sh.best_len.load(Ordering::Relaxed) <= t + 1 {
+                    optimal = true;
+                    break;
+                }
+                target = Some(t + 1);
+                sh.prune_len.store(
+                    (t + 2).min(sh.best_len.load(Ordering::Relaxed)),
+                    Ordering::Relaxed,
+                );
+                depth = lo;
+                prev_nodes = None;
+                continue;
+            }
+            // a solution of at most T moves found in pass T is optimal at once
+            sh.proof_len.store(t, Ordering::Relaxed);
+        } else {
+            // the iterations below `depth` are complete: no solution of at most `depth` moves
+            let lower = depth + 1;
+            if target_gap > 0
+                && depth > lo
+                && sh.best_len.load(Ordering::Relaxed) >= lower + target_gap
+            {
+                target = Some(lower);
+                sh.prune_len.store(lower + 1, Ordering::Relaxed);
+                if std::env::var_os("FTO_DEBUG").is_some() {
+                    eprintln!(
+                        "  target-length passes from {lower} (best {:?})",
+                        sh.best_len
+                    );
+                }
+                depth = lo;
+                prev_nodes = None;
+                continue;
+            }
+            // For the same reason a solution of length depth + 1 found during this iteration
+            // is optimal at once (no shorter one exists after the iterations below), and the
+            // search stops there instead of finishing the iteration.
+            sh.proof_len
+                .store(if full_proof() { 0 } else { depth + 1 }, Ordering::Relaxed);
+        }
         // Small iterations run on this thread: waking the pool costs more than they do.
         let predicted = prev_nodes.map_or(if depth < 14 { 0 } else { u64::MAX }, |n| {
             n.saturating_mul(16)
@@ -1050,7 +1109,7 @@ pub fn solve<I: AeIndex>(
                 path.extend_from_slice(&task.path);
                 let before = nodes;
                 let mut stat = 0f32;
-                let use_b = !count_mode && sh.best_len.load(Ordering::Relaxed) < usize::MAX;
+                let use_b = !count_mode && sh.prune_len.load(Ordering::Relaxed) < usize::MAX;
                 if use_b {
                     sh.dfs::<true>(
                         task.v,
