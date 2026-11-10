@@ -92,6 +92,7 @@ pub fn prefetch<T>(p: &T) {
 }
 
 pub struct AeSym {
+    /// `cls.sym` holds class id | g << 16 | t << 24 (the symmetry pair itself, not its index)
     pub cls: AClasses,
     pub chiral: bool,
     /// symmetry pairs (other than the identity) fixing each class representative
@@ -101,7 +102,11 @@ pub struct AeSym {
 impl AeSym {
     pub fn new(chiral: bool) -> AeSym {
         let s = syms();
-        let cls = AClasses::new(&s.pairs);
+        let mut cls = AClasses::new(&s.pairs);
+        for v in cls.sym.iter_mut() {
+            let (g, t) = s.pairs[(*v >> 16) as usize];
+            *v = (*v & 0xffff) | (g as u32) << 16 | (t as u32) << 24;
+        }
         let ms = mset();
         let stab = cls
             .rep
@@ -127,7 +132,7 @@ impl AeIndex for AeSym {
     fn index(&self, x: &Coords) -> usize {
         let s = syms();
         let v = self.cls.sym[x.a as usize];
-        let (g, t) = s.pairs[(v >> 16) as usize];
+        let (g, t) = (v >> 16 & 0xff, v >> 24);
         let (e, b) = s.apply_e(g as usize, t as usize, x.e, x.ebits);
         let c = (v & 0xffff) as usize;
         if self.chiral {
@@ -147,16 +152,16 @@ impl AeIndex for AeSym {
         }
         for i in 0..n {
             v[i] = self.cls.sym[xs[i].a as usize];
-            let (g, _) = s.pairs[(v[i] >> 16) as usize];
+            let g = v[i] >> 16 & 0xff;
             prefetch(&s.relab_e[g as usize * N_MSET + xs[i].e as usize]);
         }
         for i in 0..n {
-            let (g, t) = s.pairs[(v[i] >> 16) as usize];
+            let (g, t) = (v[i] >> 16 & 0xff, v[i] >> 24);
             e1[i] = s.relab_e[g as usize * N_MSET + xs[i].e as usize];
             prefetch(&s.repos_e[t as usize * N_MSET + e1[i] as usize]);
         }
         for i in 0..n {
-            let (g, t) = s.pairs[(v[i] >> 16) as usize];
+            let (g, t) = (v[i] >> 16 & 0xff, v[i] >> 24);
             let b1 = s.relab_bits[g as usize][xs[i].ebits as usize];
             let p = s.repos_e[t as usize * N_MSET + e1[i] as usize];
             let (e, b) = (p & 0xfffff, b1 ^ (p >> 20) as u8);
@@ -184,9 +189,8 @@ impl AeIndex for AeSym {
     }
     #[inline(always)]
     fn index_fast(&self, f: &FastTables, x: &Fc, a_rank: u32) -> usize {
-        let s = syms();
         let v = self.cls.sym[a_rank as usize];
-        let (g, t) = s.pairs[(v >> 16) as usize];
+        let (g, t) = (v >> 16 & 0xff, v >> 24);
         let (e, b) = f.sym_e(x, &masks(&x.e), g as usize, t as usize);
         let c = (v & 0xffff) as usize;
         if self.chiral {
