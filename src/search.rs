@@ -101,6 +101,10 @@ const fn on(sides: u8, s: usize) -> bool {
 /// The state shared by the threads of one solve, for a move set of `N` internal moves.
 struct Shared<'a, I: AeIndex, const N: usize> {
     t: &'a Tables<I>,
+    /// `fast()`, read once: the pipeline stages use this field instead of the `OnceLock`
+    /// (an atomic load per stage and node; slow with threads in WebAssembly on
+    /// `JavaScriptCore`, see `docs/OPTIMIZATION_LOG.md`)
+    f: &'static FastTables,
     sides: [Side; 2],
     /// the root, in both frames
     root: Task,
@@ -536,7 +540,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         ctr: &mut Counter,
     ) {
         let t = self.t;
-        let f = fast();
+        let f = self.f;
         let mut moves = ALLOWED[usize::from(N > N_MOVES)][last.min(MAX_MOVES)];
         // the children are leaves: only moves that end a phase-1 path on one of the sides
         let fin = if budget == 0 {
@@ -630,7 +634,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         fr: &mut Scratch<N>,
     ) {
         let t = self.t;
-        let f = fast();
+        let f = self.f;
         // the sides whose bounds the children need: their own, and with the class-B bound the
         // other one too
         let need = if B { BOTH } else { S };
@@ -790,7 +794,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         let g = path.len();
         let budget = bound - g - 1;
         let t = self.t;
-        let f = fast();
+        let f = self.f;
         let need = if B { BOTH } else { S };
         let Scratch {
             ys,
@@ -1118,7 +1122,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
     /// lookups of all children are issued before any is read.
     fn expand_all(&self, t: &Task) -> Vec<Task> {
         let tb = self.t;
-        let f = fast();
+        let f = self.f;
         let last = t.path.last().copied().unwrap_or(usize::MAX);
         let em = masks(&t.x[0].e);
         let emb = masks(&t.x[1].e);
@@ -1356,6 +1360,7 @@ fn solve_n<I: AeIndex, const N: usize>(
     // nodes/s 0.95x / 0.93x (the shared nodes count once).
     let sh = Shared::<I, N> {
         t,
+        f: fast(),
         sides: [
             Side {
                 cube,
