@@ -311,6 +311,10 @@ const ROT_IDX: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 /// Exact phase-2 table over H_A (933120 positions = 960 corner states x 972 edge states).
 pub struct Phase2 {
     pub edge_id: HashMap<[u8; 12], u16>,
+    /// In H_A the A-centres follow from the edge arrangement and the B-centres from the corner
+    /// state (checked over all 933,120 states): the centres of each edge id and corner id.
+    edge_xa: Vec<[u8; 12]>,
+    corner_xb: Vec<[u8; 12]>,
     pub dist: Vec<u8>,
     pub emoves: Vec<[u16; N_MOVES]>,
 }
@@ -322,20 +326,43 @@ impl Phase2 {
         let s0 = Cube::solved();
         let amoves: Vec<usize> = (0..N_MOVES).filter(|&m| is_a_move(m)).collect();
         let mut edge_id: HashMap<[u8; 12], u16> = HashMap::new();
-        let mut elist = vec![s0.ep];
+        // breadth-first over whole positions, keeping the first one seen per edge arrangement
+        let mut ecubes = vec![s0];
         edge_id.insert(s0.ep, 0);
         let mut i = 0;
-        while i < elist.len() {
-            let c = Cube { ep: elist[i], ..s0 };
+        while i < ecubes.len() {
+            let c = ecubes[i];
             i += 1;
             for &m in &amoves {
-                let n = c.apply(m).ep;
-                if let std::collections::hash_map::Entry::Vacant(e) = edge_id.entry(n) {
-                    e.insert(elist.len() as u16);
-                    elist.push(n);
+                let n = c.apply(m);
+                if let std::collections::hash_map::Entry::Vacant(e) = edge_id.entry(n.ep) {
+                    e.insert(ecubes.len() as u16);
+                    ecubes.push(n);
                 }
             }
         }
+        let elist: Vec<[u8; 12]> = ecubes.iter().map(|c| c.ep).collect();
+        let edge_xa: Vec<[u8; 12]> = ecubes.iter().map(|c| c.xa).collect();
+        // the same per corner state
+        let mut corner_xb = vec![s0.xb; N_CORNER];
+        let mut seen = vec![false; N_CORNER];
+        seen[corners().id(&s0) as usize] = true;
+        let mut ccubes = vec![s0];
+        let mut i = 0;
+        while i < ccubes.len() {
+            let c = ccubes[i];
+            i += 1;
+            for &m in &amoves {
+                let n = c.apply(m);
+                let id = corners().id(&n) as usize;
+                if !seen[id] {
+                    seen[id] = true;
+                    corner_xb[id] = n.xb;
+                    ccubes.push(n);
+                }
+            }
+        }
+        debug_assert!(seen.iter().all(|&s| s));
         assert_eq!(elist.len(), N_P2_EDGE);
         let emoves: Vec<[u16; N_MOVES]> = elist
             .iter()
@@ -374,17 +401,25 @@ impl Phase2 {
         assert!(dist.iter().all(|&x| x != u8::MAX));
         Phase2 {
             edge_id,
+            edge_xa,
+            corner_xb,
             dist,
             emoves,
         }
     }
 
-    /// Phase-2 length of a position known to be in H_A up to its edge permutation
-    /// (None if the edges are not an H_A arrangement).
+    /// Index of a position in the phase-2 table, or None if it is not in H_A.
+    #[inline]
+    pub fn index(&self, cube: &Cube) -> Option<usize> {
+        let e = *self.edge_id.get(&cube.ep)? as usize;
+        let c = corners().id(cube) as usize;
+        (cube.xa == self.edge_xa[e] && cube.xb == self.corner_xb[c]).then_some(c * N_P2_EDGE + e)
+    }
+
+    /// Phase-2 length of a position (None if it is not in H_A).
     #[inline]
     pub fn length(&self, cube: &Cube) -> Option<u8> {
-        let e = *self.edge_id.get(&cube.ep)?;
-        Some(self.dist[corners().id(cube) as usize * N_P2_EDGE + e as usize])
+        Some(self.dist[self.index(cube)?])
     }
 
     /// Optimal phase-2 move sequence (A moves only) for a position in H_A.
@@ -694,9 +729,11 @@ impl<I: AeIndex> Tables<I> {
                     is[m] = ix(&zs[m]);
                     prefetch(&tab.data[is[m] >> 5]);
                 }
-                let m = (0..N_MOVES)
-                    .find(|&m| tab.get(is[m]) == want)
-                    .expect("table inconsistent");
+                // (only an inconsistent table has no neighbour one step closer; the steps
+                // walked so far are still a lower bound)
+                let Some(m) = (0..N_MOVES).find(|&m| tab.get(is[m]) == want) else {
+                    return d;
+                };
                 y = zs[m];
                 d += 1;
             }

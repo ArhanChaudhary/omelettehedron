@@ -195,5 +195,6 @@ pub fn limits_with_time(secs: Option<f64>, max_len: Option<usize>, max_sol: Opti
         time: secs.map(Duration::from_secs_f64),
         max_length: max_len,
         max_solutions: max_sol,
+        max_depth: None,
     }
 }
