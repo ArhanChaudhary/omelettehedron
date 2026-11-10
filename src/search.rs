@@ -111,6 +111,19 @@ fn swap_moves() -> [usize; N_MOVES] {
 
 const CHECK_EVERY: u64 = 1 << 14;
 
+/// Weight 8^-h of a surviving node with bound h in a task's ordering statistic.
+const STAT_W: [f32; 32] = {
+    let mut w = [0f32; 32];
+    let mut h = 0;
+    let mut x = 1.0f32;
+    while h < 32 {
+        w[h] = x;
+        x /= 8.0;
+        h += 1;
+    }
+    w
+};
+
 impl<'a, I: AeIndex> Shared<'a, I> {
     fn time_up(&self) -> bool {
         if let Some(t) = self.limits.time {
@@ -212,6 +225,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         hb_cb: u8,
         bound: usize,
         nodes: &mut u64,
+        stat: &mut f32,
     ) {
         let g = path.len();
         if g == bound {
@@ -367,10 +381,14 @@ impl<'a, I: AeIndex> Shared<'a, I> {
             }
             n = k;
         }
+        // Ordering statistic of the task: how close its subtree gets to the phase-1 target.
+        for i in 0..n {
+            *stat += STAT_W[has[i].max(hcs[i]) as usize];
+        }
         for i in 0..n {
             path.push(ms[i] as usize);
             self.dfs::<B>(
-                v, path, &ys[i], has[i], hcs[i], &ybs[i], hbas[i], hbcs[i], bound, nodes,
+                v, path, &ys[i], has[i], hcs[i], &ybs[i], hbas[i], hbcs[i], bound, nodes, stat,
             );
             path.pop();
             if self.stop.load(Ordering::Relaxed) {
@@ -492,41 +510,79 @@ pub fn solve<I: AeIndex>(
     let mut optimal = false;
     let threads = rayon::current_num_threads();
     let mut depth = lo;
+    let mut prev_stats: std::collections::HashMap<(usize, [u8; 8]), f32> =
+        std::collections::HashMap::new();
     loop {
         if depth >= sh.best_len.load(Ordering::Relaxed) {
             optimal = true;
             break;
         }
-        let tasks = sh.tasks(depth, threads);
+        let mut tasks = sh.tasks(depth, threads);
+        // Order the tasks by the statistics of the same prefixes in the previous iteration, so
+        // that the most promising subtrees are searched first (egg-solver's job ordering).
+        let key = |t: &Task| -> (usize, [u8; 8]) {
+            let mut k = [u8::MAX; 8];
+            for (i, &m) in t.path.iter().take(8).enumerate() {
+                k[i] = m as u8;
+            }
+            (t.v, k)
+        };
+        if !prev_stats.is_empty() {
+            let mut keyed: Vec<(f32, Task)> = tasks
+                .into_iter()
+                .map(|t| (*prev_stats.get(&key(&t)).unwrap_or(&0.0), t))
+                .collect();
+            keyed.sort_by(|a, b| b.0.total_cmp(&a.0));
+            tasks = keyed.into_iter().map(|(_, t)| t).collect();
+        }
         // Pruning against the best length changes how many (non-improving) solutions are
         // reached, so it is off when the user counts solutions.
         let count_mode = limits.max_solutions.is_some();
         let t_split = start.elapsed().as_secs_f64();
-        tasks.par_iter().for_each_init(
-            || (Vec::with_capacity(64), 0u64),
-            |(path, nodes), task| {
-                if sh.stop.load(Ordering::Relaxed) || sh.time_up() {
-                    return;
-                }
-                path.clear();
-                path.extend_from_slice(&task.path);
-                let before = *nodes;
-                // the per-thread counter persists across tasks so time checks happen regularly
-                let use_b = !count_mode && sh.best_len.load(Ordering::Relaxed) < usize::MAX;
-                if use_b {
-                    sh.dfs::<true>(
-                        task.v, path, &task.x, task.h_ae, task.h_cb, &task.xb, task.hb_ae,
-                        task.hb_cb, depth, nodes,
-                    );
-                } else {
-                    sh.dfs::<false>(
-                        task.v, path, &task.x, task.h_ae, task.h_cb, &task.xb, task.hb_ae,
-                        task.hb_cb, depth, nodes,
-                    );
-                }
-                sh.nodes.fetch_add(*nodes - before, Ordering::Relaxed);
-            },
-        );
+        let stats: Vec<std::sync::atomic::AtomicU32> = (0..tasks.len())
+            .map(|_| std::sync::atomic::AtomicU32::new(0))
+            .collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        // Workers take tasks strictly in order from a shared counter.
+        rayon::scope(|scope| {
+            for _ in 0..threads {
+                scope.spawn(|_| {
+                    let mut path: Vec<usize> = Vec::with_capacity(64);
+                    // the per-thread counter persists across tasks so time checks happen regularly
+                    let mut nodes = 0u64;
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        if i >= tasks.len() || sh.stop.load(Ordering::Relaxed) || sh.time_up() {
+                            break;
+                        }
+                        let task = &tasks[i];
+                        path.clear();
+                        path.extend_from_slice(&task.path);
+                        let before = nodes;
+                        let mut stat = 0f32;
+                        let use_b = !count_mode && sh.best_len.load(Ordering::Relaxed) < usize::MAX;
+                        if use_b {
+                            sh.dfs::<true>(
+                                task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb,
+                                task.hb_ae, task.hb_cb, depth, &mut nodes, &mut stat,
+                            );
+                        } else {
+                            sh.dfs::<false>(
+                                task.v, &mut path, &task.x, task.h_ae, task.h_cb, &task.xb,
+                                task.hb_ae, task.hb_cb, depth, &mut nodes, &mut stat,
+                            );
+                        }
+                        stats[i].store(stat.to_bits(), Ordering::Relaxed);
+                        sh.nodes.fetch_add(nodes - before, Ordering::Relaxed);
+                    }
+                });
+            }
+        });
+        prev_stats = tasks
+            .iter()
+            .zip(stats.iter())
+            .map(|(t, s)| (key(t), f32::from_bits(s.load(Ordering::Relaxed))))
+            .collect();
         if std::env::var_os("FTO_DEBUG").is_some() {
             eprintln!("  depth {depth}: split done at {t_split:.4}s");
             eprintln!(
