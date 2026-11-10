@@ -103,7 +103,8 @@ struct Shared<'a, I: AeIndex, const N: usize> {
     t: &'a Tables<I>,
     /// `fast()`, read once: the pipeline stages use this field instead of the `OnceLock`
     /// (an atomic load per stage and node; slow with threads in WebAssembly on
-    /// `JavaScriptCore`, see `docs/OPTIMIZATION_LOG.md`)
+    /// `JavaScriptCore`). Speedup: WebAssembly with 8 threads in Bun 34.7 -> 58.8 M nodes/s
+    /// (1.70x, two rounds); native 0.98x / 1.00x (48T / 1T, within noise).
     f: &'static FastTables,
     sides: [Side; 2],
     /// the root, in both frames

@@ -41,6 +41,7 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | Start-up move and symmetry tables from label masks (6-bit compress/expand tables, `MaskPerm`) | `opt/startup` | start-up (2-move solve) 1T 2.66 -> 1.38 s large, 1.69 -> 0.41 s small; 48T 0.29 -> 0.26 s; WebAssembly table load (1 thread, Bun) 2.08 -> 0.54 s; search unchanged (nodes/s 1.01x / 1.01x, optimal 1.00x / 0.99x) | yes |
 | CB symmetry index held in `FastTables` (no `OnceLock` read per child) | `opt/cbref` | WebAssembly 8 threads (Bun) 33.1 -> 36.7 M nodes/s (1.11x), 5 of 6 positions solved within 5 s instead of 4; native nodes/s 1.00x (48T) / 1.02x (1T) | yes |
 | Both variants in one traversal (a node alive in both is evaluated once) | `opt/merged` | optimal 0.69x / 0.77x time (slices 0.85x / 0.67x; random positions 0.83x / 0.94x / 0.94x); time-limited nodes/s 0.93x / 0.94x, best after 5 s +0.09 at 48T | yes |
+| `FastTables` read from `Shared` in the pipeline stages (no `fast()` `OnceLock` per stage and node) | `opt/atomics` | WebAssembly 8 threads (Bun) 34.7 -> 58.8 M nodes/s (1.70x); native nodes/s 0.98x / 1.00x (within noise) | yes |
 | With slices, last proof iteration restricted to paths ending in a slice | `neg/slicelast` | neutral: few nodes reach the last level (48T node counts within 0.1%); slice optimal 0.97x (48T) / 1.05x (1T) | no |
 | Profile-guided build (LLVM PGO, training on other seeds) | `neg/pgo` | nodes/s 0.987x (48T) / 0.947x (1T); optimal 1.002x / 0.978x time | no |
 
