@@ -157,6 +157,15 @@ struct Counter {
     /// of those, the ones the two separate searches would both have evaluated (children of a
     /// node alive on both sides): the evaluations the merged traversal saves
     shared: u64,
+    /// `Shared::stop` and `Shared::prune_len` as last read (`Shared::refresh`: at each task,
+    /// every `CHECK_EVERY` nodes and after each leaf), so that the search reads no atomic per
+    /// node. A stale `prune_len` is never below the current one within an iteration (it only
+    /// decreases there), so it only prunes less; a stale `stop` ends the search at most
+    /// `CHECK_EVERY` nodes later (`leaf` checks the flag itself, so no solution is counted
+    /// after a stop). Speedup: WebAssembly with 8 threads in Bun 58.8 -> 144 M nodes/s (2.4x);
+    /// native nodes/s 1.01x / 1.02x (48T / 1T), optimal 0.99x / 0.96x time.
+    stop: bool,
+    prune_len: usize,
 }
 
 /// Internal move on the SWAP_AB-conjugated position matching each move (indexed `& 31`).
@@ -316,6 +325,13 @@ const STAT_W: [f32; 32] = {
 };
 
 impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
+    /// Read `stop` and `prune_len` into the worker's counter (see `Counter::stop`).
+    #[inline]
+    fn refresh(&self, ctr: &mut Counter) {
+        ctr.stop = self.stop.load(Ordering::Relaxed);
+        ctr.prune_len = self.prune_len.load(Ordering::Relaxed);
+    }
+
     fn time_up(&self) -> bool {
         if let Some(t) = self.limits.time {
             if self.start.elapsed() >= t {
@@ -335,6 +351,9 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
     /// A phase-1 leaf on side `s`: `path` (moves of side 0's frame) ends in the side's target
     /// group by the tables.
     fn leaf(&self, s: usize, path: &[usize]) {
+        if self.stop.load(Ordering::Relaxed) {
+            return;
+        }
         let side = &self.sides[s & 1];
         self.leaves[s & 1].fetch_add(1, Ordering::Relaxed);
         // the path in the side's frame
@@ -432,11 +451,12 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                 let fin = path.last().is_none_or(|&m| on(FINAL_SIDES[m & 31], s));
                 if on(sides, s) && task.h_ae[s] == 0 && task.h_cb[s] == 0 && fin {
                     self.leaf(s, path);
+                    self.refresh(ctr);
                 }
             }
             return;
         }
-        if self.stop.load(Ordering::Relaxed) {
+        if ctr.stop {
             return;
         }
         // (the caller provides three frames per remaining level)
@@ -454,7 +474,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         let (ha, hc) = ([task.h_ae[a], task.h_ae[b]], [task.h_cb[a], task.h_cb[b]]);
         self.expand_any(kind, r, x, last, budget, fr, ctr);
         let lim = if B {
-            self.prune_len.load(Ordering::Relaxed).saturating_sub(g + 2)
+            ctr.prune_len.saturating_sub(g + 2)
         } else {
             0
         };
@@ -590,6 +610,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         ctr.nodes += n as u64;
         if before / CHECK_EVERY != ctr.nodes / CHECK_EVERY {
             self.time_up();
+            self.refresh(ctr);
         }
         for s in 0..2 {
             if !on(S, s) {
@@ -789,7 +810,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         fr: &mut Scratch<N>,
         frames: &mut [[Scratch<N>; 3]],
     ) {
-        if self.stop.load(Ordering::Relaxed) {
+        if ctr.stop {
             return;
         }
         let g = path.len();
@@ -841,7 +862,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             }
             let lim = if B {
                 // a child at depth g+1 with bound h cannot give a solution shorter than g+1+h
-                self.prune_len.load(Ordering::Relaxed).saturating_sub(g + 2)
+                ctr.prune_len.saturating_sub(g + 2)
             } else {
                 0
             };
@@ -953,7 +974,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         // 48T / 1T when added, opt/classb): a child stays alive on side s only if its distance
         // to the other side's target cannot make the solution too long either.
         if B && n > 0 && !b_done {
-            let best = self.prune_len.load(Ordering::Relaxed);
+            let best = ctr.prune_len;
             // a child at depth g+1 with bound h cannot give a solution shorter than g+1+h
             let lim = best.saturating_sub(g + 2);
             if S != BOTH {
@@ -1013,10 +1034,11 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                     if on(S, s) && on(live[i], s) && has[s][i] == 0 && hcs[s][i] == 0 {
                         path.push(m);
                         self.leaf(s ^ r, path);
+                        self.refresh(ctr);
                         path.pop();
                     }
                 }
-                if self.stop.load(Ordering::Relaxed) {
+                if ctr.stop {
                     return;
                 }
             }
@@ -1033,7 +1055,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         let cb = budget - 1;
         // the class-B limit of the children's children (at depth g + 2)
         let clim = if B {
-            self.prune_len.load(Ordering::Relaxed).saturating_sub(g + 3)
+            ctr.prune_len.saturating_sub(g + 3)
         } else {
             0
         };
@@ -1099,7 +1121,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             let r = slots(i).0;
             self.finish_any::<B>(kind(i), r, xs(i), path, bound, ctr, stat, f0, frames);
             path.pop();
-            if self.stop.load(Ordering::Relaxed) {
+            if ctr.stop {
                 return;
             }
             (f0, f1, f2) = (f1, f2, f0);
@@ -1536,6 +1558,7 @@ fn solve_n<I: AeIndex, const N: usize>(
                 path.clear();
                 path.extend_from_slice(&task.path);
                 let (before, shared_before) = (ctr.nodes, ctr.shared);
+                sh.refresh(&mut ctr);
                 let mut stat = 0f32;
                 let use_b = !count_mode && sh.prune_len.load(Ordering::Relaxed) < usize::MAX;
                 if use_b {
