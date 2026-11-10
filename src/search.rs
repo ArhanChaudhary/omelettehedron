@@ -268,13 +268,37 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         // The CB table (max 8) prunes almost nothing with 7+ moves left: check AE first there.
         let ae_first = budget >= 7;
         if ae_first {
-            t.ae_ix.index_batch_fast(f, &ys[..n], &mut idx[..n]);
-            for &i in &idx[..n] {
-                prefetch(&t.ae.data[i >> 5]);
+            // Sibling pruning (egg-solver): X and X' of a face are one move apart, so if X's
+            // value is at least budget + 2, X' is pruned without computing its index. X
+            // children are evaluated first, then the X' children that are still possible.
+            let mut vals = [u8::MAX; N_MOVES];
+            let mut sel = [0usize; N_MOVES];
+            let mut xs_sel = [*x; N_MOVES];
+            for pass in 0..2 {
+                let mut ns = 0;
+                for i in 0..n {
+                    let m = ms[i] as usize;
+                    let twin = i > 0 && m & 1 == 1 && ms[i - 1] as usize == m - 1;
+                    if (pass == 0) != twin {
+                        if twin && vals[i - 1] as usize >= budget + 2 {
+                            continue;
+                        }
+                        sel[ns] = i;
+                        xs_sel[ns] = ys[i];
+                        ns += 1;
+                    }
+                }
+                t.ae_ix.index_batch_fast(f, &xs_sel[..ns], &mut idx[..ns]);
+                for &i in &idx[..ns] {
+                    prefetch(&t.ae.data[i >> 5]);
+                }
+                for j in 0..ns {
+                    vals[sel[j]] = decode(h_ae, t.ae.get(idx[j]));
+                }
             }
             let mut k = 0;
             for i in 0..n {
-                let ha = decode(h_ae, t.ae.get(idx[i]));
+                let ha = vals[i];
                 if ha as usize <= budget {
                     ys[k] = ys[i];
                     ms[k] = ms[i];
