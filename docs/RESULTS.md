@@ -1,0 +1,54 @@
+# Results
+
+[Documentation home](../README.md) · [Optimisation log](OPTIMIZATION_LOG.md) ·
+[Phase design](PHASES.md)
+
+Measured on a 48-core AMD EPYC VM (94 GB RAM, no hardware performance counters), large tier
+(A-centre/edge 1.03 GB + corner/B-centre + joint 7.0 GB tables), tables loaded before timing
+(loading takes 0.33 s with 48 threads). Positions are seeded random states unless stated
+otherwise; the numbers below are from the standard suites (`scripts/bench.sh`,
+`scripts/bench-opt.sh`, `scripts/bench-randopt.sh`): means of two interleaved runs of main
+5a2deed unless stated otherwise.
+
+## Two-phase solving (time limit)
+
+Mean best length, 40 random positions (48 threads) / 20 (1 thread):
+
+| | 48 threads | 1 thread |
+|---|---|---|
+| first solution | 23.1 moves @ 5.7 ms | 23.1 moves @ 0.16 s |
+| after 0.01 s | 22.31 (36 of 40 solved) | (none solved yet) |
+| after 0.1 s | 21.75 | 22.67 (9 of 20 solved) |
+| after 1 s | 21.50 | 22.30 |
+| after 5 s | 21.10 | 22.00 |
+| search speed | 1.71e9 nodes/s | 3.8e7 nodes/s |
+
+## Proven optimal solutions
+
+| set | threads | time to prove (total) | mean optimal length |
+|---|---|---|---|
+| 10 x 19-move scrambles | 48 | 12.5 s (1.25 s per position) | 18.1 |
+| 10 x 17-move scrambles | 1 | 9.3 s (0.93 s per position) | 16.5 |
+
+Random positions (48 threads, single runs; in brackets the same proof before the early proof end
+and the sibling pipeline):
+
+| seed | optimal | first solution | proof |
+|---|---|---|---|
+| 1 | 21 | 25 @ 12 ms | 64.8 s (419 s on 2026-11-10 morning) |
+| 2 | 21 | 24 @ 3 ms | 64.6 s (481 s) |
+| 3 | 20 | 23 @ 6 ms | 5.2 s (39 s) |
+
+## Tables
+
+| tier | memory while solving | generation (48 threads) | generation (1 thread) | peak memory generating |
+|---|---|---|---|---|
+| small | 134 MB | 1.2 s | 27 s | 0.38 GB |
+| medium | 1.04 GB | 6.6 s | 167 s | 1.26 GB |
+| large | 8.1 GB | 30 s | — | 8.1 GB |
+| huge | 30 GB | 3 min 14 s (incl. writing 30 GB) | — | 29.4 GB |
+
+The huge tier holds the same A-centre/edge values as medium with a cheaper index and is measured
+slower than large (0.85x nodes/s), so large is the fastest tier. Tables are generated on first use
+and loaded from disk afterwards; all tiers include the 4.7 MB symmetry-reduced corner/B-centre
+table and the in-memory phase-2 table.
