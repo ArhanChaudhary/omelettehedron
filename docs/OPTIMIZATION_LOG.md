@@ -30,6 +30,10 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | Children visited in order of smallest bound | `neg/childorder2` | neutral (optimal 1.01x / 1.00x; 48T first solution 1.04x) | no |
 | Lane-interleaved search (egg's lanes) | `neg/lanes` | slower (search is compute-bound) | no |
 | Sibling pruning in the AE stage | `neg/sibling` | slower (exposes a second DRAM latency) | no |
+| Optimality proven one iteration early, and at once on a solution of length depth + 1 | `opt/finalvar2` | random positions 419 -> 92 s, 481 -> 95 s, 39 -> 7.6 s (48T); optimal 0.61x / 0.78x | yes |
+| Cross-check of the early proof (`FTO_FULL_PROOF`, `scripts/check-optimal.sh`) | `test/proofcheck` | all proven lengths agree on ten 19-move scrambles and a random position | yes |
+| Corner/B-centre table reduced by the 24 class-preserving symmetries | `opt/cbsym` | 89 MB -> 4.7 MB; speed unchanged (1.01x / 1.00x nodes/s, two interleaved rounds) | yes |
+| Greedy probe for a quick first solution | `neg/probe` | never finds a solution within 20000 nodes; 48T first solution 1.26x | no |
 | Faster table generation (egg-solver's techniques) | `opt/gen` | large tier 121 -> 30 s and peak 14.9 -> 8.1 GB; medium 16.0 -> 6.6 s (48T); tables byte-identical | yes |
 
 Cumulative (48 threads, 40 random positions, 5 s): mean best length 21.60 -> 21.20; first

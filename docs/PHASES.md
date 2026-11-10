@@ -161,13 +161,23 @@ optimisation.
   - A node is pruned when depth + h₁ > bound, or when depth + h₁ ≥ best.
 * **Optimality.** Every solution splits uniquely into (longest prefix ending in a
   move outside H_A) + (a suffix of H_A moves). Running phase 1 exhaustively up to
-  depth best − 1 therefore proves optimality.
-  - Optimal mode does exactly that.
-  - It can also load optional "full-solve" lower-bound tables (distance to the
-    actual solved state, e.g. on CB and on the A-centre/edge data) to prune deep
-    phase-1 nodes.
-  - Proving optimality is expected to cost far more than finding near-optimal
-    solutions.
+  depth best − 1 therefore proves optimality; with both variants, depth best − 2 is enough:
+  - At depth D a leaf gives a solution of length D + d2 (d2 = phase-2 length). A leaf with
+    d2 = 0 would be a path of length D that ends in a class-B move and solves the puzzle;
+    such a path is a prefix ending in a class-A move plus class-B moves, so the class-B variant
+    finds it at a smaller depth, in an iteration that has already completed. So once both
+    variants have completed every depth below D, there is no solution of at most D moves.
+  - Optimal mode therefore stops when depth + 1 reaches the best length, and stops at once when
+    a solution of length depth + 1 turns up during the iteration at depth (solution-counting
+    mode still runs the last iteration, which yields longer completions).
+  - On random positions this removed 78–80% of the proof time (the last iteration was the
+    largest): 419 → 94 s, 481 → 98 s and 39 → 7.5 s on three positions at 48 threads.
+  - Nearly all of the remaining work is interior nodes that never reach H_A (a 19-move proof
+    visits billions of nodes but only a handful of phase-2 positions), and with 9 or more moves
+    left only the A-centre/edge table (and its class-B twin) can prune. Bounds that measure the
+    distance to solved directly (tried: edges, corners), joint tables with a smaller maximum and
+    per-iteration "forced route" bounds add almost nothing; see
+    [history/UNMERGED_EXPERIMENTS.md](history/UNMERGED_EXPERIMENTS.md).
 * **Threads.** Split the phase-1 trees of all variants into subtrees at depth 3–4,
   handed out from a work queue. The best length is shared atomically so every
   thread prunes against it.

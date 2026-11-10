@@ -26,6 +26,7 @@ scrambles / 1 thread, 17-move scrambles).
 | <a id="ref-neg-direct"></a>`neg/direct` | 2026-11-10 | Direct distance-to-solved bound (edge permutation 12!/2 + corners, from a competing solver's design): prunes nothing beyond max(distance to H_A, distance to H_B). Optimal 1.10x / 1.12x, nodes/s 0.91x |
 | <a id="ref-neg-bcbe"></a>`neg/bcbe` | 2026-11-10 | Joint corner/B-centre/edge-triple table also on the class-B side: neutral (optimal 1.02x / 1.00x) |
 | <a id="ref-neg-childorder2"></a>`neg/childorder2` | 2026-11-10 | Children visited in order of their smallest exact bound: neutral (optimal 1.01x / 1.00x; 48T first solution 1.04x) |
+| <a id="ref-neg-probe"></a>`neg/probe` | 2026-11-10 | Greedy depth-first probe (20000 nodes, children by bound) for a quick first solution before the iterations: it practically never finds a phase-1 path, and only delays the iterations (48T first solution 1.26x, positions solved after 0.01 s 31 -> 26) |
 
 ## Archived experiments
 
@@ -34,3 +35,4 @@ scrambles / 1 thread, 17-move scrambles).
 | <a id="ref-archive-childorder-wip"></a>`archive/childorder-wip` | 2026-11-10 | First child-ordering attempt (its key used deferred CB values); superseded by `neg/childorder2` |
 | <a id="ref-archive-nodecount-v1"></a>`archive/nodecount-v1` | 2026-11-10 | Search-coverage test and full phase-2 membership check before the no-panic merge; superseded by the rebased `test/nodecount2` (benchmarked neutral) |
 | <a id="ref-archive-analysis-round3"></a>`archive/analysis-round3` | 2026-11-10 | Round-3 analysis instrumentation: `stats` feature (evaluations and survivors by remaining moves), FTO_DELAY memory-latency probe, early-stop and target-length-pass experiments, CB reduced by 24 symmetries (+1.3% / +1.0% nodes/s, 4.7 MB), CB x A-colour joint table (rejected: time +2-4.5%), forced-route bounds (<= 0.1% of nodes), duplicate-sequence growth (0.62% excess at depth 6) |
+| <a id="ref-archive-finalvar-v1"></a>`archive/finalvar-v1` | 2026-11-10 | Early end of optimality proofs before the rebase onto the no-panic and test merges; its commits were rebased into the merged `opt/finalvar2` (random positions 4.5-5.1x faster) |
