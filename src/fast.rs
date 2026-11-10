@@ -291,23 +291,6 @@ impl FastTables {
         }
     }
 
-    /// The A-centre and edge parts of [`FastTables::apply_w`], written into `y`.
-    #[inline(always)]
-    pub fn apply_ae_into(&self, y: &mut Fc, x: &Fc, fw: u64, m: usize) {
-        let b = (fw >> (m & 15)) & 0x0001_0001_0001_0001;
-        let flips = (b.wrapping_mul(1 << 48 | 1 << 33 | 1 << 18 | 1 << 3) >> 48) as u8 & 15;
-        y.a = shuffle(&x.a, &self.shuf_a[m & 15]);
-        y.e = shuffle(&x.e, &self.shuf_e[m & 15]);
-        y.ebits = x.ebits ^ flips;
-    }
-
-    /// The corner and B-centre parts of [`FastTables::apply_w`], written into `y`.
-    #[inline(always)]
-    pub fn apply_cb_into(&self, y: &mut Fc, x: &Fc, m: usize) {
-        y.b = shuffle(&x.b, &self.shuf_b[m & 15]);
-        y.c = self.corner[x.c as usize & 1023][m & 15];
-    }
-
     /// Bits of `x` at the set positions of the 12-bit `mask`, packed (x must be a subset).
     #[inline(always)]
     fn compress(&self, x: u32, mask: u32) -> u32 {
