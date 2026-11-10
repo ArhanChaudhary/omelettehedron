@@ -79,6 +79,11 @@ with a message if not.
 | `large` | ~8 GB | ~30 s | medium + joint corner/B-centre/edge-triple table (about 2x fewer nodes) |
 | `huge` | ~31 GB | ~3 min | relabel-only A-centre/edge table (cheaper lookups) + the joint table |
 
+With `FTO_HUGE1G=1`, tables of 256 MB or more are placed on 1 GiB pages when the system has
+reserved them (`echo N > /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages` as root; the
+large tier needs 9): optimal proofs about 4% faster with the A-centre/edge table on a 1 GiB page.
+Without reserved pages the tables use transparent huge pages.
+
 All tiers also use the 89 MB corner/B-centre table and the in-memory phase-2 table.
 Generation needs about the memory of the tier (peak 8.1 GB for `large`, 29 GB for `huge`); on
 one core it takes ~30 s for `small` and ~3 min for `medium`. Writing the 30 GB of `huge` to
