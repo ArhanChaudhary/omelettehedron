@@ -65,6 +65,28 @@ threads and 0.67x on the 15-move set at 1 thread.) With slices the early end of 
 factor rises from 12.9 to about 18.3, so proofs take about 20 times as long as the full proof
 without slices.
 
+## Hard positions (`bench/hard.tsv`)
+
+Positions supplied by the user, solved optimally in the normal FTO (centres of a colour
+interchangeable), large tier, 48 threads, main b677856. Every solution was checked on the sticker
+model; the `edge_hard` scramble gives an edges-only position here, as listed, so the notation
+agrees with the source's.
+
+| position | listed | proven optimum | proof | solves the pure FTO too |
+|---|---|---|---|---|
+| tri_adj+edge_opp | 23 | 21 | 76 s | no |
+| tri_adj+edge_adj | 23 | 21 | 122 s | no |
+| tri_adj-[Uf_Fu;Db_Bd] | 23 | 21 | 76 s | no |
+| tri_adj+[UB_FD,NL_MR] | 23 | 22 | 654 s | no |
+| edge_hard | 21 | 21 | 74 s | no (a different 21 does, per the source) |
+| pure_corn_6flip | >= 24 (pure) | 18-23 (normal FTO) | stopped | no |
+
+The corner 6-flip leaves edges and centres solved, so the A-centre/edge table bounds it by 0 and
+only the corner tables prune: each target pass costs about 9 times the previous one (no
+solution of at most 16 moves after 14.8 s, at most 17 after 128.7 s), so excluding 22 moves would
+take months at this rate. Its normal-FTO optimum lies between 18 and 23 (a 23-move solution is
+found in 1 s); the pure optimum is at least that.
+
 ## Start-up
 
 Wall time of a solve of a 2-move scramble, tables already on disk (mostly loading the tables and
