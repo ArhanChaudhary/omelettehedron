@@ -601,11 +601,13 @@ fn load_or_build(
             Ok(t)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
             if verbose {
                 eprintln!("generating {} ...", path.display());
             }
             let t = build();
-            std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
             t.save(path)?;
             Ok(t)
         }
@@ -654,6 +656,30 @@ impl<I: AeIndex> Tables<I> {
         verbose: bool,
     ) -> std::io::Result<Tables<I>> {
         let ae_path = dir.join(format!("{}.prun", ae_ix.name()));
+        // Check all tables of the tier before generating any (a table that exists is loaded:
+        // it only needs memory). 2 bits per entry.
+        let planned = |path: PathBuf, size: &dyn Fn() -> usize, working: bool| {
+            let bytes =
+                std::fs::metadata(&path).map_or_else(|_| size().div_ceil(4) as u64, |m| m.len());
+            crate::preflight::Planned {
+                path,
+                bytes,
+                // (the joint table's build keeps a second array of raw distances)
+                working_set: if working { bytes } else { 0 },
+            }
+        };
+        let mut plan = vec![
+            planned(ae_path.clone(), &|| ae_ix.size(), false),
+            planned(dir.join("cb.prun"), &|| N_CB, false),
+        ];
+        if with_cbe {
+            plan.push(planned(
+                dir.join("cbe.prun"),
+                &|| crate::cbe::CbeIndex::new().size(),
+                true,
+            ));
+        }
+        crate::preflight::check_plan(&plan)?;
         let ae = load_or_build(&ae_path, ae_ix.size(), verbose, || {
             build_ae(&ae_ix, verbose)
         })?;
