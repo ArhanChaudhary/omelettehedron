@@ -454,7 +454,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
     /// of an IDA* iteration's work lies in the middle levels, which must not be explored
     /// serially. The tree keeps every node evaluated by earlier iterations with all its
     /// children, so a later iteration only evaluates nodes it has not seen and re-filters.
-    fn tasks(&self, tree: &mut Tree, bound: usize, threads: usize) -> Vec<u32> {
+    fn tasks(&self, tree: &mut Tree, bound: usize, threads: usize, want: usize) -> Vec<u32> {
         if tree.nodes.is_empty() {
             for (v, var) in self.variants.iter().enumerate() {
                 tree.nodes.push(Task {
@@ -477,7 +477,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         let max_k = bound.saturating_sub(4).min(MAX_SPLIT);
         let mut k = 0;
         // (single-threaded runs are split too, so per-task decisions can change mid-iteration)
-        while front.len() < 64 * threads && k < max_k {
+        while front.len() < want && k < max_k {
             let need: Vec<u32> = front
                 .iter()
                 .copied()
@@ -531,13 +531,19 @@ fn env_usize(name: &str, default: usize) -> usize {
 /// Fewest nodes to expand in parallel (fewer are expanded on the calling thread).
 fn par_min() -> usize {
     static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *V.get_or_init(|| env_usize("FTO_PARMIN", 64))
+    *V.get_or_init(|| env_usize("FTO_PARMIN", 256))
 }
 
 /// Iterations predicted to evaluate fewer nodes than this run on the calling thread.
 fn serial_nodes() -> u64 {
     static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *V.get_or_init(|| env_usize("FTO_SERIAL", 30000)) as u64
+    *V.get_or_init(|| env_usize("FTO_SERIAL", 5000)) as u64
+}
+
+/// Predicted nodes per parallel task (fewer tasks are made for smaller iterations).
+fn task_nodes() -> u64 {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| env_usize("FTO_TASKN", 512)) as u64
 }
 
 /// Deepest level at which an iteration is split into parallel tasks.
@@ -612,7 +618,21 @@ pub fn solve<I: AeIndex>(
             optimal = true;
             break;
         }
-        let mut ids = sh.tasks(&mut tree, depth, threads);
+        // Small iterations run on this thread: waking the pool costs more than they do.
+        let predicted = prev_nodes.map_or(if depth < 14 { 0 } else { u64::MAX }, |n| {
+            n.saturating_mul(16)
+        });
+        let inline = threads == 1 || predicted < serial_nodes();
+        // Enough tasks to balance the load, but no more than the iteration's work warrants
+        // (each extra split level costs a parallel expansion of the tree).
+        let want = if threads == 1 {
+            64
+        } else if inline {
+            1
+        } else {
+            ((predicted / task_nodes()) as usize).clamp(threads, 64 * threads)
+        };
+        let mut ids = sh.tasks(&mut tree, depth, threads, want);
         // Order the tasks by the statistics of the same prefixes in the previous iteration, so
         // that the most promising subtrees are searched first (egg-solver's job ordering).
         node_stat.resize(tree.nodes.len(), 0.0);
@@ -659,11 +679,7 @@ pub fn solve<I: AeIndex>(
                 sh.nodes.fetch_add(nodes - before, Ordering::Relaxed);
             }
         };
-        // Small iterations run on this thread: waking the pool costs more than they do.
-        let predicted = prev_nodes.map_or(if depth < 14 { 0 } else { u64::MAX }, |n| {
-            n.saturating_mul(16)
-        });
-        if threads == 1 || predicted < serial_nodes() {
+        if inline {
             worker();
         } else {
             // Workers take tasks strictly in order from a shared counter.
