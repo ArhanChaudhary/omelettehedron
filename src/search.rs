@@ -550,10 +550,22 @@ impl<I: AeIndex> Shared<'_, I> {
             min_ha,
             cbe_done,
         } = fr;
-        let (k, h_ae, h_cb, min_ha, cbe_done) = (*k, *h_ae, *h_cb, *min_ha, *cbe_done);
+        let (mut k, h_ae, h_cb, min_ha, cbe_done) = (*k, *h_ae, *h_cb, *min_ha, *cbe_done);
         let mut n = 0;
         let mut b_done = false;
         if budget >= AE_FIRST {
+            if cbe_done {
+                if let Some(cbe) = &t.cbe {
+                    let mut k2 = 0;
+                    for j in 0..k {
+                        let i = sel[j];
+                        let ok = cbe.bound(&ci[usize::from(i & 15)]) as usize <= budget;
+                        sel[k2 & 15] = i;
+                        k2 += usize::from(ok);
+                    }
+                    k = k2;
+                }
+            }
             let lim = if B {
                 // a child at depth g+1 with bound h cannot give a solution shorter than g+1+h
                 self.best_len.load(Ordering::Relaxed).saturating_sub(g + 2)
@@ -588,20 +600,6 @@ impl<I: AeIndex> Shared<'_, I> {
                 n += usize::from(ok);
             }
             b_done = true;
-            // The joint-table words were prefetched last, so they are read last (quick
-            // optimal-mode test when added: 48T time 0.97x, 1T unchanged).
-            if cbe_done {
-                if let Some(cbe) = &t.cbe {
-                    let mut k2 = 0;
-                    for j in 0..n {
-                        let i = sel[j];
-                        let ok = cbe.bound(&ci[usize::from(i & 15)]) as usize <= budget;
-                        sel[k2 & 15] = i;
-                        k2 += usize::from(ok);
-                    }
-                    n = k2;
-                }
-            }
         } else {
             for j in 0..k {
                 let i = sel[j];
