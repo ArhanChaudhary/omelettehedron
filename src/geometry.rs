@@ -95,13 +95,46 @@ pub fn det(m: &Mat) -> i32 {
 
 pub const IDENTITY: Mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 
-/// Index of the face whose normal is `n` (n must be a ±1 vector).
+/// Index of the face whose normal has the signs of `n` (a zero counts as positive):
+/// [`FACES`] lists the normals in this sign order.
 pub fn face_of_normal(n: V3) -> usize {
-    FACES
-        .iter()
-        .position(|&f| f == n)
-        .expect("not a face normal")
+    usize::from(n[0] < 0) << 2 | usize::from(n[1] < 0) << 1 | usize::from(n[2] < 0)
 }
+
+/// [`FACES`]`[f]` has a negative coordinate i exactly where bit `2 - i` of `f` is set.
+const fn faces_in_sign_order() -> bool {
+    let mut f = 0;
+    while f < 8 {
+        let mut i = 0;
+        while i < 3 {
+            if (FACES[f][i] < 0) != (f >> (2 - i) & 1 == 1) {
+                return false;
+            }
+            i += 1;
+        }
+        f += 1;
+    }
+    true
+}
+const _: () = assert!(faces_in_sign_order());
+
+/// Position of face `f` within its class list ([`A_FACES`] or [`B_FACES`]).
+#[inline]
+pub fn class_index(f: usize) -> usize {
+    f >> 1
+}
+
+const fn class_lists_in_index_order() -> bool {
+    let mut i = 0;
+    while i < 4 {
+        if A_FACES[i] >> 1 != i || B_FACES[i] >> 1 != i {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+const _: () = assert!(class_lists_in_index_order());
 
 /// Index of the face containing surface point `p` (no zero coordinates).
 pub fn face_of_point(p: V3) -> usize {
@@ -148,7 +181,7 @@ pub fn stickers() -> Vec<Sticker> {
     ];
     let mut v = vec![];
     for (f, s) in FACES.iter().enumerate() {
-        for (kind, ps) in pats.iter() {
+        for (kind, ps) in &pats {
             for q in ps {
                 v.push(Sticker {
                     face: f,
@@ -169,11 +202,26 @@ impl StickerModel {
     pub fn new() -> Self {
         StickerModel { st: stickers() }
     }
+    /// Index of the sticker with centroid `p`. [`stickers`] numbers them
+    /// `9 * face + 3 * kind + j`, where `j` is the coordinate that differs from the other two.
     pub fn index_of(&self, p: V3) -> usize {
-        self.st
-            .iter()
-            .position(|s| s.p == p)
-            .expect("no sticker at point")
+        let a = p.map(i32::abs);
+        let j = if a[1] == a[2] {
+            0
+        } else if a[0] == a[2] {
+            1
+        } else {
+            2
+        };
+        // the odd coordinate is 7 for a corner, 1 for an edge and 5 for a centre
+        let kind = match a[j] {
+            7 => 0,
+            1 => 1,
+            _ => 2,
+        };
+        let i = 9 * face_of_point(p) + 3 * kind + j;
+        debug_assert_eq!(self.st[i].p, p, "no sticker at {p:?}");
+        i
     }
     /// Sticker permutation (`perm[i]` = destination of sticker i) of rotating every sticker
     /// that satisfies `pred` by `m`.
@@ -229,7 +277,7 @@ pub fn octahedral_group() -> Vec<Mat> {
     v
 }
 
-/// Symmetries mapping class-A faces to class-A faces (T_d, 24 elements), identity first.
+/// Symmetries mapping class-A faces to class-A faces (`T_d`, 24 elements), identity first.
 pub fn class_preserving_group() -> Vec<Mat> {
     let mut v: Vec<Mat> = octahedral_group()
         .into_iter()
@@ -279,6 +327,21 @@ mod tests {
         assert_eq!(rotation_group().len(), 12);
         let sm = StickerModel::new();
         assert_eq!(sm.st.len(), 72);
+    }
+
+    #[test]
+    fn sticker_and_face_lookups() {
+        let sm = StickerModel::new();
+        for (i, s) in sm.st.iter().enumerate() {
+            assert_eq!(sm.index_of(s.p), i);
+            assert_eq!(face_of_point(s.p), s.face);
+        }
+        for (f, &n) in FACES.iter().enumerate() {
+            assert_eq!(face_of_normal(n), f);
+        }
+        for (i, (&a, &b)) in A_FACES.iter().zip(&B_FACES).enumerate() {
+            assert_eq!((class_index(a), class_index(b)), (i, i));
+        }
     }
 
     #[test]

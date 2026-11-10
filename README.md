@@ -90,7 +90,11 @@ scripts/compare.py <before> <after>             # markdown comparison of two run
 
 ```sh
 cargo test --release
+scripts/check.sh      # fmt, clippy (pedantic, -D warnings), tests, no runtime asserts
 ```
+
+Non-test code does not panic: `unwrap`, `expect`, `panic!` and friends are denied by clippy,
+and `scripts/check.sh` rejects runtime `assert!` outside `#[cfg(test)]` code.
 
 The tests cover:
 * the geometry, against values from an independent sticker model checked with GAP;

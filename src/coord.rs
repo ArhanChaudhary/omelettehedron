@@ -11,7 +11,7 @@ use rayon::prelude::*;
 use std::sync::OnceLock;
 
 pub const N_CORNER: usize = 960;
-pub const N_MSET: usize = 369600;
+pub const N_MSET: usize = 369_600;
 /// edge coset (triple labelling x 3 free chirality bits)
 pub const N_ECOSET: usize = N_MSET * 8;
 
@@ -218,7 +218,7 @@ pub struct Corners {
     pub id_to_state: Vec<([u8; 6], [u8; 6])>,
 }
 
-fn corner_raw(cp: &[u8; 6], co: &[u8; 6]) -> usize {
+fn corner_raw(cp: [u8; 6], co: [u8; 6]) -> usize {
     // Lehmer code of cp[1..6] (values 1..5) and 5 orientation bits
     let mut r = 0;
     for i in 1..6 {
@@ -238,7 +238,7 @@ impl Corners {
         let mut id_to_state = vec![];
         let s0 = Cube::solved();
         let mut q = vec![(s0.cp, s0.co)];
-        raw_to_id[corner_raw(&s0.cp, &s0.co)] = 0;
+        raw_to_id[corner_raw(s0.cp, s0.co)] = 0;
         let mut i = 0;
         while i < q.len() {
             let (cp, co) = q[i];
@@ -247,14 +247,14 @@ impl Corners {
             let c = Cube { cp, co, ..s0 };
             for m in 0..N_MOVES {
                 let n = c.apply(m);
-                let r = corner_raw(&n.cp, &n.co);
+                let r = corner_raw(n.cp, n.co);
                 if raw_to_id[r] == u16::MAX {
                     raw_to_id[r] = q.len() as u16;
                     q.push((n.cp, n.co));
                 }
             }
         }
-        assert_eq!(id_to_state.len(), N_CORNER);
+        debug_assert_eq!(id_to_state.len(), N_CORNER);
         Corners {
             raw_to_id,
             id_to_state,
@@ -262,7 +262,7 @@ impl Corners {
     }
     #[inline]
     pub fn id(&self, c: &Cube) -> u16 {
-        self.raw_to_id[corner_raw(&c.cp, &c.co)]
+        self.raw_to_id[corner_raw(c.cp, c.co)]
     }
 }
 
@@ -423,6 +423,7 @@ mod tests {
 
     #[test]
     fn corner_orientation_sum_is_even() {
+        assert_eq!(corners().id_to_state.len(), N_CORNER);
         for &(_, co) in &corners().id_to_state {
             assert_eq!(co.iter().fold(0, |a, &b| a ^ b), 0);
         }

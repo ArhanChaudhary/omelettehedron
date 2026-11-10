@@ -1,11 +1,42 @@
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::unimplemented
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
+#![warn(clippy::pedantic)]
+// Pedantic lints that would only add noise here:
+#![allow(
+    // statistics are reported as f64
+    clippy::cast_precision_loss,
+    // the command dispatch is one long match
+    clippy::too_many_lines
+)]
+
 use clap::{Parser, Subcommand};
 use fto_solver::bench;
 use fto_solver::cube::Cube;
-use fto_solver::notation::*;
-use fto_solver::search::*;
-use fto_solver::tables::*;
+use fto_solver::notation::{parse_moves, scramble_to_cube, Frame};
+use fto_solver::search::{solve, Limits, Report};
+use fto_solver::tables::{table_dir, AeIndex, AeRelabel, AeSym, Tables, Tier};
 use std::io::BufRead;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+type Error = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(Parser)]
 #[command(
@@ -25,6 +56,7 @@ struct TableArgs {
     #[arg(long, value_enum)]
     tier: Tier,
     /// Directory for pruning tables (default: $FTO_TABLES or ./tables)
+    #[allow(clippy::doc_markdown)] // shown verbatim by --help
     #[arg(long)]
     tables: Option<PathBuf>,
     /// Number of worker threads (default: all cores)
@@ -96,12 +128,16 @@ enum Cmd {
     },
 }
 
-fn pool(threads: Option<usize>) -> rayon::ThreadPool {
+fn pool(threads: Option<usize>) -> Result<rayon::ThreadPool, Error> {
     let mut b = rayon::ThreadPoolBuilder::new();
     if let Some(t) = threads {
         b = b.num_threads(t);
     }
-    b.build().expect("thread pool")
+    Ok(b.build()?)
+}
+
+fn table_error(dir: &Path, e: &std::io::Error) -> Error {
+    format!("pruning tables in {}: {e}", dir.display()).into()
 }
 
 fn read_scrambles(args: &[String]) -> Vec<String> {
@@ -144,29 +180,33 @@ fn run_solve<I: AeIndex>(
     }
 }
 
+/// Load the tables of the tier and evaluate `$body` with them; table errors are returned
+/// from the enclosing function.
 macro_rules! dispatch {
     ($tab:expr, |$t:ident, $name:ident| $body:expr) => {{
         let dir = table_dir($tab.tables.as_deref());
         match $tab.tier {
             Tier::Small => {
-                let $t = Tables::load(&dir, AeSym::new(false), $tab.verbose).expect("tables");
+                let $t = Tables::load(&dir, AeSym::new(false), $tab.verbose)
+                    .map_err(|e| table_error(&dir, &e))?;
                 let $name = "small";
                 $body
             }
             Tier::Medium => {
-                let $t = Tables::load(&dir, AeSym::new(true), $tab.verbose).expect("tables");
+                let $t = Tables::load(&dir, AeSym::new(true), $tab.verbose)
+                    .map_err(|e| table_error(&dir, &e))?;
                 let $name = "medium";
                 $body
             }
             Tier::Large => {
-                let $t =
-                    Tables::load_with(&dir, AeSym::new(true), true, $tab.verbose).expect("tables");
+                let $t = Tables::load_with(&dir, AeSym::new(true), true, $tab.verbose)
+                    .map_err(|e| table_error(&dir, &e))?;
                 let $name = "large";
                 $body
             }
             Tier::Huge => {
-                let $t =
-                    Tables::load_with(&dir, AeRelabel::new(), true, $tab.verbose).expect("tables");
+                let $t = Tables::load_with(&dir, AeRelabel::new(), true, $tab.verbose)
+                    .map_err(|e| table_error(&dir, &e))?;
                 let $name = "huge";
                 $body
             }
@@ -174,8 +214,17 @@ macro_rules! dispatch {
     }};
 }
 
-fn main() {
-    let cli = Cli::parse();
+fn main() -> ExitCode {
+    match run(Cli::parse()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cli: Cli) -> Result<(), Error> {
     match cli.cmd {
         Cmd::Solve {
             scramble,
@@ -185,7 +234,8 @@ fn main() {
             seed,
             tab,
         } => {
-            let limits = bench::limits_with_time(stop.time, stop.max_length, stop.max_solutions);
+            let limits = bench::limits_with_time(stop.time, stop.max_length, stop.max_solutions)
+                .map_err(|e| format!("--time: {e}"))?;
             let positions: Vec<(Cube, Frame, String)> = if let Some(n) = random {
                 bench::random_positions(n, seed)
                     .into_iter()
@@ -218,7 +268,7 @@ fn main() {
                 eprintln!("error: no scramble given");
                 std::process::exit(2);
             }
-            let p = pool(tab.threads);
+            let p = pool(tab.threads)?;
             p.install(|| {
                 dispatch!(tab, |t, _name| run_solve(
                     &t,
@@ -226,11 +276,12 @@ fn main() {
                     &limits,
                     print,
                     tab.verbose
-                ))
-            });
+                ));
+                Ok(())
+            })
         }
         Cmd::Gen { tab } => {
-            let p = pool(tab.threads);
+            let p = pool(tab.threads)?;
             let mut tab = tab;
             tab.verbose = true;
             p.install(|| {
@@ -243,8 +294,9 @@ fn main() {
                     );
                     eprintln!("AE depth histogram {:?}", t.ae.hist);
                     eprintln!("CB depth histogram {:?}", t.cb.tab.hist);
-                })
-            });
+                });
+                Ok(())
+            })
         }
         Cmd::Bench {
             scrambles,
@@ -254,8 +306,9 @@ fn main() {
             json,
             tab,
         } => {
-            let limits = bench::limits_with_time(stop.time, stop.max_length, stop.max_solutions);
-            let p = pool(tab.threads);
+            let limits = bench::limits_with_time(stop.time, stop.max_length, stop.max_solutions)
+                .map_err(|e| format!("--time: {e}"))?;
+            let p = pool(tab.threads)?;
             p.install(|| {
                 dispatch!(tab, |t, name| {
                     let s = bench::run(
@@ -269,11 +322,12 @@ fn main() {
                     );
                     bench::print_summary(&s);
                     if let Some(path) = &json {
-                        std::fs::write(path, serde_json::to_string_pretty(&s).unwrap())
-                            .expect("write json");
+                        std::fs::write(path, serde_json::to_string_pretty(&s)?)
+                            .map_err(|e| format!("writing {}: {e}", path.display()))?;
                     }
-                })
-            });
+                });
+                Ok(())
+            })
         }
     }
 }

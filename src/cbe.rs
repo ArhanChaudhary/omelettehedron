@@ -7,7 +7,7 @@
 //!
 //! Triple k is mapped onto triple 0 by conjugating with a class-preserving symmetry M with
 //! M(k) = 0 and then re-fixing the front corner with a whole-puzzle rotation R (the distance to
-//! H_A is invariant under both). The corner coordinate is reduced by the 6 symmetries fixing
+//! `H_A` is invariant under both). The corner coordinate is reduced by the 6 symmetries fixing
 //! triple 0. Values are stored as a saturating code: 0 = at most 6 moves, 1 = 7, 2 = 8,
 //! 3 = at least 9; only the 7..9 range adds information over the other tables.
 
@@ -49,13 +49,15 @@ pub struct CbeIndex {
 /// Conjugate the corner state `c` by symmetry `m` and re-fix the front corner; returns the new
 /// corner id and the index of the rotation used.
 #[cfg(test)]
-fn conj_renorm_corner(c: u16, m: usize) -> (u16, usize) {
+fn conj_renorm_corner(c: u16, m: usize) -> Option<(u16, usize)> {
     let wps: Vec<Vec<usize>> = syms().mats.iter().map(|r| defs().sm.whole(r)).collect();
     conj_renorm_corner_with(c, m, &wps)
 }
 
-/// [`conj_renorm_corner`] with the sticker permutations of the symmetries precomputed.
-fn conj_renorm_corner_with(c: u16, m: usize, wps: &[Vec<usize>]) -> (u16, usize) {
+/// [`conj_renorm_corner`] with the sticker permutations of the symmetries precomputed. `None`
+/// if no rotation re-fixes the front corner (never: the rotations act transitively on the
+/// vertices).
+fn conj_renorm_corner_with(c: u16, m: usize, wps: &[Vec<usize>]) -> Option<(u16, usize)> {
     let s = syms();
     let (cp, co) = corners().id_to_state[c as usize];
     let st = Cube {
@@ -81,11 +83,11 @@ fn conj_renorm_corner_with(c: u16, m: usize, wps: &[Vec<usize>]) -> (u16, usize)
         }
         if let Some(cube) = Cube::from_stickers(&n2) {
             if cube.cp[0] == 0 && cube.co[0] == 0 {
-                return (corners().id(&cube), ri);
+                return Some((corners().id(&cube), ri));
             }
         }
     }
-    unreachable!("no rotation re-fixes the front corner")
+    None
 }
 
 impl CbeIndex {
@@ -99,17 +101,21 @@ impl CbeIndex {
             .into_par_iter()
             .map(|m| {
                 (0..N_CORNER as u16)
-                    .map(|c| conj_renorm_corner_with(c, m, &wps))
+                    .map(|c| {
+                        let r = conj_renorm_corner_with(c, m, &wps);
+                        debug_assert!(r.is_some(), "corner {c}, symmetry {m}");
+                        r.unwrap_or((c, 0))
+                    })
                     .collect()
             })
             .collect();
-        // class representatives under the stabiliser of triple 0
+        // class representatives under the stabiliser of triple 0 (s0 holds the identity)
         let mut rep_of = vec![0u16; N_CORNER];
         for c in 0..N_CORNER {
-            rep_of[c] = s0.iter().map(|&m| conj[m][c].0).min().unwrap();
+            rep_of[c] = s0.iter().map(|&m| conj[m][c].0).fold(u16::MAX, u16::min);
         }
         let mut rep: Vec<u16> = rep_of.clone();
-        rep.sort();
+        rep.sort_unstable();
         rep.dedup();
         let cls_id: HashMap<u16, u16> = rep
             .iter()
@@ -119,11 +125,13 @@ impl CbeIndex {
         let kt4: [Vec<(u16, u8, u8)>; 4] = std::array::from_fn(|k| {
             (0..N_CORNER)
                 .map(|c| {
-                    let (m, (c2, r)) = to0(k)
+                    // (some symmetry maps A-face k to A-face 0)
+                    let best = to0(k)
                         .into_iter()
                         .map(|m| (m, conj[m][c]))
-                        .min_by_key(|&(_, (c2, _))| c2)
-                        .unwrap();
+                        .min_by_key(|&(_, (c2, _))| c2);
+                    debug_assert!(best.is_some());
+                    let (m, (c2, r)) = best.unwrap_or((0, conj[0][c]));
                     (cls_id[&c2], m as u8, s.mul[r][m])
                 })
                 .collect()
@@ -191,7 +199,7 @@ impl CbeIndex {
     /// Row offset within a class for the (B, triple k) part after symmetry (m, t), where m
     /// maps triple k to triple 0.
     #[inline(always)]
-    fn row(&self, f: &FastTables, x: &Fc, em: &[u16; 4], k: usize, m: usize, t: usize) -> usize {
+    fn row(&self, f: &FastTables, x: &Fc, em: [u16; 4], k: usize, m: usize, t: usize) -> usize {
         let (m, t) = (m & 31, t & 31);
         let b = shuffle(&shuffle(&self.bmap[m], &x.b), &self.bgather[t]);
         // positions of triple k after repositioning (it is relabelled to 0)
@@ -207,7 +215,7 @@ impl CbeIndex {
     #[inline(always)]
     pub fn index(&self, f: &FastTables, x: &Fc, em: &[u16; 4], k: usize) -> usize {
         let (cls, m, t) = self.kt[x.c as usize & 1023][k];
-        cls as usize * N_ROW + self.row(f, x, em, k, m as usize, t as usize)
+        cls as usize * N_ROW + self.row(f, x, *em, k, m as usize, t as usize)
     }
 
     /// A position with the given index (triple 0 only; other edges labelled 1).
@@ -225,7 +233,7 @@ impl CbeIndex {
         };
         x.b[..12].copy_from_slice(&mset().unrank(b as u32));
         for p in 0..12 {
-            x.e[p] = if mask >> p & 1 == 1 { 0 } else { 1 };
+            x.e[p] = u8::from(mask >> p & 1 == 0);
         }
         x
     }
@@ -238,7 +246,7 @@ impl CbeIndex {
         let x = self.decode(i);
         let em = masks(&x.e);
         for &(m, t) in &self.stab[cls] {
-            out.push(cls * N_ROW + self.row(f, &x, &em, 0, m as usize, t as usize));
+            out.push(cls * N_ROW + self.row(f, &x, em, 0, m as usize, t as usize));
         }
     }
 }
@@ -335,6 +343,9 @@ impl CbeTable {
         CbeTable { ix, codes, hist }
     }
 
+    /// # Errors
+    ///
+    /// If the file cannot be written.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let t = Table2 {
             data: HugeBuf::from_slice(&self.codes),
@@ -344,6 +355,9 @@ impl CbeTable {
         t.save(path)
     }
 
+    /// # Errors
+    ///
+    /// If the file cannot be read or does not hold a table of the expected size.
     pub fn load(path: &Path) -> std::io::Result<CbeTable> {
         let ix = CbeIndex::new();
         let t = Table2::load(path, ix.size())?;
@@ -367,9 +381,7 @@ impl CbeTable {
     #[inline(always)]
     pub fn bound(&self, idx: &[usize; 4]) -> u8 {
         idx.iter()
-            .map(|&i| CODE_LB[self.code(i) as usize])
-            .max()
-            .unwrap()
+            .fold(0, |b, &i| b.max(CODE_LB[self.code(i) as usize]))
     }
 }
 
@@ -400,7 +412,7 @@ mod tests {
                 for i in 0..72 {
                     n[wp[i]] = face_of_normal(mat_vec(mm, FACES[st[i] as usize])) as u8;
                 }
-                let (_, r) = conj_renorm_corner(x.c, m);
+                let (_, r) = conj_renorm_corner(x.c, m).unwrap();
                 let rp = d.sm.whole(&s.mats[r]);
                 let mut n2 = [0u8; 72];
                 for i in 0..72 {
@@ -409,13 +421,13 @@ mod tests {
                 let y = Cube::from_stickers(&n2).expect("valid");
                 let fy = f.of(&y);
                 let t = s.mul[r][m] as usize;
-                let row = ix.row(f, &x, &em, k, m, t);
+                let row = ix.row(f, &x, em, k, m, t);
                 let fe = masks(&fy.e)[0] as usize;
                 let want = f.rank(&masks(&fy.b)) as usize * N_E1
                     + f.c12[fe] as usize * 2
                     + (fy.ebits & 1) as usize;
                 assert_eq!(row, want, "m={m} k={k}");
-                assert_eq!(fy.c, conj_renorm_corner(x.c, m).0);
+                assert_eq!(fy.c, conj_renorm_corner(x.c, m).unwrap().0);
             }
         }
     }

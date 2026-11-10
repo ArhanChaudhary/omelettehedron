@@ -6,7 +6,7 @@ use crate::search::*;
 use crate::tables::*;
 use rand::SeedableRng;
 use serde::Serialize;
-use std::time::Duration;
+use std::time::{Duration, TryFromFloatSecsError};
 
 #[derive(Serialize, Clone, Debug)]
 pub struct ScrambleResult {
@@ -190,10 +190,19 @@ pub fn print_summary(s: &Summary) {
     println!("  nodes/s:                  {:.3e}", s.nodes_per_sec);
 }
 
-pub fn limits_with_time(secs: Option<f64>, max_len: Option<usize>, max_sol: Option<u64>) -> Limits {
-    Limits {
-        time: secs.map(Duration::from_secs_f64),
+/// Stopping rules from command-line values.
+///
+/// # Errors
+///
+/// If `secs` is negative, not finite or too large for a [`Duration`].
+pub fn limits_with_time(
+    secs: Option<f64>,
+    max_len: Option<usize>,
+    max_sol: Option<u64>,
+) -> Result<Limits, TryFromFloatSecsError> {
+    Ok(Limits {
+        time: secs.map(Duration::try_from_secs_f64).transpose()?,
         max_length: max_len,
         max_solutions: max_sol,
-    }
+    })
 }

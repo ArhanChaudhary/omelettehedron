@@ -24,13 +24,17 @@ impl fmt::Display for PhysMove {
 pub fn format_moves(moves: &[PhysMove]) -> String {
     moves
         .iter()
-        .map(|m| m.to_string())
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(" ")
 }
 
 /// Parse a scramble such as `U R' BL F2 D`. `X2` is a double turn (= two moves), `X'`/`X3`
 /// variants of the prime are accepted.
+///
+/// # Errors
+///
+/// If a token is not a face name with an optional `'`, `2`, `2'` or `3` suffix.
 pub fn parse_moves(s: &str) -> Result<Vec<PhysMove>, String> {
     let mut out = vec![];
     for tok in s
@@ -72,7 +76,7 @@ impl Frame {
     /// Internal move equivalent to a physical move, and the new frame.
     pub fn to_internal(&self, pm: PhysMove) -> (usize, Frame) {
         let f = face_of_normal(mat_vec(&transpose(&self.0), FACES[pm.face]));
-        let dir = if pm.cw { 0 } else { 1 };
+        let dir = usize::from(!pm.cw);
         if f >= 4 {
             (2 * (f - 4) + dir, *self)
         } else {
@@ -86,7 +90,14 @@ impl Frame {
     pub fn to_physical(&self, m: usize) -> (PhysMove, Frame) {
         let s = slot(m);
         let cw = move_cw(m);
-        if !slot_is_wide(s) {
+        if slot_is_wide(s) {
+            let f = opposite(slot_face(s));
+            let pm = PhysMove {
+                face: face_of_normal(mat_vec(&self.0, FACES[f])),
+                cw,
+            };
+            (pm, Frame(mat_mul(&self.0, &face_rotation(f, cw))))
+        } else {
             let f = slot_face(s);
             (
                 PhysMove {
@@ -95,13 +106,6 @@ impl Frame {
                 },
                 *self,
             )
-        } else {
-            let f = opposite(slot_face(s));
-            let pm = PhysMove {
-                face: face_of_normal(mat_vec(&self.0, FACES[f])),
-                cw,
-            };
-            (pm, Frame(mat_mul(&self.0, &face_rotation(f, cw))))
         }
     }
 }

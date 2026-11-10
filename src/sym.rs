@@ -1,6 +1,6 @@
 //! Symmetry reduction of the A-centre/edge ("AE") phase-1 coordinate.
 //!
-//! The distance to the phase-2 group H_A = <U, F, BR, BL> is unchanged by
+//! The distance to the phase-2 group `H_A` = <U, F, BR, BL> is unchanged by
 //! * relabelling colours/pieces with a class-preserving symmetry `g`, and
 //! * moving positions with a class-preserving symmetry `t` (whole-puzzle rotations and
 //!   reflections; reflections mirror the move set),
@@ -34,13 +34,13 @@ pub struct Syms {
     pub b_pos: [[u8; 12]; N_GEO],
     /// index of the matrix product mats[i] * mats[j]
     pub mul: [[u8; N_GEO]; N_GEO],
-    /// chirality bits after relabelling with g: relab_bits[g][bits]
+    /// chirality bits after relabelling with g: `relab_bits[g][bits]`
     pub relab_bits: [[u8; 16]; N_GEO],
     /// the 288 (g, t) pairs
     pub pairs: Vec<(u8, u8)>,
-    /// relabelled triple labelling rank: relab_e[g * N_MSET + rank]
+    /// relabelled triple labelling rank: `relab_e[g * N_MSET + rank]`
     pub relab_e: HugeBuf<u32>,
-    /// repositioned triple labelling: repos_e[t * N_MSET + rank] = new rank | flip mask << 20
+    /// repositioned triple labelling: `repos_e[t * N_MSET + rank]` = new rank | flip mask << 20
     pub repos_e: HugeBuf<u32>,
 }
 
@@ -48,7 +48,7 @@ fn build() -> Syms {
     let d = defs();
     let sm = &d.sm;
     let mats = class_preserving_group();
-    assert_eq!(mats.len(), N_GEO);
+    debug_assert_eq!(mats.len(), N_GEO);
     let mut a_col = [[0u8; 4]; N_GEO];
     let mut a_pos = [[0u8; 12]; N_GEO];
     let mut e_pos = [[0u8; 12]; N_GEO];
@@ -68,25 +68,26 @@ fn build() -> Syms {
         [f(p1[0], p2[0]), f(p1[1], p2[1]), f(p1[2], p2[2])]
     };
     for (gi, m) in mats.iter().enumerate() {
+        // (the symmetries preserve the face classes, so faces and centres keep their class)
         for i in 0..4 {
-            let f = face_of_normal(mat_vec(m, FACES[A_FACES[i]]));
-            a_col[gi][i] = A_FACES.iter().position(|&x| x == f).unwrap() as u8;
+            a_col[gi][i] = class_index(face_of_normal(mat_vec(m, FACES[A_FACES[i]]))) as u8;
         }
         for p in 0..12 {
             let q = sm.index_of(mat_vec(m, sm.st[d.a_pos[p]].p));
-            a_pos[gi][p] = d.a_pos.iter().position(|&x| x == q).unwrap() as u8;
+            a_pos[gi][p] = centre_index(q) as u8;
             let dir = mat_vec(m, edir(p));
-            e_pos[gi][p] = (0..12).find(|&e| edir(e) == dir).unwrap() as u8;
+            let e = (0..12).find(|&e| edir(e) == dir);
+            debug_assert!(e.is_some(), "edge direction {dir:?}");
+            e_pos[gi][p] = e.unwrap_or_default() as u8;
         }
         // edge pieces are named by their home position
         e_piece[gi] = e_pos[gi];
         for i in 0..4 {
-            let f = face_of_normal(mat_vec(m, FACES[B_FACES[i]]));
-            b_col[gi][i] = B_FACES.iter().position(|&x| x == f).unwrap() as u8;
+            b_col[gi][i] = class_index(face_of_normal(mat_vec(m, FACES[B_FACES[i]]))) as u8;
         }
         for p in 0..12 {
             let q = sm.index_of(mat_vec(m, sm.st[d.b_pos[p]].p));
-            b_pos[gi][p] = d.b_pos.iter().position(|&x| x == q).unwrap() as u8;
+            b_pos[gi][p] = centre_index(q) as u8;
         }
     }
     let tp = triple_pieces();
@@ -143,19 +144,22 @@ fn build() -> Syms {
     let mut mul = [[0u8; N_GEO]; N_GEO];
     for i in 0..N_GEO {
         for j in 0..N_GEO {
+            // (the group is closed under products)
             let pr = mat_mul(&mats[i], &mats[j]);
-            mul[i][j] = mats.iter().position(|m| *m == pr).unwrap() as u8;
+            let k = mats.iter().position(|m| *m == pr);
+            debug_assert!(k.is_some());
+            mul[i][j] = k.unwrap_or_default() as u8;
         }
     }
     Syms {
         mats,
-        b_col,
-        b_pos,
-        mul,
         a_col,
         a_pos,
         e_pos,
         e_piece,
+        b_col,
+        b_pos,
+        mul,
         relab_bits,
         pairs,
         relab_e,
@@ -196,11 +200,12 @@ pub struct AClasses {
 }
 
 impl AClasses {
-    /// Classes under the given list of (g, t) pairs (first pair must be the identity).
+    /// Classes under the given list of (g, t) pairs.
     ///
-    /// When the pairs form a group, each class is enumerated once from its representative
-    /// (the smallest rank of the orbit, met first in rank order): `pairs.len()` rank
-    /// computations per class instead of per rank. The result equals [`Self::new_brute`].
+    /// When the pairs form a group listed identity first, each class is enumerated once from
+    /// its representative (the smallest rank of the orbit, met first in rank order):
+    /// `pairs.len()` rank computations per class instead of per rank. The result equals
+    /// [`Self::new_brute`], which is used otherwise.
     pub fn new(pairs: &[(u8, u8)]) -> AClasses {
         let s = syms();
         let np = pairs.len();
@@ -211,7 +216,8 @@ impl AClasses {
         };
         let index: HashMap<([u8; 4], [u8; 12]), u16> =
             (0..np).map(|i| (key(i), i as u16)).collect();
-        if index.len() != np {
+        let identity = ([0, 1, 2, 3], std::array::from_fn(|p| p as u8));
+        if index.len() != np || np == 0 || key(0) != identity {
             return Self::new_brute(pairs);
         }
         // mul[i * np + j]: pair applying j first, then i
@@ -228,9 +234,13 @@ impl AClasses {
                 }
             }
         }
-        let inv: Vec<u16> = (0..np)
-            .map(|j| (0..np).find(|&k| mul[k * np + j] == 0).unwrap() as u16)
-            .collect();
+        // (a finite set of permutations closed under composition is a group)
+        let Some(inv) = (0..np)
+            .map(|j| (0..np).find(|&k| mul[k * np + j] == 0).map(|k| k as u16))
+            .collect::<Option<Vec<u16>>>()
+        else {
+            return Self::new_brute(pairs);
+        };
         let ms = mset();
         let mut sym = vec![u32::MAX; N_MSET];
         let mut rep = vec![];
@@ -252,12 +262,12 @@ impl AClasses {
                 if sym[y] != u32::MAX {
                     continue;
                 }
-                // the pairs mapping y to r are stab * j^-1; take the first in the list
+                // the pairs mapping y to r are stab * j^-1; take the first in the list (stab
+                // holds the identity, pair 0)
                 let si = stab
                     .iter()
                     .map(|&st| mul[st * np + inv[j] as usize])
-                    .min()
-                    .unwrap();
+                    .fold(u16::MAX, u16::min);
                 sym[y] = c | (si as u32) << 16;
             }
         }
