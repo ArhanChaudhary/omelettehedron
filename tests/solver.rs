@@ -12,7 +12,7 @@ use std::time::Duration;
 
 fn tables() -> &'static Tables<AeSym> {
     static T: OnceLock<Tables<AeSym>> = OnceLock::new();
-    T.get_or_init(|| Tables::generate(AeSym::new(false), false))
+    T.get_or_init(|| Tables::generate(AeSym::new(false), MoveSet::FACE, false))
 }
 
 fn random_scramble(rng: &mut impl Rng, n: usize) -> Vec<PhysMove> {

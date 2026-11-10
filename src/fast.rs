@@ -243,6 +243,18 @@ impl FastTables {
         }
     }
 
+    /// The position with the coordinates `x` (labels from the ranks).
+    pub fn of_coords(&self, x: &Coords) -> Fc {
+        let l = mset_labels();
+        Fc {
+            a: l[x.a as usize],
+            b: l[x.b as usize],
+            e: l[x.e as usize],
+            c: x.c,
+            ebits: x.ebits,
+        }
+    }
+
     pub fn of(&self, cube: &Cube) -> Fc {
         let mut e = [0u8; 12];
         let d = defs();
@@ -270,13 +282,46 @@ impl FastTables {
         w[0] | w[1] << 16 | w[2] << 32 | w[3] << 48
     }
 
-    /// Apply move `m`. `em` are the edge-label masks of `x` (from [`masks`]).
+    /// Chirality flips of the four triples under the slice moves: bit 8 * t + j = triple t is
+    /// flipped by move `N_MOVES + j` (see [`FastTables::apply_slice_w`]).
+    #[inline(always)]
+    pub fn flip_word_slice(&self, em: &[u16; 4]) -> u32 {
+        let flip = &slice_tables().flip;
+        let w = em.map(|q| flip[q as usize & 0xfff] as u32);
+        w[0] | w[1] << 8 | w[2] << 16 | w[3] << 24
+    }
+
+    /// Apply face-metric move `m` (`m < N_MOVES`). `em` are the edge-label masks of `x` (from
+    /// [`masks`]).
     #[inline(always)]
     pub fn apply(&self, x: &Fc, em: &[u16; 4], m: usize) -> Fc {
         self.apply_w(x, self.flip_word(em), m)
     }
 
-    /// Apply move `m`, with `fw` = [`FastTables::flip_word`] of the edge masks of `x`.
+    /// Apply any move `m < MAX_MOVES`, slices included (for code off the hot path).
+    #[inline]
+    pub fn apply_m(&self, x: &Fc, em: &[u16; 4], m: usize) -> Fc {
+        if m < N_MOVES {
+            self.apply(x, em, m)
+        } else {
+            self.apply_slice_w(x, self.flip_word_slice(em), m)
+        }
+    }
+
+    /// Apply move `m` of a move set of `N` moves, with `fw` = [`FastTables::flip_word`] and
+    /// (if `N > N_MOVES`) `fws` = [`FastTables::flip_word_slice`] of the edge masks of `x`.
+    /// For `N == N_MOVES` this is [`FastTables::apply_w`] alone.
+    #[inline(always)]
+    pub fn apply_any<const N: usize>(&self, x: &Fc, fw: u64, fws: u32, m: usize) -> Fc {
+        if N <= N_MOVES || m < N_MOVES {
+            self.apply_w(x, fw, m)
+        } else {
+            self.apply_slice_w(x, fws, m)
+        }
+    }
+
+    /// Apply face-metric move `m` (`m < N_MOVES`), with `fw` = [`FastTables::flip_word`] of
+    /// the edge masks of `x`.
     #[inline(always)]
     pub fn apply_w(&self, x: &Fc, fw: u64, m: usize) -> Fc {
         // gather bit m of each 16-bit lane into bits 48..52 (no carries between the terms)
@@ -287,6 +332,24 @@ impl FastTables {
             b: shuffle(&x.b, &self.shuf_b[m]),
             e: shuffle(&x.e, &self.shuf_e[m]),
             c: self.corner[x.c as usize & 1023][m & 15],
+            ebits: x.ebits ^ flips,
+        }
+    }
+
+    /// Apply slice move `m` (`N_MOVES <= m < MAX_MOVES`), with `fws` =
+    /// [`FastTables::flip_word_slice`] of the edge masks of `x`. Slices move no corner.
+    #[inline(always)]
+    pub fn apply_slice_w(&self, x: &Fc, fws: u32, m: usize) -> Fc {
+        let st = slice_tables();
+        let j = m & 7;
+        // gather bit j of each byte into bits 24..28 (no carries between the terms)
+        let b = u64::from(fws >> j) & 0x0101_0101;
+        let flips = (b.wrapping_mul(1 << 24 | 1 << 17 | 1 << 10 | 1 << 3) >> 24) as u8 & 15;
+        Fc {
+            a: shuffle(&x.a, &st.shuf_a[j]),
+            b: shuffle(&x.b, &st.shuf_b[j]),
+            e: shuffle(&x.e, &st.shuf_e[j]),
+            c: x.c,
             ebits: x.ebits ^ flips,
         }
     }
@@ -399,6 +462,43 @@ pub fn mset_labels() -> &'static [[u8; 16]] {
                 v
             })
             .collect()
+    })
+}
+
+/// The tables of the slice moves (`N_MOVES..MAX_MOVES`, used only with slices). They are kept
+/// apart from [`FastTables`] so that the face-metric search keeps exactly its data layout.
+pub(crate) struct SliceTables {
+    /// gather shuffles of slice move `N_MOVES + j`
+    shuf_a: [[u8; 16]; 8],
+    shuf_b: [[u8; 16]; 8],
+    shuf_e: [[u8; 16]; 8],
+    /// chirality flip of a triple occupying a 12-bit position mask: bit j = flipped by slice
+    /// move `N_MOVES + j`
+    pub(crate) flip: Box<[u8; 4096]>,
+}
+
+pub(crate) fn slice_tables() -> &'static SliceTables {
+    static T: OnceLock<SliceTables> = OnceLock::new();
+    T.get_or_init(|| {
+        let d = defs();
+        let mut flip = Box::new([0u8; 4096]);
+        for j in 0..8 {
+            let m = N_MOVES + j;
+            let mut dest = [0u8; 12];
+            for p in 0..12 {
+                dest[d.moves[m].ep[p] as usize] = p as u8;
+            }
+            let bs = bitset_flip(&dest);
+            for (q, w) in flip.iter_mut().enumerate() {
+                *w |= ((bs[q >> 6] >> (q & 63)) as u8 & 1) << j;
+            }
+        }
+        SliceTables {
+            shuf_a: std::array::from_fn(|j| pad(&d.moves[N_MOVES + j].xa)),
+            shuf_b: std::array::from_fn(|j| pad(&d.moves[N_MOVES + j].xb)),
+            shuf_e: std::array::from_fn(|j| pad(&d.moves[N_MOVES + j].ep)),
+            flip,
+        }
     })
 }
 
@@ -609,10 +709,16 @@ mod tests {
                 (r.a, r.b, r.e, r.c, r.ebits)
             );
             let em = masks(&x.e);
-            for m in 0..N_MOVES {
-                let y = f.apply(&x, &em, m);
+            let (fw, fws) = (f.flip_word(&em), f.flip_word_slice(&em));
+            for m in 0..MAX_MOVES {
+                let y = f.apply_m(&x, &em, m);
                 assert_eq!(y, f.of(&cube.apply(m)));
+                assert_eq!(f.apply_any::<MAX_MOVES>(&x, fw, fws, m), y);
+                if m < N_MOVES {
+                    assert_eq!(f.apply_any::<N_MOVES>(&x, fw, 0, m), y);
+                }
             }
+            assert_eq!(f.of_coords(&r), x);
             for &(g, t) in &s.pairs {
                 let (e, b) = f.sym_e(&x, &em, g as usize, t as usize);
                 assert_eq!((e, b), s.apply_e(g as usize, t as usize, r.e, r.ebits));

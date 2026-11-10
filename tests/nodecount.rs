@@ -28,6 +28,7 @@ fn null_tables() -> Tables<AeSym> {
     let ae_ix = AeSym::new(false);
     let n = ae_ix.size();
     Tables {
+        moves: MoveSet::FACE,
         ae_ix,
         ae: zero_table(n),
         // no targets: the exact root walk stops at once and reports distance 0

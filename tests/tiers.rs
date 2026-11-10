@@ -11,8 +11,8 @@ use rand::SeedableRng;
 #[ignore = "needs the medium and huge tables on disk"]
 fn medium_and_large_tables_agree() {
     let dir = table_dir(None);
-    let med = Tables::load(&dir, AeSym::new(true), false).unwrap();
-    let large = Tables::load(&dir, AeRelabel::new(), false).unwrap();
+    let med = Tables::load(&dir, AeSym::new(true), MoveSet::FACE, false).unwrap();
+    let large = Tables::load(&dir, AeRelabel::new(), MoveSet::FACE, false).unwrap();
     let mt = move_tables();
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(21);
     for _ in 0..3000 {

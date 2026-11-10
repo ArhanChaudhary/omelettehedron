@@ -28,7 +28,7 @@
 
 use clap::{Parser, Subcommand};
 use omelettehedron::bench;
-use omelettehedron::cube::Cube;
+use omelettehedron::cube::{Cube, MoveSet};
 use omelettehedron::notation::{parse_moves, scramble_to_cube, Frame};
 use omelettehedron::search::{solve, Limits, Report};
 use omelettehedron::tables::{table_dir, AeIndex, AeRelabel, AeSym, Tables, Tier};
@@ -214,26 +214,28 @@ macro_rules! dispatch {
         }
         match $tab.tier {
             Tier::Small => {
-                let $t = Tables::load(&dir, AeSym::new(false), $tab.verbose)
+                let $t = Tables::load(&dir, AeSym::new(false), MoveSet::FACE, $tab.verbose)
                     .map_err(|e| table_error(&dir, &e))?;
                 let $name = "small";
                 $body
             }
             Tier::Medium => {
-                let $t = Tables::load(&dir, AeSym::new(true), $tab.verbose)
+                let $t = Tables::load(&dir, AeSym::new(true), MoveSet::FACE, $tab.verbose)
                     .map_err(|e| table_error(&dir, &e))?;
                 let $name = "medium";
                 $body
             }
             Tier::Large => {
-                let $t = Tables::load_with(&dir, AeSym::new(true), true, $tab.verbose)
-                    .map_err(|e| table_error(&dir, &e))?;
+                let $t =
+                    Tables::load_with(&dir, AeSym::new(true), true, MoveSet::FACE, $tab.verbose)
+                        .map_err(|e| table_error(&dir, &e))?;
                 let $name = "large";
                 $body
             }
             Tier::Huge => {
-                let $t = Tables::load_with(&dir, AeRelabel::new(), true, $tab.verbose)
-                    .map_err(|e| table_error(&dir, &e))?;
+                let $t =
+                    Tables::load_with(&dir, AeRelabel::new(), true, MoveSet::FACE, $tab.verbose)
+                        .map_err(|e| table_error(&dir, &e))?;
                 let $name = "huge";
                 $body
             }

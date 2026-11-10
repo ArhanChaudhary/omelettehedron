@@ -402,7 +402,7 @@ impl<I: AeIndex> Shared<'_, I> {
         }
         if budget >= AE_FIRST {
             t.ae_ix
-                .index_batch_fast_pf(f, &fr.ys[..n], &mut fr.idx[..n], &t.ae.data);
+                .index_batch_fast_pf::<N_MOVES>(f, &fr.ys[..n], &mut fr.idx[..n], &t.ae.data);
         } else {
             for i in 0..n {
                 fr.cbi[i] = CbTable::index_fast(f, &fr.ys[i]);
@@ -764,9 +764,9 @@ impl<I: AeIndex> Shared<'_, I> {
         let mut ic = [0usize; N_MOVES];
         let mut icb = [0usize; N_MOVES];
         tb.ae_ix
-            .index_batch_fast_pf(f, &ys[..n], &mut ia[..n], &tb.ae.data);
+            .index_batch_fast_pf::<N_MOVES>(f, &ys[..n], &mut ia[..n], &tb.ae.data);
         tb.ae_ix
-            .index_batch_fast_pf(f, &yb[..n], &mut iab[..n], &tb.ae.data);
+            .index_batch_fast_pf::<N_MOVES>(f, &yb[..n], &mut iab[..n], &tb.ae.data);
         for i in 0..n {
             ic[i] = CbTable::index_fast(f, &ys[i]);
             prefetch(&tb.cb.tab.data[ic[i] >> 5]);
