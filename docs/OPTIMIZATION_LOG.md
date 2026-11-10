@@ -41,10 +41,12 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | Start-up move and symmetry tables from label masks (6-bit compress/expand tables, `MaskPerm`) | `opt/startup` | start-up (2-move solve) 1T 2.66 -> 1.38 s large, 1.69 -> 0.41 s small; 48T 0.29 -> 0.26 s; WebAssembly table load (1 thread, Bun) 2.08 -> 0.54 s; search unchanged (nodes/s 1.01x / 1.01x, optimal 1.00x / 0.99x) | yes |
 | With slices, last proof iteration restricted to paths ending in a slice | `neg/slicelast` | neutral: few nodes reach the last level (48T node counts within 0.1%); slice optimal 0.97x (48T) / 1.05x (1T) | no |
 
-Cumulative (48 threads, 40 random positions, 5 s): mean best length 21.60 -> 21.20; first
-solution 86 ms -> 6.8 ms. Optimal mode (19-move scrambles, 48 threads): 15.1 s -> 2.76 s mean.
-Last round alone (main-r2 -> micro-compute): 1.52x nodes/s at 48T and 1T, first solution 0.36x
-(48T) / 0.64x (1T), optimal proofs 0.65x / 0.67x time.
+Cumulative, first working version -> main of 2026-11-10 ~13:30 (r10 and rc runs; 48 threads, 40
+random positions, 5 s): mean best length 21.60 -> 21.10; first solution 86 ms -> 6.1 ms; 1.70e9
+nodes/s. Optimal mode, 10 x 19-move scrambles at 48 threads: 15.1 s -> 1.21 s mean per position;
+random positions (seeds 1-3) 419 / 481 / 39 s (morning of 2026-11-10) -> 65 / 65 / 5.3 s. Round 2
+alone (main-r2 -> micro-compute): 1.52x nodes/s at 48T and 1T, first solution 0.36x (48T) /
+0.64x (1T), optimal proofs 0.65x / 0.67x time.
 
 ## Table generation (`opt/gen`)
 
