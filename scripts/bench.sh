@@ -7,7 +7,10 @@ label=${1:?label}
 tier=${2:?tier (small|medium|large|huge)}
 cd "$(dirname "$0")/.."
 cargo build --release -q
-bin=target/release/fto
+bin=${CARGO_TARGET_DIR:-target}/release/fto
+# Serialize with other benchmarks on this machine (shared lock with the egg-solver sessions).
+exec 9>/tmp/cube-bench.lock
+flock 9
 mkdir -p bench-results
 load=$(cut -d' ' -f1 /proc/loadavg)
 echo "load before benchmark: $load" >&2

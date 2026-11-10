@@ -6,9 +6,12 @@ label=${1:?label}
 tier=${2:?tier (small|medium|large|huge)}
 cd "$(dirname "$0")/.."
 cargo build --release -q
-bin=target/release/fto
+bin=${CARGO_TARGET_DIR:-target}/release/fto
+# Serialize with other benchmarks on this machine (shared lock with the egg-solver sessions).
+exec 9>/tmp/cube-bench.lock
+flock 9
 mkdir -p bench-results
-echo "load before benchmark: $(cut -d' ' -f1 /proc/loadavg)" >&2
+echo "commit $(git rev-parse --short HEAD), FTO_DIRECT=${FTO_DIRECT:-}, load before benchmark: $(cut -d' ' -f1 /proc/loadavg)" >&2
 $bin bench -N 10 --scramble-len 19 --seed 1919 --tier "$tier" --json "bench-results/$label-optmt.json" > "bench-results/$label-optmt.txt"
 $bin bench -N 10 --scramble-len 17 --seed 1717 -j 1 --tier "$tier" --json "bench-results/$label-optst.json" > "bench-results/$label-optst.txt"
 grep -E "elapsed|optimal|final" "bench-results/$label-optmt.txt" "bench-results/$label-optst.txt"
