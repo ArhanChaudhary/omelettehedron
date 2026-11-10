@@ -142,10 +142,15 @@ fn read_at(file: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result
     file.read_exact_at(buf, offset)
 }
 
-/// Elsewhere (WebAssembly) there is a single thread, so seeking the shared cursor is safe.
+/// Elsewhere (WebAssembly) the file has one shared cursor: a lock keeps each seek and read
+/// together, also when a threaded build reads chunks from several threads.
 #[cfg(not(unix))]
 fn read_at(file: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
     use std::io::{Read, Seek, SeekFrom};
+    static CURSOR: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _held = CURSOR
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut f = file;
     f.seek(SeekFrom::Start(offset))?;
     f.read_exact(buf)
