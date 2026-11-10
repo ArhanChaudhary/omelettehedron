@@ -29,7 +29,9 @@
 use clap::{Parser, Subcommand};
 use omelettehedron::bench;
 use omelettehedron::cube::{Cube, MoveSet};
-use omelettehedron::notation::{parse_moves, scramble_to_cube, solves_pure, Frame};
+use omelettehedron::notation::{
+    format_moves, invert_moves, parse_moves, scramble_to_cube, solves_pure, Frame,
+};
 use omelettehedron::search::{solve, Limits, Report};
 use omelettehedron::tables::{table_dir, AeIndex, AeRelabel, AeSym, Tables, Tier};
 use std::io::BufRead;
@@ -135,6 +137,10 @@ enum Cmd {
         /// its target-length passes here. A wrong value can give a wrong answer
         #[arg(long)]
         lower_bound: Option<usize>,
+        /// Each given sequence is a solution: solve the position it solves (the sequence
+        /// inverted, applied to the solved puzzle) instead of the position it makes
+        #[arg(long)]
+        inverse: bool,
         #[command(flatten)]
         tab: TableArgs,
     },
@@ -309,6 +315,7 @@ fn run(cli: Cli) -> Result<(), Error> {
             random,
             seed,
             lower_bound,
+            inverse,
             tab,
         } => {
             let mut limits =
@@ -331,6 +338,11 @@ fn run(cli: Cli) -> Result<(), Error> {
                 let mut v = vec![];
                 for s in read_scrambles(&scramble) {
                     match parse_moves(&s) {
+                        Ok(m) if inverse => {
+                            let m = invert_moves(&m);
+                            let (c, f) = scramble_to_cube(&m);
+                            v.push((c, f, format_moves(&m)));
+                        }
                         Ok(m) => {
                             let (c, f) = scramble_to_cube(&m);
                             v.push((c, f, s));
