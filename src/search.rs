@@ -718,7 +718,8 @@ pub fn solve<I: AeIndex>(
     };
     // Every solution is a prefix followed by class-A moves, so one variant would suffice to
     // prove optimality; both are kept because the earlier a short solution is found, the more
-    // the class-B bound prunes (measured: one variant was 1.9-3.9x slower in optimal mode).
+    // the class-B bound prunes (measured: one variant was 1.9-3.9x slower in optimal mode),
+    // and because with both the proof can stop one iteration early (see the main loop).
     let sh = Shared {
         t,
         variants,
@@ -751,7 +752,15 @@ pub fn solve<I: AeIndex>(
     // nodes of each variant in the previous iteration
     let mut prev_var_nodes = [0u64; 2];
     loop {
-        if depth >= sh.best_len.load(Ordering::Relaxed) {
+        // Optimality is proven one iteration before depth reaches the best length. The
+        // iteration at depth best - 1 could only improve on the best with a leaf that is solved
+        // (phase-2 length 0): a path of that length that ends in a class-B move and solves the
+        // puzzle. Such a path is a prefix ending in a class-A move followed by class-B moves, so
+        // the class-B variant already found it at a smaller depth, in an iteration completed
+        // before this one. (This needs both variants in every iteration.) When solutions are
+        // counted, that iteration still yields completions (longer ones), so it is run.
+        let proof_depth = depth + usize::from(limits.max_solutions.is_none());
+        if proof_depth >= sh.best_len.load(Ordering::Relaxed) {
             optimal = true;
             break;
         }
@@ -779,17 +788,6 @@ pub fn solve<I: AeIndex>(
         node_stat.resize(tree.nodes.len(), 0.0);
         if !prev_ids.is_empty() {
             ids.sort_by(|a, b| node_stat[*b as usize].total_cmp(&node_stat[*a as usize]));
-        }
-        // In the last iteration before optimality is proven (depth = best - 1) one variant is
-        // enough. Every solution is a prefix ending outside H_A followed by class-A moves, so the
-        // iterations of either variant up to best - 1 find every shorter solution, and the other
-        // variant's half of this iteration could only find the same ones. Keep the variant that
-        // needed fewer nodes in the previous iteration.
-        let final_variant = (limits.is_optimal()
-            && depth + 1 == sh.best_len.load(Ordering::Relaxed))
-        .then(|| usize::from(prev_var_nodes[1] < prev_var_nodes[0]));
-        if let Some(keep) = final_variant {
-            ids.retain(|&id| tree.nodes[id as usize].v == keep);
         }
         // Pruning against the best length changes how many (non-improving) solutions are
         // reached, so it is off when the user counts solutions.
@@ -856,15 +854,14 @@ pub fn solve<I: AeIndex>(
         if std::env::var_os("FTO_DEBUG").is_some() {
             eprintln!("  depth {depth}: split done at {t_split:.4}s");
             eprintln!(
-                "  depth {depth}: {} tasks, {} nodes ({} / {} by variant), {} solutions, best {:?}, {:.3}s{}",
+                "  depth {depth}: {} tasks, {} nodes ({} / {} by variant), {} solutions, best {:?}, {:.3}s",
                 n_tasks,
                 sh.nodes.load(Ordering::Relaxed),
                 prev_var_nodes[0],
                 prev_var_nodes[1],
                 sh.count.load(Ordering::Relaxed),
                 sh.best_len.load(Ordering::Relaxed),
-                start.elapsed().as_secs_f64(),
-                final_variant.map_or(String::new(), |v| format!(" (final iteration: variant {v} only)"))
+                start.elapsed().as_secs_f64()
             );
         }
         if sh.stop.load(Ordering::Relaxed) || sh.time_up() {
