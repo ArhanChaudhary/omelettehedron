@@ -598,3 +598,39 @@ fn cancel_deadline_does_not_change_the_search() {
         assert_eq!(plain.nodes, with.nodes, "{}", format_moves(&scr));
     }
 }
+
+/// A correct lower bound (`Limits::lower_bound`, for resuming long proofs) gives the same optimal
+/// length, from below it and exactly at it, on one thread and on several.
+#[test]
+fn lower_bound_keeps_the_optimum() {
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    let one = POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+    });
+    let t = tables();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(41);
+    for k in 0..6 {
+        let scr = random_scramble(&mut rng, 12);
+        let (c, fr) = scramble_to_cube(&scr);
+        let opt = solve(t, c, fr, &Limits::default(), Report::Quiet)
+            .length
+            .unwrap();
+        for lb in [opt.saturating_sub(2), opt] {
+            let lim = Limits {
+                lower_bound: Some(lb),
+                ..Default::default()
+            };
+            let o = if k % 2 == 0 {
+                one.install(|| solve(t, c, fr, &lim, Report::Quiet))
+            } else {
+                solve(t, c, fr, &lim, Report::Quiet)
+            };
+            assert!(o.optimal, "{} lb {lb}", format_moves(&scr));
+            assert_eq!(o.length, Some(opt), "{} lb {lb}", format_moves(&scr));
+            check_solution(&scr, o.solution.as_ref().unwrap());
+        }
+    }
+}
