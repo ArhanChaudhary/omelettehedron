@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Pre-commit checks: formatting, clippy on all targets (warnings are errors), the test suite
-# (test profile, so debug assertions are checked) and a scan for runtime assertions.
+# (test profile, so debug assertions are checked), a scan for runtime assertions and, unless
+# FTO_CHECK_FAST=1, the backend matrix and the WebAssembly demo module (wasm/).
 # usage: scripts/check.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
-cargo fmt --check
+cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 # No assert!/assert_eq!/assert_ne! outside #[cfg(test)] items: non-test code must not panic.
@@ -23,7 +24,7 @@ awk '
     /const _: \(\) = assert!\(/ { next }
     /(^|[^_[:alnum:]])assert(_eq|_ne)?!/ { print FILENAME ":" FNR ": " $0; bad = 1 }
     END { if (bad) { print "runtime assertions found outside test code" > "/dev/stderr"; exit 1 } }
-' $(find src -name '*.rs')
+' $(find src wasm/src -name '*.rs')
 
 # Backend matrix (as in egg-solver's check.sh): the scalar fallback on this machine, clippy for
 # the other targets, the library tests on aarch64 under qemu and on wasm32 under bun's WASI.
@@ -55,6 +56,22 @@ if [ "${FTO_CHECK_FAST:-0}" != 1 ]; then
         timeout 600 "$bun" scripts/wasi-run.mjs "$out" --test-threads=1
     else
         not_checked+=("wasm32 tests (bun missing)")
+    fi
+    # The WebAssembly demo module: clippy for both of its builds, then build them and run its
+    # test in Bun (generation, load, optimal solves against native values, cancellation).
+    if rustup target list --installed | grep -qx wasm32-wasip1-threads; then
+        for t in wasm32-wasip1 wasm32-wasip1-threads; do
+            RUSTFLAGS="-C target-feature=+simd128" \
+                cargo clippy -p omelettehedron-wasm --target "$t" -- -D warnings
+        done
+        if [ -x "$bun" ]; then
+            scripts/build-wasm.sh
+            timeout 900 "$bun" wasm/test.mjs
+        else
+            not_checked+=("wasm demo test (bun missing)")
+        fi
+    else
+        not_checked+=("wasm demo module (target wasm32-wasip1-threads not installed)")
     fi
     for n in "${not_checked[@]}"; do echo "not checked: $n"; done
 fi
