@@ -701,6 +701,7 @@ pub fn solve<I: AeIndex>(
             length: None,
             solutions_found: 0,
             nodes: 0,
+            leaves: 0,
             elapsed: start.elapsed().as_secs_f64(),
             optimal: false,
             events: vec![],
