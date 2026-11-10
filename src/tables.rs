@@ -111,7 +111,19 @@ pub fn prefetch<T>(p: &T) {
             options(nostack, preserves_flags, readonly)
         );
     }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    // WebAssembly has no prefetch, but a load whose value is dropped starts the cache miss
+    // just the same while execution runs on (egg-solver measured +45-53% in V8 and wasmtime;
+    // src/prefetch.rs there). `p` is a reference, so the byte is always readable.
+    #[cfg(target_arch = "wasm32")]
+    // SAFETY: `p` is a valid reference, so its first byte can be read
+    unsafe {
+        std::ptr::read_volatile(std::ptr::from_ref(p).cast::<u8>());
+    }
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "wasm32"
+    )))]
     let _ = p;
 }
 
