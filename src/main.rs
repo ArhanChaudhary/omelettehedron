@@ -129,6 +129,12 @@ enum Cmd {
         /// Seed of the random positions (`--random`)
         #[arg(long, default_value_t = 1)]
         seed: u64,
+        /// Resume a long optimal proof: no solution has fewer than this many moves, as an
+        /// earlier run of the same position logged ("pass N complete: no solution of at most N
+        /// moves" with `FTO_DEBUG=1` gives N + 1). The search finds a first solution, then starts
+        /// its target-length passes here. A wrong value can give a wrong answer
+        #[arg(long)]
+        lower_bound: Option<usize>,
         #[command(flatten)]
         tab: TableArgs,
     },
@@ -302,10 +308,13 @@ fn run(cli: Cli) -> Result<(), Error> {
             print,
             random,
             seed,
+            lower_bound,
             tab,
         } => {
-            let limits = bench::limits_with_time(stop.time, stop.max_length, stop.max_solutions)
-                .map_err(|e| format!("--time: {e}"))?;
+            let mut limits =
+                bench::limits_with_time(stop.time, stop.max_length, stop.max_solutions)
+                    .map_err(|e| format!("--time: {e}"))?;
+            limits.lower_bound = lower_bound;
             let positions: Vec<(Cube, Frame, String)> = if let Some(n) = random {
                 bench::random_positions(n, seed)
                     .into_iter()

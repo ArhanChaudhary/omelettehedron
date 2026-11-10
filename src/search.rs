@@ -35,6 +35,12 @@ pub struct Limits {
     /// there were no limit, e.g. with the one-thread target-length passes of optimal mode. The
     /// WebAssembly module cancels a solve by moving its clock past this.
     pub cancel_after: Option<Duration>,
+    /// Known lower bound (optimal mode): no solution has fewer moves, e.g. from the log of an
+    /// earlier run of the same position ("no solution of at most L - 1 moves"). The search
+    /// first finds a solution (an upper bound), then runs its target-length passes from L on
+    /// instead of from the bound it has proven itself. A wrong (too high) value can give a
+    /// non-optimal answer reported as optimal. For resuming long proofs.
+    pub lower_bound: Option<usize>,
 }
 
 impl Limits {
@@ -1489,6 +1495,12 @@ fn solve_n<I: AeIndex, const N: usize>(
         if let Some(t) = target {
             if depth >= t + usize::from(!class_b_argument) {
                 // pass T complete: no solution of at most T moves
+                if std::env::var_os("FTO_DEBUG").is_some() {
+                    eprintln!(
+                        "  pass {t} complete: no solution of at most {t} moves ({:.1} s)",
+                        start.elapsed().as_secs_f64()
+                    );
+                }
                 if sh.best_len.load(Ordering::Relaxed) <= t + 1 {
                     optimal = true;
                     break;
@@ -1508,17 +1520,26 @@ fn solve_n<I: AeIndex, const N: usize>(
             // the iterations below `depth` are complete: no solution of at most `depth` moves
             // (of at most `depth - 1` with slices)
             let lower = depth + usize::from(class_b_argument);
-            if target_gap > 0
-                && depth > lo
-                && sh.best_len.load(Ordering::Relaxed) >= lower + target_gap
-            {
-                target = Some(lower);
-                sh.prune_len.store(lower + 1, Ordering::Relaxed);
+            let best_now = sh.best_len.load(Ordering::Relaxed);
+            // With a known lower bound (`Limits::lower_bound`), the passes wait for a first
+            // solution, so that the pass that proves its length optimal ends the search, and
+            // then start at the bound.
+            let known = limits.lower_bound.filter(|_| target_gap > 0);
+            let start_passes = match known {
+                Some(_) => best_now < usize::MAX,
+                None => target_gap > 0 && depth > lo && best_now >= lower + target_gap,
+            };
+            if start_passes {
+                let t = known.map_or(lower, |lb| lb.max(lower));
+                if best_now <= t {
+                    // no solution is shorter than the bound: the best is optimal
+                    optimal = true;
+                    break;
+                }
+                target = Some(t);
+                sh.prune_len.store((t + 1).min(best_now), Ordering::Relaxed);
                 if std::env::var_os("FTO_DEBUG").is_some() {
-                    eprintln!(
-                        "  target-length passes from {lower} (best {:?})",
-                        sh.best_len
-                    );
+                    eprintln!("  target-length passes from {t} (best {best_now})");
                 }
                 depth = lo;
                 prev_nodes = None;
