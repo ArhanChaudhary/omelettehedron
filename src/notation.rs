@@ -1,21 +1,54 @@
 //! Physical move notation and conversion to/from internal (fixed-corner) moves.
+//!
+//! `X` is a turn of face X, `Xw` a wide (two-layer) turn of X and `Xs` a slice turn: the
+//! middle layer between X and its opposite face, turned like X (so `Us` = `Ds'`). Solutions
+//! name slices by their front face (U, R, F, L).
 
 use crate::cube::*;
 use crate::geometry::*;
 use std::fmt;
 
+/// Which layers of a face's axis a physical move turns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Layer {
+    /// the face's own layer
+    #[default]
+    Face,
+    /// the face's layer and the middle layer
+    Wide,
+    /// the middle layer only
+    Slice,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PhysMove {
     pub face: usize,
+    pub layer: Layer,
     pub cw: bool,
+}
+
+impl PhysMove {
+    /// A turn of the single layer of `face`.
+    pub fn face(face: usize, cw: bool) -> PhysMove {
+        PhysMove {
+            face,
+            layer: Layer::Face,
+            cw,
+        }
+    }
 }
 
 impl fmt::Display for PhysMove {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "{}{}",
+            "{}{}{}",
             FACE_NAMES[self.face],
+            match self.layer {
+                Layer::Face => "",
+                Layer::Wide => "w",
+                Layer::Slice => "s",
+            },
             if self.cw { "" } else { "'" }
         )
     }
@@ -29,12 +62,14 @@ pub fn format_moves(moves: &[PhysMove]) -> String {
         .join(" ")
 }
 
-/// Parse a scramble such as `U R' BL F2 D`. `X2` is a double turn (= two moves), `X'`/`X3`
-/// variants of the prime are accepted.
+/// Parse a scramble such as `U R' BL F2 D Rw Us'`. `X2` is a double turn (= two moves),
+/// `X'`/`X3` variants of the prime are accepted. A `w` after the face name makes a wide turn
+/// and an `s` a slice turn; both are always accepted, whatever move set the solver uses.
 ///
 /// # Errors
 ///
-/// If a token is not a face name with an optional `'`, `2`, `2'` or `3` suffix.
+/// If a token is not a face name with an optional `w` or `s` and an optional `'`, `2`, `2'`
+/// or `3` suffix.
 pub fn parse_moves(s: &str) -> Result<Vec<PhysMove>, String> {
     let mut out = vec![];
     for tok in s
@@ -45,6 +80,12 @@ pub fn parse_moves(s: &str) -> Result<Vec<PhysMove>, String> {
         let (name, suffix) = match t.find(|c: char| c == '\'' || c.is_ascii_digit()) {
             Some(i) => t.split_at(i),
             None => (t.as_str(), ""),
+        };
+        // (no face name ends in w or s)
+        let (name, layer) = match name.char_indices().last() {
+            Some((i, 'w' | 'W')) => (&name[..i], Layer::Wide),
+            Some((i, 's' | 'S')) => (&name[..i], Layer::Slice),
+            _ => (name, Layer::Face),
         };
         let face = FACE_NAMES
             .iter()
@@ -58,7 +99,7 @@ pub fn parse_moves(s: &str) -> Result<Vec<PhysMove>, String> {
             _ => return Err(format!("unknown move suffix in `{tok}`")),
         };
         for _ in 0..n {
-            out.push(PhysMove { face, cw });
+            out.push(PhysMove { face, layer, cw });
         }
     }
     Ok(out)
@@ -73,39 +114,76 @@ impl Frame {
         Frame(IDENTITY)
     }
 
+    /// Physical face at internal face `f`.
+    fn physical_face(&self, f: usize) -> usize {
+        face_of_normal(mat_vec(&self.0, FACES[f]))
+    }
+
     /// Internal move equivalent to a physical move, and the new frame.
+    ///
+    /// Count the layers of an axis from its back face X (back layer, slice, front layer) and
+    /// turns in the sense of X. A move turns them by (a, b, c) thirds; the whole-puzzle
+    /// rotation by c is free, so it is the internal move (a - c, b - c, 0) plus a rotation:
+    /// X = (1, 0, 0) is the single turn, Xw = (1, 1, 0) the wide turn and Xs = (0, 1, 0) the
+    /// slice turn of X. A turn of the front face Y (opposite X) is (0, 0, -1) = Xw plus a
+    /// rotation, Yw = (0, -1, -1) is X plus a rotation, and Ys = (0, -1, 0) is Xs'.
     pub fn to_internal(&self, pm: PhysMove) -> (usize, Frame) {
         let f = face_of_normal(mat_vec(&transpose(&self.0), FACES[pm.face]));
         let dir = usize::from(!pm.cw);
         if f >= 4 {
-            (2 * (f - 4) + dir, *self)
+            let kind = match pm.layer {
+                Layer::Face => 0,
+                Layer::Wide => 1,
+                Layer::Slice => 2,
+            };
+            (2 * (f - 4 + 4 * kind) + dir, *self)
         } else {
-            let g = opposite(f);
-            let m = 2 * (g - 4 + 4) + dir;
-            (m, Frame(mat_mul(&self.0, &face_rotation(f, pm.cw))))
+            let g = opposite(f) - 4;
+            let rotated = Frame(mat_mul(&self.0, &face_rotation(f, pm.cw)));
+            match pm.layer {
+                Layer::Face => (2 * (g + 4) + dir, rotated),
+                Layer::Wide => (2 * g + dir, rotated),
+                Layer::Slice => (2 * (g + 8) + (1 - dir), *self),
+            }
         }
     }
 
-    /// Physical move equivalent to an internal move, and the new frame.
-    pub fn to_physical(&self, m: usize) -> (PhysMove, Frame) {
+    /// Physical move equivalent to an internal move, and the new frame. Wide internal moves
+    /// become front-face turns plus a rotation, or with `wide` the back-face wide turns
+    /// themselves (then the frame never changes). Slices are named by their front face.
+    pub fn to_physical(&self, m: usize, wide: bool) -> (PhysMove, Frame) {
         let s = slot(m);
         let cw = move_cw(m);
-        if slot_is_wide(s) {
-            let f = opposite(slot_face(s));
+        let x = slot_face(s);
+        if slot_is_slice(s) {
+            let p = self.physical_face(x);
+            let pm = if p >= 4 {
+                PhysMove {
+                    face: opposite(p),
+                    layer: Layer::Slice,
+                    cw: !cw,
+                }
+            } else {
+                PhysMove {
+                    face: p,
+                    layer: Layer::Slice,
+                    cw,
+                }
+            };
+            (pm, *self)
+        } else if slot_is_wide(s) && wide {
             let pm = PhysMove {
-                face: face_of_normal(mat_vec(&self.0, FACES[f])),
+                face: self.physical_face(x),
+                layer: Layer::Wide,
                 cw,
             };
+            (pm, *self)
+        } else if slot_is_wide(s) {
+            let f = opposite(x);
+            let pm = PhysMove::face(self.physical_face(f), cw);
             (pm, Frame(mat_mul(&self.0, &face_rotation(f, cw))))
         } else {
-            let f = slot_face(s);
-            (
-                PhysMove {
-                    face: face_of_normal(mat_vec(&self.0, FACES[f])),
-                    cw,
-                },
-                *self,
-            )
+            (PhysMove::face(self.physical_face(x), cw), *self)
         }
     }
 }
@@ -122,12 +200,13 @@ pub fn scramble_to_cube(moves: &[PhysMove]) -> (Cube, Frame) {
     (c, fr)
 }
 
-/// Convert an internal solution, starting in frame `fr`, to physical moves.
-pub fn solution_to_physical(fr: Frame, sol: &[usize]) -> Vec<PhysMove> {
+/// Convert an internal solution, starting in frame `fr`, to physical moves (with `wide`, wide
+/// internal moves are printed as wide turns: see [`Frame::to_physical`]).
+pub fn solution_to_physical(fr: Frame, sol: &[usize], wide: bool) -> Vec<PhysMove> {
     let mut fr = fr;
     let mut out = vec![];
     for &m in sol {
-        let (pm, nf) = fr.to_physical(m);
+        let (pm, nf) = fr.to_physical(m, wide);
         out.push(pm);
         fr = nf;
     }
@@ -139,7 +218,12 @@ pub fn apply_physical(st: &Stickers, moves: &[PhysMove]) -> Stickers {
     let sm = &defs().sm;
     let mut s = *st;
     for pm in moves {
-        s = permute_stickers(&s, &sm.face_turn(pm.face, pm.cw));
+        let perm = match pm.layer {
+            Layer::Face => sm.face_turn(pm.face, pm.cw),
+            Layer::Wide => sm.wide_turn(pm.face, pm.cw),
+            Layer::Slice => sm.slice_turn(pm.face, pm.cw),
+        };
+        s = permute_stickers(&s, &perm);
     }
     s
 }
@@ -159,10 +243,12 @@ mod tests {
     use super::*;
     use rand::{Rng, SeedableRng};
 
+    /// Random physical moves of every layer kind.
     fn random_moves(rng: &mut impl Rng, n: usize) -> Vec<PhysMove> {
         (0..n)
             .map(|_| PhysMove {
                 face: rng.gen_range(0..8),
+                layer: [Layer::Face, Layer::Wide, Layer::Slice][rng.gen_range(0..3)],
                 cw: rng.gen(),
             })
             .collect()
@@ -173,6 +259,36 @@ mod tests {
         let m = parse_moves("U R' BL F2 d br'").unwrap();
         assert_eq!(format_moves(&m), "U R' BL F F D BR'");
         assert!(parse_moves("X").is_err());
+        assert!(parse_moves("Xs").is_err());
+        assert!(parse_moves("Uq").is_err());
+        let m = parse_moves("Uw Rw' BRw2 Us' bls Ds2' FS").unwrap();
+        assert_eq!(format_moves(&m), "Uw Rw' BRw BRw Us' BLs Ds' Ds' Fs");
+        // every move prints as text that parses back to it
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(7);
+        let sc = random_moves(&mut rng, 200);
+        assert_eq!(parse_moves(&format_moves(&sc)).unwrap(), sc);
+    }
+
+    /// `Us` = `Ds'` etc.: the two names of a slice are the same move.
+    #[test]
+    fn slice_names() {
+        let st = solved_stickers(defs());
+        for f in 0..8 {
+            for cw in [true, false] {
+                let a = PhysMove {
+                    face: f,
+                    layer: Layer::Slice,
+                    cw,
+                };
+                let b = PhysMove {
+                    face: opposite(f),
+                    layer: Layer::Slice,
+                    cw: !cw,
+                };
+                assert_eq!(apply_physical(&st, &[a]), apply_physical(&st, &[b]));
+                assert_eq!(scramble_to_cube(&[a]), scramble_to_cube(&[b]));
+            }
+        }
     }
 
     #[test]
@@ -194,6 +310,26 @@ mod tests {
         }
     }
 
+    /// Internal -> physical -> internal gives the same move and frame, in every frame.
+    #[test]
+    fn physical_round_trip() {
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(8);
+        for _ in 0..30 {
+            let (_, fr) = scramble_to_cube(&random_moves(&mut rng, 20));
+            for m in 0..MAX_MOVES {
+                for wide in [false, true] {
+                    let (pm, nf) = fr.to_physical(m, wide);
+                    assert_eq!(fr.to_internal(pm), (m, nf));
+                    match pm.layer {
+                        Layer::Slice => assert!(pm.face < 4, "slices are named by a front face"),
+                        Layer::Wide => assert!(wide && nf == fr),
+                        Layer::Face => {}
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn inverse_scramble_solves() {
         let d = defs();
@@ -211,9 +347,11 @@ mod tests {
             }
             let inv: Vec<usize> = internal.iter().rev().map(|&m| inverse_move(m)).collect();
             assert_eq!(c.apply_seq(&inv), Cube::solved());
-            let phys = solution_to_physical(fr, &inv);
-            let st = apply_physical(&apply_physical(&solved_stickers(d), &sc), &phys);
-            assert!(is_solved_physical(&st));
+            for wide in [false, true] {
+                let phys = solution_to_physical(fr, &inv, wide);
+                let st = apply_physical(&apply_physical(&solved_stickers(d), &sc), &phys);
+                assert!(is_solved_physical(&st));
+            }
         }
     }
 }

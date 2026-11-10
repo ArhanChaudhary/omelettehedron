@@ -55,10 +55,7 @@ pub fn scrambled_positions(n: usize, len: usize, seed: u64) -> Vec<Cube> {
             while moves.len() < len {
                 let face = rng.gen_range(0..8);
                 if face != last {
-                    moves.push(crate::notation::PhysMove {
-                        face,
-                        cw: rng.gen(),
-                    });
+                    moves.push(crate::notation::PhysMove::face(face, rng.gen()));
                     last = face;
                 }
             }

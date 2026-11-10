@@ -289,7 +289,7 @@ impl<I: AeIndex> Shared<'_, I> {
                         .chain(p2.iter())
                         .map(|&m| conjugate_move(m, &inv))
                         .collect();
-                    let phys = solution_to_physical(self.frame, &internal);
+                    let phys = solution_to_physical(self.frame, &internal, false);
                     let t = self.start.elapsed().as_secs_f64();
                     if self.report == Report::Improvements {
                         println!("{:>9.3}s  {:>2}  {}", t, total, format_moves(&phys));
@@ -751,7 +751,7 @@ impl<I: AeIndex> Shared<'_, I> {
         let mut ms = [0usize; N_MOVES];
         let mut n = 0;
         for m in 0..N_MOVES {
-            if !allowed_after(last, m) {
+            if !allowed_after(false, last, m) {
                 continue;
             }
             ys[n] = f.apply(&t.x, &em, m);
@@ -1218,7 +1218,7 @@ mod tests {
         for last in 0..=N_MOVES {
             for m in 0..N_MOVES {
                 let l = if last == N_MOVES { usize::MAX } else { last };
-                assert_eq!(ALLOWED[last] >> m & 1 == 1, allowed_after(l, m));
+                assert_eq!(ALLOWED[last] >> m & 1 == 1, allowed_after(false, l, m));
             }
         }
         for m in 0..N_MOVES {

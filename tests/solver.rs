@@ -17,10 +17,7 @@ fn tables() -> &'static Tables<AeSym> {
 
 fn random_scramble(rng: &mut impl Rng, n: usize) -> Vec<PhysMove> {
     (0..n)
-        .map(|_| PhysMove {
-            face: rng.gen_range(0..8),
-            cw: rng.gen(),
-        })
+        .map(|_| PhysMove::face(rng.gen_range(0..8), rng.gen()))
         .collect()
 }
 
@@ -74,7 +71,7 @@ impl Mitm {
                     continue;
                 }
                 for m in 0..N_MOVES {
-                    if allowed_after(last, m) {
+                    if allowed_after(false, last, m) {
                         stack.push((x.apply(m), g + 1, m));
                     }
                 }

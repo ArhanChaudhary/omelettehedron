@@ -248,6 +248,13 @@ impl StickerModel {
         let o = FACES[opposite(f)];
         self.perm_where(&face_rotation(f, cw), |p| dot(o, p) <= 3)
     }
+    /// Turn of the middle layer between face `f` and its opposite, in the sense of `f` (the
+    /// stickers between the two cuts `n·p = ±3`; no sticker centroid lies on a cut, and no
+    /// corner sticker lies between them).
+    pub fn slice_turn(&self, f: usize, cw: bool) -> Vec<usize> {
+        let n = FACES[f];
+        self.perm_where(&face_rotation(f, cw), |p| dot(n, p).abs() <= 3)
+    }
     /// Whole-puzzle symmetry (any signed permutation matrix).
     pub fn whole(&self, m: &Mat) -> Vec<usize> {
         self.perm_where(m, |_| true)
@@ -341,6 +348,37 @@ mod tests {
         }
         for (i, (&a, &b)) in A_FACES.iter().zip(&B_FACES).enumerate() {
             assert_eq!((class_index(a), class_index(b)), (i, i));
+        }
+    }
+
+    /// The three layers of an axis: a wide turn is the face turn followed by the slice turn,
+    /// the slice holds no corner stickers, and every sticker is in exactly one layer.
+    #[test]
+    fn layers_of_an_axis() {
+        let sm = StickerModel::new();
+        let compose =
+            |a: &[usize], b: &[usize]| -> Vec<usize> { a.iter().map(|&i| b[i]).collect() };
+        for f in 0..8 {
+            for cw in [true, false] {
+                let (face, wide, slice) = (
+                    sm.face_turn(f, cw),
+                    sm.wide_turn(f, cw),
+                    sm.slice_turn(f, cw),
+                );
+                assert_eq!(compose(&face, &slice), wide);
+                assert_eq!(compose(&slice, &face), wide);
+                // slice = wide followed by the inverse face turn
+                assert_eq!(compose(&wide, &sm.face_turn(f, !cw)), slice);
+                // the slice of f turned like f is the slice of the opposite face turned back
+                assert_eq!(slice, sm.slice_turn(opposite(f), !cw));
+                for (i, s) in sm.st.iter().enumerate() {
+                    if s.kind == Kind::Corner {
+                        assert_eq!(slice[i], i, "slice {f} moves a corner sticker");
+                    }
+                    let n = dot(FACES[f], s.p);
+                    assert!(n.abs() != 3, "sticker on a cut");
+                }
+            }
         }
     }
 

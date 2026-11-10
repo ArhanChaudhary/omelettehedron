@@ -53,7 +53,7 @@ fn canonical_leaves(depth: usize) -> u64 {
         let mut next = [0u64; N_MOVES];
         for (last, &w) in ways.iter().enumerate() {
             for (m, n) in next.iter_mut().enumerate() {
-                if allowed_after(last, m) {
+                if allowed_after(false, last, m) {
                     *n += w;
                 }
             }
