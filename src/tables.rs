@@ -651,7 +651,7 @@ impl CbTable {
     /// is 4.7 MB instead of 89 MB and stays in the cache).
     #[inline(always)]
     pub fn index_fast(f: &FastTables, x: &Fc) -> usize {
-        crate::cbsym::cbsym().index(f, x)
+        f.cbsym.index(f, x)
     }
 }
 
