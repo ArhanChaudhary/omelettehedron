@@ -65,7 +65,14 @@ fn map_1g(bytes: usize) -> Option<(NonNull<u8>, usize)> {
             0,
         )
     };
-    if p == libc::MAP_FAILED {
+    let ok = p != libc::MAP_FAILED;
+    if std::env::var_os("FTO_DEBUG").is_some() {
+        eprintln!(
+            "1 GiB pages for {len} bytes: {}",
+            if ok { "yes" } else { "no (THP)" }
+        );
+    }
+    if !ok {
         return None;
     }
     NonNull::new(p.cast::<u8>()).map(|p| (p, len))
