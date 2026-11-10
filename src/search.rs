@@ -267,6 +267,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         let mut cbi = [0usize; N_MOVES];
         // The CB table (max 8) prunes almost nothing with 6+ moves left: check AE first there.
         let ae_first = budget >= 6;
+        let mut cbe_done = false;
         if ae_first {
             t.ae_ix.index_batch_fast_pf(f, &ys[..n], &mut idx[..n], &t.ae.data);
             let mut k = 0;
@@ -279,6 +280,27 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                     cbi[k] = CbTable::index_fast(f, &ys[k]);
                     prefetch(&t.cb.tab.data[cbi[k] >> 5]);
                     k += 1;
+                }
+            }
+            // The joint table goes before reading the CB words, so their latency overlaps it.
+            if budget <= 8 {
+                if let Some(cbe) = &t.cbe {
+                    let mut ci = [[0usize; 4]; N_MOVES];
+                    for i in 0..k {
+                        cbe.prefetch_all(f, &ys[i], &mut ci[i]);
+                    }
+                    let mut k2 = 0;
+                    for i in 0..k {
+                        if cbe.bound(&ci[i]) as usize <= budget {
+                            ys[k2] = ys[i];
+                            ms[k2] = ms[i];
+                            has[k2] = has[i];
+                            cbi[k2] = cbi[i];
+                            k2 += 1;
+                        }
+                    }
+                    k = k2;
+                    cbe_done = true;
                 }
             }
             n = 0;
@@ -321,7 +343,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
             }
         }
         // The joint corner/B-centre/edge-triple table only adds information near the leaves.
-        if budget <= 8 {
+        if budget <= 8 && !cbe_done {
             if let Some(cbe) = &t.cbe {
                 let mut ci = [[0usize; 4]; N_MOVES];
                 for i in 0..n {
