@@ -25,7 +25,7 @@ unsafe impl<T: Copy + Send> Send for HugeBuf<T> {}
 unsafe impl<T: Copy + Sync> Sync for HugeBuf<T> {}
 
 /// Ask the kernel to back the `bytes` bytes at `p` with transparent huge pages.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(miri)))]
 fn advise_huge(p: *mut u8, bytes: usize) {
     use std::sync::atomic::{AtomicBool, Ordering};
     static WARNED: AtomicBool = AtomicBool::new(false);
@@ -36,8 +36,8 @@ fn advise_huge(p: *mut u8, bytes: usize) {
     }
 }
 
-/// Elsewhere the buffer simply uses the system's normal pages.
-#[cfg(not(target_os = "linux"))]
+/// Elsewhere (and under Miri) the buffer simply uses the system's normal pages.
+#[cfg(not(all(target_os = "linux", not(miri))))]
 fn advise_huge(_p: *mut u8, _bytes: usize) {}
 
 /// Layout of a buffer of `len` elements of `T`, rounded up to whole huge pages and aligned to
@@ -130,5 +130,25 @@ impl<T: Copy> Drop for HugeBuf<T> {
             // SAFETY: allocated with exactly this layout in `zeroed`
             unsafe { dealloc(self.ptr.as_ptr().cast::<u8>(), l) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn huge_buf_contents() {
+        let z: HugeBuf<u64> = HugeBuf::zeroed(1000);
+        assert_eq!(z.len(), 1000);
+        assert!(z.iter().all(|&x| x == 0));
+        let v: Vec<u32> = (0..5000).collect();
+        let b = HugeBuf::from_slice(&v);
+        assert_eq!(&b[..], &v[..]);
+        let mut w: HugeBuf<u16> = HugeBuf::for_overwrite(300);
+        w.fill(7);
+        assert!(w.iter().all(|&x| x == 7));
+        let e: HugeBuf<u8> = HugeBuf::zeroed(0);
+        assert!(e.is_empty());
     }
 }

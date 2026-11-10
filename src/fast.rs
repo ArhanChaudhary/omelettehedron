@@ -575,7 +575,7 @@ mod tests {
     fn simd_helpers_match_scalar() {
         use rand::{Rng, SeedableRng};
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(16);
-        for _ in 0..20_000 {
+        for _ in 0..if cfg!(miri) { 200 } else { 20_000 } {
             let v: [u8; 16] = std::array::from_fn(|_| rng.gen());
             let s: [u8; 16] = std::array::from_fn(|_| rng.gen());
             let want: [u8; 16] = std::array::from_fn(|i| {
