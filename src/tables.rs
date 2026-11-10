@@ -61,6 +61,21 @@ pub trait AeIndex: Send + Sync + 'static {
             out[i] = self.index_fast(f, &xs[i], ar[i]);
         }
     }
+    /// `index_batch_fast` that prefetches each table word as soon as its index is known, so
+    /// the first lookups' latency overlaps the index computation of the later positions.
+    #[inline(always)]
+    fn index_batch_fast_pf(&self, f: &FastTables, xs: &[Fc], out: &mut [usize], tab: &[u64]) {
+        let n = xs.len();
+        let mut ar = [0u32; N_MOVES];
+        for i in 0..n {
+            ar[i] = f.a_rank(&xs[i]);
+            prefetch(self.class_entry(ar[i]));
+        }
+        for i in 0..n {
+            out[i] = self.index_fast(f, &xs[i], ar[i]);
+            prefetch(&tab[out[i] >> 5]);
+        }
+    }
 }
 
 /// Hint that `p` will be read soon.

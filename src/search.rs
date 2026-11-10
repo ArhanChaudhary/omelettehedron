@@ -110,6 +110,9 @@ fn swap_moves() -> [usize; N_MOVES] {
 }
 
 const CHECK_EVERY: u64 = 1 << 14;
+#[allow(non_snake_case)]
+#[inline(always)]
+fn EARLY_CB(b: usize) -> bool { b > 8 }
 
 /// Weight 8^-h of a surviving node with bound h in a task's ordering statistic.
 const STAT_W: [f32; 32] = {
@@ -265,12 +268,19 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         let mut hcs = [0u8; N_MOVES];
         let mut idx = [0usize; N_MOVES];
         let mut cbi = [0usize; N_MOVES];
-        // The CB table (max 8) prunes almost nothing with 7+ moves left: check AE first there.
-        let ae_first = budget >= 7;
+        // The CB table (max 8) prunes almost nothing with 6+ moves left: check AE first there.
+        let ae_first = budget >= 6;
+        let mut cbe_done = false;
         if ae_first {
-            t.ae_ix.index_batch_fast(f, &ys[..n], &mut idx[..n]);
-            for &i in &idx[..n] {
-                prefetch(&t.ae.data[i >> 5]);
+            t.ae_ix.index_batch_fast_pf(f, &ys[..n], &mut idx[..n], &t.ae.data);
+            // Without a joint-table stage to hide the CB latency, fetch the CB words of all
+            // children while the AE words are in flight.
+            let early = EARLY_CB(budget);
+            if early {
+                for i in 0..n {
+                    cbi[i] = CbTable::index_fast(f, &ys[i]);
+                    prefetch(&t.cb.tab.data[cbi[i] >> 5]);
+                }
             }
             let mut k = 0;
             for i in 0..n {
@@ -279,9 +289,34 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                     ys[k] = ys[i];
                     ms[k] = ms[i];
                     has[k] = ha;
-                    cbi[k] = CbTable::index_fast(f, &ys[k]);
-                    prefetch(&t.cb.tab.data[cbi[k] >> 5]);
+                    if early {
+                        cbi[k] = cbi[i];
+                    } else {
+                        cbi[k] = CbTable::index_fast(f, &ys[k]);
+                        prefetch(&t.cb.tab.data[cbi[k] >> 5]);
+                    }
                     k += 1;
+                }
+            }
+            // The joint table goes before reading the CB words, so their latency overlaps it.
+            if budget <= 8 {
+                if let Some(cbe) = &t.cbe {
+                    let mut ci = [[0usize; 4]; N_MOVES];
+                    for i in 0..k {
+                        cbe.prefetch_all(f, &ys[i], &mut ci[i]);
+                    }
+                    let mut k2 = 0;
+                    for i in 0..k {
+                        if cbe.bound(&ci[i]) as usize <= budget {
+                            ys[k2] = ys[i];
+                            ms[k2] = ms[i];
+                            has[k2] = has[i];
+                            cbi[k2] = cbi[i];
+                            k2 += 1;
+                        }
+                    }
+                    k = k2;
+                    cbe_done = true;
                 }
             }
             n = 0;
@@ -310,10 +345,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                     k += 1;
                 }
             }
-            t.ae_ix.index_batch_fast(f, &ys[..k], &mut idx[..k]);
-            for &i in &idx[..k] {
-                prefetch(&t.ae.data[i >> 5]);
-            }
+            t.ae_ix.index_batch_fast_pf(f, &ys[..k], &mut idx[..k], &t.ae.data);
             n = 0;
             for i in 0..k {
                 let ha = decode(h_ae, t.ae.get(idx[i]));
@@ -327,7 +359,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
             }
         }
         // The joint corner/B-centre/edge-triple table only adds information near the leaves.
-        if budget <= 8 {
+        if budget <= 8 && !cbe_done {
             if let Some(cbe) = &t.cbe {
                 let mut ci = [[0usize; 4]; N_MOVES];
                 for i in 0..n {
