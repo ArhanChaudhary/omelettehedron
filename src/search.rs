@@ -383,6 +383,7 @@ impl<I: AeIndex> Shared<'_, I> {
             moves &= !A_MOVES;
         }
         let ae_first = budget >= AE_FIRST;
+        let mut ar = [0u32; N_MOVES];
         while moves != 0 {
             let m = moves.trailing_zeros() as usize;
             moves &= moves - 1;
@@ -390,7 +391,10 @@ impl<I: AeIndex> Shared<'_, I> {
             // generated once it passes (in `stage2`).
             let y = &mut fr.ys[n & 15];
             f.apply_ae_into(y, x, fw, m);
-            if !ae_first {
+            if ae_first {
+                ar[n & 15] = f.a_rank(y);
+                t.ae_ix.prefetch_class(ar[n & 15]);
+            } else {
                 f.apply_cb_into(y, x, m);
             }
             fr.ms[n & 15] = m as u8;
@@ -404,8 +408,10 @@ impl<I: AeIndex> Shared<'_, I> {
             self.time_up();
         }
         if ae_first {
-            t.ae_ix
-                .index_batch_fast_pf(f, &fr.ys[..n], &mut fr.idx[..n], &t.ae.data);
+            for i in 0..n {
+                fr.idx[i] = t.ae_ix.index_fast(f, &fr.ys[i], ar[i]);
+                prefetch_at(&t.ae.data, fr.idx[i] >> 5);
+            }
         } else {
             for i in 0..n {
                 fr.cbi[i] = CbTable::index_fast(f, &fr.ys[i]);
