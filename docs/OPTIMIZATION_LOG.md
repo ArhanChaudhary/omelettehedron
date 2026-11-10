@@ -47,6 +47,9 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | With slices, last proof iteration restricted to paths ending in a slice | `neg/slicelast` | neutral: few nodes reach the last level (48T node counts within 0.1%); slice optimal 0.97x (48T) / 1.05x (1T) | no |
 | Profile-guided build (LLVM PGO, training on other seeds) | `neg/pgo` | nodes/s 0.987x (48T) / 0.947x (1T); optimal 1.002x / 0.978x time | no |
 | Sibling pipeline three deep (first lookups three siblings ahead) | `neg/pipe4` | nodes/s 1.008x / 0.997x; optimal 1.009x / 0.983x: the table-read stall is not prefetch timing | no |
+| `-l L` searched as a target pass at L once a first solution exists | `neg/lpass` | time to a solution of at most L 1.01x (48T, -l 21) / 1.10x (1T, -l 22): the search already prunes against its best | no |
+| `AE_FIRST` 5 or 7 instead of 6 (after the merged traversal) | (no branch: constant) | optimal 1.03x / 1.01x (5) and 1.04x / 1.01x (7) time; nodes/s 0.97-1.02x | no |
+| `FTO_TASKN` 128 or 2048 instead of 512 | (no branch: env knob) | optimal 19-move set 1.04x / 1.03x, random position 3 0.98x / 0.97x | no |
 
 Cumulative, first working version -> final main 8837126 of 2026-11-10 (48 threads, 40 random
 positions, 5 s): mean best length 21.60 -> 21.175; first solution 86 ms -> 5.7 ms. Optimal mode,
