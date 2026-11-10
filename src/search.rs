@@ -268,10 +268,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         // The CB table (max 8) prunes almost nothing with 7+ moves left: check AE first there.
         let ae_first = budget >= 7;
         if ae_first {
-            t.ae_ix.index_batch_fast(f, &ys[..n], &mut idx[..n]);
-            for &i in &idx[..n] {
-                prefetch(&t.ae.data[i >> 5]);
-            }
+            t.ae_ix.index_batch_fast_pf(f, &ys[..n], &mut idx[..n], &t.ae.data);
             let mut k = 0;
             for i in 0..n {
                 let ha = decode(h_ae, t.ae.get(idx[i]));
@@ -310,10 +307,7 @@ impl<'a, I: AeIndex> Shared<'a, I> {
                     k += 1;
                 }
             }
-            t.ae_ix.index_batch_fast(f, &ys[..k], &mut idx[..k]);
-            for &i in &idx[..k] {
-                prefetch(&t.ae.data[i >> 5]);
-            }
+            t.ae_ix.index_batch_fast_pf(f, &ys[..k], &mut idx[..k], &t.ae.data);
             n = 0;
             for i in 0..k {
                 let ha = decode(h_ae, t.ae.get(idx[i]));
