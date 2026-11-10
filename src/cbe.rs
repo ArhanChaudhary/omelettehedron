@@ -58,7 +58,11 @@ fn conj_renorm_corner(c: u16, m: usize) -> Option<(u16, usize)> {
 /// [`conj_renorm_corner`] with the sticker permutations of the symmetries precomputed. `None`
 /// if no rotation re-fixes the front corner (never: the rotations act transitively on the
 /// vertices).
-fn conj_renorm_corner_with(c: u16, m: usize, wps: &[Vec<usize>]) -> Option<(u16, usize)> {
+pub(crate) fn conj_renorm_corner_with(
+    c: u16,
+    m: usize,
+    wps: &[Vec<usize>],
+) -> Option<(u16, usize)> {
     let s = syms();
     let (cp, co) = corners().id_to_state[c as usize];
     let st = Cube {
