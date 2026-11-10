@@ -92,6 +92,9 @@ target/release/omelettehedron solve --tier large -n 1000 "..."
 # one scramble per line on stdin
 target/release/omelettehedron solve --tier large -t 1 < scrambles.txt
 
+# a position given as the algorithm that solves it: solve that algorithm's inverse
+target/release/omelettehedron solve --tier large --inverse "U F BL B' U B' BL BR' ..."
+
 # resume a long optimal proof: an earlier run (FTO_DEBUG=1) logged "pass 20 complete: no solution
 # of at most 20 moves", so no solution is shorter than 21 (a wrong bound can give a wrong answer)
 FTO_DEBUG=1 target/release/omelettehedron solve --tier large --lower-bound 21 "..."
