@@ -44,6 +44,29 @@ pub fn random_positions(n: usize, seed: u64) -> Vec<Cube> {
     (0..n).map(|_| Cube::random(&mut rng)).collect()
 }
 
+/// Seeded random-move scrambles of `len` face turns (no face twice in a row).
+pub fn scrambled_positions(n: usize, len: usize, seed: u64) -> Vec<Cube> {
+    use rand::Rng;
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(seed);
+    (0..n)
+        .map(|_| {
+            let mut moves = vec![];
+            let mut last = 8;
+            while moves.len() < len {
+                let face = rng.gen_range(0..8);
+                if face != last {
+                    moves.push(crate::notation::PhysMove {
+                        face,
+                        cw: rng.gen(),
+                    });
+                    last = face;
+                }
+            }
+            crate::notation::scramble_to_cube(&moves).0
+        })
+        .collect()
+}
+
 fn length_at(events: &[(f64, usize)], t: f64) -> Option<usize> {
     events.iter().filter(|e| e.0 <= t).map(|e| e.1).min()
 }
@@ -53,10 +76,14 @@ pub fn run<I: AeIndex>(
     tier: &str,
     n: usize,
     seed: u64,
+    scramble_len: Option<usize>,
     limits: &Limits,
     verbose: bool,
 ) -> Summary {
-    let positions = random_positions(n, seed);
+    let positions = match scramble_len {
+        Some(len) => scrambled_positions(n, len, seed),
+        None => random_positions(n, seed),
+    };
     let mut results = vec![];
     for (i, c) in positions.iter().enumerate() {
         let o = solve(tables, *c, Frame::identity(), limits, Report::Quiet);

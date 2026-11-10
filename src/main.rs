@@ -81,6 +81,10 @@ enum Cmd {
         scrambles: usize,
         #[arg(long, default_value_t = 2026)]
         seed: u64,
+        /// use seeded random-move scrambles of this many face turns instead of random
+        /// positions (e.g. to benchmark optimal solving)
+        #[arg(long)]
+        scramble_len: Option<usize>,
         #[command(flatten)]
         stop: StopArgs,
         /// write the full results as JSON to this file
@@ -244,6 +248,7 @@ fn main() {
         Cmd::Bench {
             scrambles,
             seed,
+            scramble_len,
             stop,
             json,
             tab,
@@ -252,7 +257,15 @@ fn main() {
             let p = pool(tab.threads);
             p.install(|| {
                 dispatch!(tab, |t, name| {
-                    let s = bench::run(&t, name, scrambles, seed, &limits, tab.verbose);
+                    let s = bench::run(
+                        &t,
+                        name,
+                        scrambles,
+                        seed,
+                        scramble_len,
+                        &limits,
+                        tab.verbose,
+                    );
                     bench::print_summary(&s);
                     if let Some(path) = &json {
                         std::fs::write(path, serde_json::to_string_pretty(&s).unwrap())
