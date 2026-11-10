@@ -24,6 +24,9 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | Class-B lookups issued with the CB/CBE stages | `opt/bpath` | +6% / +4% nodes/s; optimal 0.95x | yes |
 | Faster startup (parallel table read, orbit-based symmetry classes) | `opt/startup2` | large-tier startup 1.07 -> 0.33 s (48T), 7.9 -> 3.3 s (1T); search neutral | yes |
 | Cheaper per-node compute (pext where fast, padded tables, deferred CB reads) | `opt/micro-compute` | 1.29x / 1.28x nodes/s; optimal 0.78x | yes |
+| Direct distance-to-solved bound (edges 12!/2 + corners), from a competing solver | `opt/direct` | no node pruned that the existing bounds keep; optimal 1.10x / 1.12x time | no |
+| Joint table also on the class-B side | `opt/bcbe` | neutral (optimal 1.02x / 1.00x) | no |
+| Children visited in order of smallest bound | `opt/childorder2` | neutral (optimal 1.01x / 1.00x; 48T first solution 1.04x) | no |
 | Lane-interleaved search (egg's lanes) | `opt/lanes` | slower (search is compute-bound) | no |
 | Sibling pruning in the AE stage | `opt/sibling` | slower (exposes a second DRAM latency) | no |
 
