@@ -51,8 +51,8 @@ struct Cli {
 
 #[derive(clap::Args, Clone)]
 struct TableArgs {
-    /// Pruning-table size (required; there is no default): small (~260 MB), medium (~1.2 GB),
-    /// large (~8 GB) or huge (~31 GB). Larger tiers search fewer nodes.
+    /// Pruning-table size (required; there is no default): small (~135 MB), medium (~1.0 GB),
+    /// large (~8 GB) or huge (~30 GB). Larger tiers search fewer nodes; large is the fastest.
     #[arg(long, value_enum)]
     tier: Tier,
     /// Directory for pruning tables (default: $FTO_TABLES or ./tables)
@@ -126,6 +126,7 @@ enum Cmd {
         /// Solve this many seeded random positions instead of reading scrambles
         #[arg(long)]
         random: Option<usize>,
+        /// Seed of the random positions (`--random`)
         #[arg(long, default_value_t = 1)]
         seed: u64,
         #[command(flatten)]
@@ -141,6 +142,7 @@ enum Cmd {
         /// number of random positions
         #[arg(short = 'N', long, default_value_t = 20)]
         scrambles: usize,
+        /// Seed of the random positions or scrambles
         #[arg(long, default_value_t = 2026)]
         seed: u64,
         /// use seeded random-move scrambles of this many face turns instead of random

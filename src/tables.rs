@@ -18,13 +18,13 @@ use std::path::{Path, PathBuf};
     Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Serialize, serde::Deserialize,
 )]
 pub enum Tier {
-    /// ~260 MB: edge triples without chirality, 288-fold symmetry
+    /// ~135 MB: edge triples without chirality, 288-fold symmetry
     Small,
-    /// ~1.2 GB: full edge coset, 288-fold symmetry
+    /// ~1.0 GB: full edge coset, 288-fold symmetry
     Medium,
     /// medium + the joint corner/B-centre/edge-triple table (~8 GB)
     Large,
-    /// relabel-only edge-coset table (~23 GB) + the joint table (~31 GB in total)
+    /// relabel-only edge-coset table (~23 GB) + the joint table (~30 GB in total)
     Huge,
 }
 
