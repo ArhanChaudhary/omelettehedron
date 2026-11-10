@@ -50,7 +50,7 @@ if [ "${FTO_CHECK_FAST:-0}" != 1 ]; then
         out=$(RUSTFLAGS="-C target-feature=+simd128" cargo test --release --lib --target wasm32-wasip1 \
             --no-run --message-format=json 2>/dev/null |
             sed -n 's/.*"executable":"\([^"]*\.wasm\)".*/\1/p' | tail -1)
-        timeout 600 "$bun" scripts/wasi-run.mjs "$out"
+        timeout 600 "$bun" scripts/wasi-run.mjs "$out" --test-threads=1
     else
         not_checked+=("wasm32 tests (bun missing)")
     fi
