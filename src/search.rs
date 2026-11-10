@@ -93,6 +93,11 @@ struct Shared<'a, I: AeIndex> {
     start: Instant,
     best_len: AtomicUsize,
     count: AtomicU64,
+    /// a solution of at most this length is optimal (depth + 1 of the iteration in progress,
+    /// 0 before the first): see `solve`
+    proof_len: AtomicUsize,
+    /// set when such a solution was found
+    proven: AtomicBool,
     nodes: AtomicU64,
     /// leaves that turned out not to be in `H_A` (rare: the tables certify the rest)
     rejected: AtomicU64,
@@ -223,6 +228,14 @@ impl<I: AeIndex> Shared<'_, I> {
                         length: total,
                     });
                     self.best_len.store(total, Ordering::Relaxed);
+                    // Every iteration below the current one is complete, so a solution of
+                    // length depth + 1 is optimal at once (see `solve`): stop the iteration.
+                    if self.limits.max_solutions.is_none()
+                        && total <= self.proof_len.load(Ordering::Relaxed)
+                    {
+                        self.proven.store(true, Ordering::Relaxed);
+                        self.stop.store(true, Ordering::Relaxed);
+                    }
                     if self.limits.max_length.is_some_and(|l| total <= l) {
                         self.stop.store(true, Ordering::Relaxed);
                     }
@@ -718,7 +731,8 @@ pub fn solve<I: AeIndex>(
     };
     // Every solution is a prefix followed by class-A moves, so one variant would suffice to
     // prove optimality; both are kept because the earlier a short solution is found, the more
-    // the class-B bound prunes (measured: one variant was 1.9-3.9x slower in optimal mode).
+    // the class-B bound prunes (measured: one variant was 1.9-3.9x slower in optimal mode),
+    // and because with both the proof can stop one iteration early (see the main loop).
     let sh = Shared {
         t,
         variants,
@@ -728,6 +742,8 @@ pub fn solve<I: AeIndex>(
         start,
         best_len: AtomicUsize::new(usize::MAX),
         count: AtomicU64::new(0),
+        proof_len: AtomicUsize::new(0),
+        proven: AtomicBool::new(false),
         nodes: AtomicU64::new(0),
         rejected: AtomicU64::new(0),
         stop: AtomicBool::new(false),
@@ -749,13 +765,25 @@ pub fn solve<I: AeIndex>(
     let mut prev_ids: Vec<u32> = vec![];
     let mut prev_nodes: Option<u64> = None;
     loop {
-        if depth >= sh.best_len.load(Ordering::Relaxed) {
+        // Optimality is proven one iteration before depth reaches the best length. The
+        // iteration at depth best - 1 could only improve on the best with a leaf that is solved
+        // (phase-2 length 0): a path of that length that ends in a class-B move and solves the
+        // puzzle. Such a path is a prefix ending in a class-A move followed by class-B moves, so
+        // the class-B variant already found it at a smaller depth, in an iteration completed
+        // before this one. (This needs both variants in every iteration.) When solutions are
+        // counted, that iteration still yields completions (longer ones), so it is run.
+        let proof_depth = depth + usize::from(limits.max_solutions.is_none());
+        if proof_depth >= sh.best_len.load(Ordering::Relaxed) {
             optimal = true;
             break;
         }
         if limits.max_depth.is_some_and(|d| depth > d) {
             break;
         }
+        // For the same reason a solution of length depth + 1 found during this iteration is
+        // optimal at once (no shorter one exists after the iterations below), and the search
+        // stops there instead of finishing the iteration.
+        sh.proof_len.store(depth + 1, Ordering::Relaxed);
         // Small iterations run on this thread: waking the pool costs more than they do.
         let predicted = prev_nodes.map_or(if depth < 14 { 0 } else { u64::MAX }, |n| {
             n.saturating_mul(16)
@@ -787,6 +815,7 @@ pub fn solve<I: AeIndex>(
             .collect();
         let next = std::sync::atomic::AtomicUsize::new(0);
         let nodes_before = sh.nodes.load(Ordering::Relaxed);
+        let var_nodes = [AtomicU64::new(0), AtomicU64::new(0)];
         let tree_ref = &tree;
         let worker = || {
             let mut path: Vec<usize> = Vec::with_capacity(64);
@@ -816,6 +845,7 @@ pub fn solve<I: AeIndex>(
                 }
                 stats[i].store(stat.to_bits(), Ordering::Relaxed);
                 sh.nodes.fetch_add(nodes - before, Ordering::Relaxed);
+                var_nodes[task.v % 2].fetch_add(nodes - before, Ordering::Relaxed);
             }
         };
         if inline {
@@ -829,6 +859,7 @@ pub fn solve<I: AeIndex>(
             });
         }
         prev_nodes = Some(sh.nodes.load(Ordering::Relaxed) - nodes_before);
+        let var_counts = var_nodes.map(AtomicU64::into_inner);
         for &i in &prev_ids {
             node_stat[i as usize] = 0.0;
         }
@@ -840,13 +871,19 @@ pub fn solve<I: AeIndex>(
         if std::env::var_os("FTO_DEBUG").is_some() {
             eprintln!("  depth {depth}: split done at {t_split:.4}s");
             eprintln!(
-                "  depth {depth}: {} tasks, {} nodes, {} solutions, best {:?}, {:.3}s",
+                "  depth {depth}: {} tasks, {} nodes ({} / {} by variant), {} solutions, best {:?}, {:.3}s",
                 n_tasks,
                 sh.nodes.load(Ordering::Relaxed),
+                var_counts[0],
+                var_counts[1],
                 sh.count.load(Ordering::Relaxed),
                 sh.best_len.load(Ordering::Relaxed),
                 start.elapsed().as_secs_f64()
             );
+        }
+        if sh.proven.load(Ordering::Relaxed) {
+            optimal = true;
+            break;
         }
         if sh.stop.load(Ordering::Relaxed) || sh.time_up() {
             break;
