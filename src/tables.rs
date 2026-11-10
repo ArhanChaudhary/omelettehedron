@@ -827,26 +827,25 @@ impl<I: AeIndex> Tables<I> {
         let ae_path = dir.join(format!("{}.prun", ae_ix.name()));
         // Check all tables of the tier before generating any (a table that exists is loaded:
         // it only needs memory). 2 bits per entry.
-        let planned = |path: PathBuf, size: &dyn Fn() -> usize, working: bool| {
+        // (generation needs no memory beyond the tables themselves: the large tier peaks at
+        // 8.1 GB for 8.1 GB of tables)
+        let planned = |path: PathBuf, size: &dyn Fn() -> usize| {
             let bytes =
                 std::fs::metadata(&path).map_or_else(|_| size().div_ceil(4) as u64, |m| m.len());
             crate::preflight::Planned {
                 path,
                 bytes,
-                // (the joint table's build keeps a second array of raw distances)
-                working_set: if working { bytes } else { 0 },
+                working_set: 0,
             }
         };
         let mut plan = vec![
-            planned(ae_path.clone(), &|| ae_ix.size(), false),
-            planned(dir.join("cb.prun"), &|| N_CB, false),
+            planned(ae_path.clone(), &|| ae_ix.size()),
+            planned(dir.join("cb.prun"), &|| N_CB),
         ];
         if with_cbe {
-            plan.push(planned(
-                dir.join("cbe.prun"),
-                &|| crate::cbe::CbeIndex::new().size(),
-                true,
-            ));
+            plan.push(planned(dir.join("cbe.prun"), &|| {
+                crate::cbe::CbeIndex::new().size()
+            }));
         }
         crate::preflight::check_plan(&plan)?;
         let ae = load_or_build(&ae_path, ae_ix.size(), verbose, || {
