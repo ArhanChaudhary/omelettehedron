@@ -141,6 +141,9 @@ pub fn check_plan(tables: &[Planned]) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    // (without statvfs and /proc, e.g. on WebAssembly, the limits are unknown and nothing is
+    // refused)
+    #[cfg(unix)]
     #[test]
     fn rejects_tables_that_do_not_fit() {
         let dir = std::env::temp_dir().join("omelettehedron-preflight-test");
