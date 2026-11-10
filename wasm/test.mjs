@@ -31,16 +31,16 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Short random-move scrambles (`randomMoves` of omelettehedron.mjs: lengths 6..14, seeds
 // 11..17) with the native optimal length and one-thread node count (FTO_DEBUG=1
-// FTO_TARGET_GAP=0 omelettehedron solve --tier small -j 1 -v, at opt/merged: the module's
-// solves have a time limit, which turns the one-thread target-length passes off).
+// omelettehedron solve --tier small -j 1 -v, after fix/cancel: the module's optimal solves have
+// no time limit, only a cancellation deadline, so they keep the one-thread target-length passes).
 const CASES = [
   ["F' BL' D' F' L' BR'", 6, 62],
   ["B BR U' BR L B' D F'", 8, 56],
   ["BR' U' R' D B' BL' U B U F'", 10, 58],
-  ["BL D L B U' BL L' F' D R L'", 11, 582],
+  ["BL D L B U' BL L' F' D R L'", 11, 486],
   ["D' L' F BL BR' F B L' D' U' F L", 12, 214],
   ["R' B BR BL' U F' R' L U' BR' B' D F'", 13, 2000],
-  ["U R' B R' U BL' BR' R B BL' U L BL' U", 14, 467558],
+  ["U R' B R' U BL' BR' R B BL' U L BL' U", 14, 169652],
 ];
 
 /** Recompute the native values with FTO_NATIVE and FTO_TABLES, if set. */
@@ -50,7 +50,7 @@ function nativeCases() {
   if (!native || !tables) return CASES;
   return CASES.map(([scramble]) => {
     const p = Bun.spawnSync([native, 'solve', '--tier', 'small', '--tables', tables, '-j', '1', '-v', scramble], {
-      env: { ...process.env, FTO_DEBUG: '1', FTO_TARGET_GAP: '0' },
+      env: { ...process.env, FTO_DEBUG: '1' },
     });
     const text = p.stdout.toString() + p.stderr.toString();
     const length = Number(/^length (\d+) in/m.exec(text)?.[1]);

@@ -52,10 +52,11 @@ use std::time::{Duration, Instant};
 /// Whether this build has threads (`wasm32-wasip1-threads`, see build.rs).
 const THREADS: bool = cfg!(wasm_threads);
 
-/// The time limit of an optimal solve. The JavaScript wrapper cancels a solve by moving the
-/// module's monotonic clock forward (see `cancel` in omelettehedron.mjs), which only stops a
-/// search that has a time limit; this one is long enough never to matter otherwise. (The time
-/// limit has no other effect on the search: the optimality proof is the same without one.)
+/// The cancellation deadline of every solve (`Limits::cancel_after`). The JavaScript wrapper
+/// cancels a solve by moving the module's monotonic clock forward (see `cancel` in
+/// omelettehedron.mjs) past it; it is long enough never to matter otherwise, and unlike a time
+/// limit it does not change the search (an optimal solve keeps the one-thread target-length
+/// passes).
 const NO_LIMIT: Duration = Duration::from_secs(1_000_000);
 
 /// The WASI reactor initializer, which a Rust cdylib does not get from wasi-libc (its
@@ -409,14 +410,17 @@ pub unsafe extern "C" fn fto_solve(
         let moves = parse_moves(text?)?;
         ensure_pool(state, 1)?;
         let t = tables(state)?;
+        // A time limit is a stopping rule; without one the solve is cancellable (by moving
+        // the clock past `NO_LIMIT`) but searches exactly as an optimal solve.
         let time = if seconds > 0.0 {
-            Duration::try_from_secs_f64(seconds).map_err(|e| format!("time limit: {e}"))?
+            Some(Duration::try_from_secs_f64(seconds).map_err(|e| format!("time limit: {e}"))?)
         } else {
-            NO_LIMIT
+            None
         };
         let limits = Limits {
-            time: Some(time),
+            time,
             max_length: (max_length > 0).then_some(max_length as usize),
+            cancel_after: Some(NO_LIMIT),
             ..Limits::default()
         };
         let (cube, frame) = scramble_to_cube(&moves);
@@ -455,7 +459,7 @@ pub extern "C" fn fto_random_scramble(seed: u32) -> i32 {
             .ok_or("no random position")?;
         let limits = Limits {
             max_solutions: Some(1),
-            time: Some(NO_LIMIT),
+            cancel_after: Some(NO_LIMIT),
             ..Limits::default()
         };
         let o = solve(t, cube, Frame::identity(), &limits, Report::Quiet);

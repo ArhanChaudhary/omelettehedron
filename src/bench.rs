@@ -205,6 +205,6 @@ pub fn limits_with_time(
         time: secs.map(Duration::try_from_secs_f64).transpose()?,
         max_length: max_len,
         max_solutions: max_sol,
-        max_depth: None,
+        ..Limits::default()
     })
 }

@@ -30,9 +30,16 @@ pub struct Limits {
     pub max_length: Option<usize>,
     /// stop after the phase-1 iteration with this depth bound (used by tests)
     pub max_depth: Option<usize>,
+    /// Cancellation: stop after this much time without changing the search. Unlike `time`
+    /// (a stopping rule: the search then keeps reporting improvements), the search runs as if
+    /// there were no limit, e.g. with the one-thread target-length passes of optimal mode. The
+    /// WebAssembly module cancels a solve by moving its clock past this.
+    pub cancel_after: Option<Duration>,
 }
 
 impl Limits {
+    /// No stopping rule (a cancellation deadline is not one): the search only proves the
+    /// optimal length.
     pub fn is_optimal(&self) -> bool {
         self.max_solutions.is_none()
             && self.time.is_none()
@@ -333,6 +340,12 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
     }
 
     fn time_up(&self) -> bool {
+        if let Some(t) = self.limits.cancel_after {
+            if self.start.elapsed() >= t {
+                self.stop.store(true, Ordering::Relaxed);
+                return true;
+            }
+        }
         if let Some(t) = self.limits.time {
             if self.start.elapsed() >= t {
                 self.stop.store(true, Ordering::Relaxed);
