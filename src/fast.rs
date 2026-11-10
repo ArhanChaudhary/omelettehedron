@@ -29,7 +29,8 @@ pub struct FastTables {
     shuf_e: [[u8; 16]; N_MOVES],
     /// chirality flip of a triple occupying a 12-bit position mask, per move (bitsets)
     flip_m: Box<[[u64; 64]; N_MOVES]>,
-    corner: Vec<[u16; N_MOVES]>,
+    /// corner move table, padded to 1024 ids so that `& 1023` replaces bounds checks
+    corner: Box<[[u16; N_MOVES]; 1024]>,
     pub(crate) c12: Box<[u16; 4096]>,
     /// rank tables pre-scaled by their weight in the multiset rank
     r12: Box<[u32; 4096]>,
@@ -57,13 +58,10 @@ fn fast_pext() -> bool {
         if !std::arch::is_x86_feature_detected!("bmi2") {
             return false;
         }
-        // SAFETY: cpuid is available on every x86_64 CPU
-        let (v0, v1) = unsafe {
-            (
-                core::arch::x86_64::__cpuid(0),
-                core::arch::x86_64::__cpuid(1),
-            )
-        };
+        let (v0, v1) = (
+            core::arch::x86_64::__cpuid(0),
+            core::arch::x86_64::__cpuid(1),
+        );
         let amd = (v0.ebx, v0.edx, v0.ecx) == (0x6874_7541, 0x6974_6e65, 0x444d_4163);
         let hygon = (v0.ebx, v0.edx, v0.ecx) == (0x6f67_7948, 0x6e65_476e, 0x656e_6975);
         let family = ((v1.eax >> 8) & 0xf) + ((v1.eax >> 20) & 0xff);
@@ -207,7 +205,11 @@ impl FastTables {
             shuf_b,
             shuf_e,
             flip_m: boxed(&flip_m),
-            corner: mt_c,
+            corner: {
+                let mut c = Box::new([[0u16; N_MOVES]; 1024]);
+                c[..mt_c.len()].copy_from_slice(&mt_c);
+                c
+            },
             c12: boxed(&c12),
             r12: boxed(&r12),
             r9: boxed(&r9),
@@ -253,7 +255,7 @@ impl FastTables {
             a: shuffle(&x.a, &self.shuf_a[m]),
             b: shuffle(&x.b, &self.shuf_b[m]),
             e: shuffle(&x.e, &self.shuf_e[m]),
-            c: self.corner[x.c as usize][m],
+            c: self.corner[x.c as usize & 1023][m & 15],
             ebits: x.ebits ^ flips,
         }
     }
@@ -359,6 +361,28 @@ pub fn shuffle(v: &[u8; 16], s: &[u8; 16]) -> [u8; 16] {
                 v[(s[i] & 15) as usize]
             }
         })
+    }
+}
+
+/// Bit mask of the positions (0..12) holding label `l`.
+#[inline(always)]
+pub fn label_mask(v: &[u8; 16], l: u8) -> u16 {
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+    // SAFETY: SSE2 is baseline on x86_64
+    unsafe {
+        use core::arch::x86_64::*;
+        let x = _mm_loadu_si128(v.as_ptr() as *const __m128i);
+        (_mm_movemask_epi8(_mm_cmpeq_epi8(x, _mm_set1_epi8(l as i8))) & 0xfff) as u16
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
+    {
+        let mut m = 0u16;
+        for p in 0..12 {
+            if v[p] == l {
+                m |= 1 << p;
+            }
+        }
+        m
     }
 }
 
