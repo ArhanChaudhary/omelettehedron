@@ -31,13 +31,14 @@ Mean best length, 40 random positions (48 threads) / 20 (1 thread):
 | 10 x 17-move scrambles | 1 | 3.6 s (0.36 s per position; target-length passes) | 16.5 |
 
 Random positions (48 threads, single runs; in brackets the same proof before the early proof end
-and the sibling pipeline):
+and the sibling pipeline). The last column proves the same positions with `FTO_FULL_PROOF=1`
+(no early end, no target passes), main 496b389: the proven lengths agree.
 
-| seed | optimal | first solution | proof |
-|---|---|---|---|
-| 1 | 21 | 25 @ 12 ms | 64.8 s (419 s on 2026-11-10 morning) |
-| 2 | 21 | 24 @ 3 ms | 64.6 s (481 s) |
-| 3 | 20 | 23 @ 6 ms | 5.2 s (39 s) |
+| seed | optimal | first solution | proof | full proof |
+|---|---|---|---|---|
+| 1 | 21 | 25 @ 12 ms | 64.8 s (419 s on 2026-11-10 morning) | 275.6 s |
+| 2 | 21 | 24 @ 3 ms | 64.6 s (481 s) | 316.2 s |
+| 3 | 20 | 23 @ 6 ms | 5.2 s (39 s) | 26.1 s |
 
 ## Move sets (`--moves`)
 
