@@ -55,10 +55,11 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | `AE_FIRST` 5 or 7 instead of 6 (after the merged traversal) | (no branch: constant) | optimal 1.03x / 1.01x (5) and 1.04x / 1.01x (7) time; nodes/s 0.97-1.02x | no |
 | `FTO_TASKN` 128 or 2048 instead of 512 | (no branch: env knob) | optimal 19-move set 1.04x / 1.03x, random position 3 0.98x / 0.97x | no |
 
-Cumulative, first working version -> final main 8837126 of 2026-11-10 (48 threads, 40 random
-positions, 5 s): mean best length 21.60 -> 21.175; first solution 86 ms -> 5.7 ms. Optimal mode,
-10 x 19-move scrambles at 48 threads: 15.1 s -> 0.90 s mean per position; random positions
-(seeds 1-3) 419 / 481 / 39 s (morning of 2026-11-10) -> 54 / 62 / 5.0 s. Round 2 alone
+Cumulative, first working version -> main b0da038 of 2026-11-10 (48 threads, 40 random
+positions, 5 s): mean best length 21.60 -> 21.175; first solution 86 ms -> 6.0 ms. Optimal mode,
+10 x 19-move scrambles at 48 threads: 15.1 s -> 0.80 s mean per position; random positions
+(seeds 1-3) 419 / 481 / 39 s (morning of 2026-11-10) -> 55 / 64 / 5.3 s (single runs vary by a
+few seconds). Round 2 alone
 (main-r2 -> micro-compute): 1.52x nodes/s at 48T and 1T, first solution 0.36x (48T) / 0.64x
 (1T), optimal proofs 0.65x / 0.67x time.
 

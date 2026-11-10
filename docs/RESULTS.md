@@ -24,16 +24,16 @@ Mean best length, 40 random positions (48 threads) / 20 (1 thread):
 | search speed | 1.71e9 nodes/s | 3.8e7 nodes/s |
 
 Since the merged traversal (`opt/merged`; a node alive in both variants now counts once), final
-main 8837126 of 2026-11-10 (single run of the same suites): first solution 22.98 moves @ 5.7 ms
-(48T) / 23.25 @ 0.17 s (1T); best after 0.1 s 21.75 / 22.70, after 1 s 21.50 / 22.35, after
+main b0da038 of 2026-11-10 (single run of the same suites): first solution 22.98 moves @ 6.0 ms
+(48T) / 23.25 @ 0.17 s (1T); best after 0.1 s 21.75 / 22.70, after 1 s 21.525 / 22.35, after
 5 s 21.175 / 22.00 (two of the 40 positions reach their 5 s best later than before);
-1.56e9 / 3.57e7 nodes/s.
+1.52e9 / 3.54e7 nodes/s.
 
 ## Proven optimal solutions
 
 | set | threads | time to prove (total) | mean optimal length |
 |---|---|---|---|
-| 10 x 19-move scrambles | 48 | 9.0 s (0.90 s per position, final main 8837126; 12.5 s before `opt/merged`) | 18.1 |
+| 10 x 19-move scrambles | 48 | 8.0 s (0.80 s per position, main b0da038; 12.5 s before `opt/merged`) | 18.1 |
 | 10 x 17-move scrambles | 1 | 2.9 s (0.29 s per position; target-length passes; 3.6 s before) | 16.5 |
 
 Random positions (48 threads). "Proof": main ddcb5ba with the merged traversal (mean of two
