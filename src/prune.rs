@@ -285,6 +285,17 @@ fn prefetch_write<T>(p: &T) {
             std::ptr::from_ref(p).cast::<i8>(),
         );
     }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: PRFM is a hint and never faults, whatever the address
+    unsafe {
+        core::arch::asm!(
+            "prfm pstl1keep, [{0}]",
+            in(reg) std::ptr::from_ref(p),
+            options(nostack, preserves_flags)
+        );
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let _ = p;
 }
 
 /// The indices in `lo..hi` whose entry is `code` (`lo` a multiple of 32), each word read when
