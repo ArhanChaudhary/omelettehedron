@@ -420,11 +420,9 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         let mut iab = [0usize; N_MOVES];
         let mut ic = [0usize; N_MOVES];
         let mut icb = [0usize; N_MOVES];
-        tb.ae_ix.index_batch_fast(f, &ys[..n], &mut ia[..n]);
-        tb.ae_ix.index_batch_fast(f, &yb[..n], &mut iab[..n]);
+        tb.ae_ix.index_batch_fast_pf(f, &ys[..n], &mut ia[..n], &tb.ae.data);
+        tb.ae_ix.index_batch_fast_pf(f, &yb[..n], &mut iab[..n], &tb.ae.data);
         for i in 0..n {
-            prefetch(&tb.ae.data[ia[i] >> 5]);
-            prefetch(&tb.ae.data[iab[i] >> 5]);
             ic[i] = CbTable::index_fast(f, &ys[i]);
             prefetch(&tb.cb.tab.data[ic[i] >> 5]);
             icb[i] = CbTable::index_fast(f, &yb[i]);
