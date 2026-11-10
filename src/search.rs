@@ -1479,6 +1479,32 @@ fn solve_n<I: AeIndex, const N: usize>(
         // T moves is found at a depth below T, so a completed pass proves that none exists.
         // With slices the pass also runs depth T (a solution of T moves may need a phase-1
         // path of T moves ending in a slice).
+        // `-l L`: once a first solution exists (so that a time limit never ends without one) and
+        // is longer than L, the search becomes target pass T = L (or the proven lower bound, if
+        // that is larger): only solutions of at most T moves, with the class-B bound against
+        // T + 1 instead of the loose best. It stops at the first solution of at most L moves;
+        // if there is none, the passes go on to the optimum as in optimal mode. (Off when
+        // solutions are counted and with FTO_FULL_PROOF, like the passes.)
+        // Speedup: see `docs/OPTIMIZATION_LOG.md`.
+        if let Some(l) = limits.max_length {
+            let best = sh.best_len.load(Ordering::Relaxed);
+            if target.is_none()
+                && limits.max_solutions.is_none()
+                && !full_proof()
+                && best < usize::MAX
+                && best > l
+            {
+                let t = l.max(depth + usize::from(class_b_argument));
+                target = Some(t);
+                sh.prune_len.store((t + 1).min(best), Ordering::Relaxed);
+                if std::env::var_os("FTO_DEBUG").is_some() {
+                    eprintln!("  target-length pass {t} for --max-length {l} (best {best})");
+                }
+                depth = lo;
+                prev_nodes = None;
+                continue;
+            }
+        }
         if let Some(t) = target {
             if depth >= t + usize::from(!class_b_argument) {
                 // pass T complete: no solution of at most T moves
