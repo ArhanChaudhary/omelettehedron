@@ -27,17 +27,57 @@ pub struct FastTables {
     shuf_a: [[u8; 16]; N_MOVES],
     shuf_b: [[u8; 16]; N_MOVES],
     shuf_e: [[u8; 16]; N_MOVES],
-    /// chirality flip of a triple occupying a 12-bit position mask, per move (bitsets)
-    flip_m: Vec<[u64; 64]>,
-    corner: Vec<[u16; N_MOVES]>,
-    pub(crate) c12: Vec<u16>,
-    c9: Vec<u16>,
-    c6: Vec<u16>,
-    cmp6: Vec<[u8; 64]>,
+    /// chirality flip of a triple occupying a 12-bit position mask: bit m = flipped by move m
+    flip_moves: Box<[u16; 4096]>,
+    /// corner move table, padded to 1024 ids so that `& 1023` replaces bounds checks
+    corner: Box<[[u16; N_MOVES]; 1024]>,
+    pub(crate) c12: Box<[u16; 4096]>,
+    /// rank tables pre-scaled by their weight in the multiset rank
+    r12: Box<[u32; 4096]>,
+    r9: Box<[u32; 512]>,
+    r6: [u32; 64],
+    cmp6: Box<[[u8; 64]; 64]>,
     /// per geometric symmetry: label map (relabel), position gather (reposition), flips
-    relab_map: [[u8; 16]; N_GEO],
-    repos_gather: [[u8; 16]; N_GEO],
-    pub(crate) flip_t: Vec<[u64; 64]>,
+    /// (padded to 32 symmetries so that `& 31` replaces bounds checks)
+    relab_map: [[u8; 16]; 32],
+    repos_gather: [[u8; 16]; 32],
+    relab_bits: [[u8; 16]; 32],
+    pub(crate) flip_t: Box<[[u64; 64]; 32]>,
+    /// use the BMI2 `pext` instruction for `compress` (it is microcoded and slow on AMD
+    /// before Zen 3)
+    pext: bool,
+}
+
+/// Whether `pext` is fast on this CPU (FTO_PEXT=0/1 overrides).
+fn fast_pext() -> bool {
+    if let Some(v) = std::env::var_os("FTO_PEXT") {
+        return v != "0";
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if !std::arch::is_x86_feature_detected!("bmi2") {
+            return false;
+        }
+        let (v0, v1) = (
+            core::arch::x86_64::__cpuid(0),
+            core::arch::x86_64::__cpuid(1),
+        );
+        let amd = (v0.ebx, v0.edx, v0.ecx) == (0x6874_7541, 0x6974_6e65, 0x444d_4163);
+        let hygon = (v0.ebx, v0.edx, v0.ecx) == (0x6f67_7948, 0x6e65_476e, 0x656e_6975);
+        let family = ((v1.eax >> 8) & 0xf) + ((v1.eax >> 20) & 0xff);
+        // AMD families 0x15..0x18 (Excavator, Zen 1/2, Hygon) implement pext in microcode
+        !((amd || hygon) && family < 0x19)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    false
+}
+
+fn boxed<T: Copy, const N: usize>(v: &[T]) -> Box<[T; N]> {
+    v.to_vec()
+        .into_boxed_slice()
+        .try_into()
+        .ok()
+        .expect("table size")
 }
 
 fn comb_rank(n: usize) -> Vec<u16> {
@@ -102,7 +142,7 @@ impl FastTables {
         let shuf_a = std::array::from_fn(|m| pad(&d.moves[m].xa));
         let shuf_b = std::array::from_fn(|m| pad(&d.moves[m].xb));
         let shuf_e = std::array::from_fn(|m| pad(&d.moves[m].ep));
-        let flip_m = (0..N_MOVES)
+        let flip_m: Vec<[u64; 64]> = (0..N_MOVES)
             .map(|m| {
                 let mut dest = [0u8; 12];
                 for p in 0..12 {
@@ -130,30 +170,64 @@ impl FastTables {
         let s = syms();
         let relab_map = std::array::from_fn(|g| {
             let mut m = [0u8; 16];
-            m[..4].copy_from_slice(&s.a_col[g]);
+            if g < N_GEO {
+                m[..4].copy_from_slice(&s.a_col[g]);
+            }
             m
         });
         let repos_gather = std::array::from_fn(|t| {
             let mut gth = [0x80u8; 16];
-            for p in 0..12 {
-                gth[s.e_pos[t][p] as usize] = p as u8;
+            if t < N_GEO {
+                for p in 0..12 {
+                    gth[s.e_pos[t][p] as usize] = p as u8;
+                }
             }
             gth
         });
-        let flip_t = (0..N_GEO).map(|t| bitset_flip(&s.e_pos[t])).collect();
+        let relab_bits = std::array::from_fn(|g| if g < N_GEO { s.relab_bits[g] } else { [0; 16] });
+        let flip_t: Vec<[u64; 64]> = (0..32)
+            .map(|t| {
+                if t < N_GEO {
+                    bitset_flip(&s.e_pos[t])
+                } else {
+                    [0; 64]
+                }
+            })
+            .collect();
+        let c12 = comb_rank(12);
+        let c9 = comb_rank(9);
+        let c6 = comb_rank(6);
+        let r12: Vec<u32> = c12.iter().map(|&x| x as u32).collect();
+        let r9: Vec<u32> = c9.iter().map(|&x| 220 * x as u32).collect();
+        let r6: Vec<u32> = c6.iter().map(|&x| 220 * 84 * x as u32).collect();
         FastTables {
             shuf_a,
             shuf_b,
             shuf_e,
-            flip_m,
-            corner: mt_c,
-            c12: comb_rank(12),
-            c9: comb_rank(9),
-            c6: comb_rank(6),
-            cmp6,
+            flip_moves: {
+                let mut t = Box::new([0u16; 4096]);
+                for (q, w) in t.iter_mut().enumerate() {
+                    for (m, fm) in flip_m.iter().enumerate() {
+                        *w |= ((fm[q >> 6] >> (q & 63)) as u16 & 1) << m;
+                    }
+                }
+                t
+            },
+            corner: {
+                let mut c = Box::new([[0u16; N_MOVES]; 1024]);
+                c[..mt_c.len()].copy_from_slice(&mt_c);
+                c
+            },
+            c12: boxed(&c12),
+            r12: boxed(&r12),
+            r9: boxed(&r9),
+            r6: r6.try_into().unwrap(),
+            cmp6: boxed(&cmp6),
             relab_map,
             repos_gather,
-            flip_t,
+            relab_bits,
+            flip_t: boxed(&flip_t),
+            pext: fast_pext(),
         }
     }
 
@@ -176,28 +250,45 @@ impl FastTables {
         f
     }
 
+    /// Chirality flips of the four triples of a position with edge masks `em` under every
+    /// move: bit 16 * t + m = triple t is flipped by move m (see [`FastTables::apply_w`]).
+    #[inline(always)]
+    pub fn flip_word(&self, em: &[u16; 4]) -> u64 {
+        let w = em.map(|q| self.flip_moves[q as usize & 0xfff] as u64);
+        w[0] | w[1] << 16 | w[2] << 32 | w[3] << 48
+    }
+
     /// Apply move `m`. `em` are the edge-label masks of `x` (from [`masks`]).
     #[inline(always)]
     pub fn apply(&self, x: &Fc, em: &[u16; 4], m: usize) -> Fc {
-        let fm = &self.flip_m[m];
-        let mut flips = 0u8;
-        for t in 0..4 {
-            let k = em[t] as usize;
-            flips |= ((fm[k >> 6] >> (k & 63)) as u8 & 1) << t;
-        }
+        self.apply_w(x, self.flip_word(em), m)
+    }
+
+    /// Apply move `m`, with `fw` = [`FastTables::flip_word`] of the edge masks of `x`.
+    #[inline(always)]
+    pub fn apply_w(&self, x: &Fc, fw: u64, m: usize) -> Fc {
+        // gather bit m of each 16-bit lane into bits 48..52 (no carries between the terms)
+        let b = (fw >> (m & 15)) & 0x0001_0001_0001_0001;
+        let flips = (b.wrapping_mul(1 << 48 | 1 << 33 | 1 << 18 | 1 << 3) >> 48) as u8 & 15;
         Fc {
             a: shuffle(&x.a, &self.shuf_a[m]),
             b: shuffle(&x.b, &self.shuf_b[m]),
             e: shuffle(&x.e, &self.shuf_e[m]),
-            c: self.corner[x.c as usize][m],
+            c: self.corner[x.c as usize & 1023][m & 15],
             ebits: x.ebits ^ flips,
         }
     }
 
+    /// Bits of `x` at the set positions of the 12-bit `mask`, packed (x must be a subset).
     #[inline(always)]
     fn compress(&self, x: u32, mask: u32) -> u32 {
+        #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+        if self.pext {
+            // SAFETY: BMI2 is enabled for this build
+            return unsafe { core::arch::x86_64::_pext_u32(x, mask) };
+        }
         let lo = (mask & 63) as usize;
-        let hi = (mask >> 6) as usize;
+        let hi = ((mask >> 6) & 63) as usize;
         let a = self.cmp6[lo][(x & 63) as usize] as u32;
         let b = self.cmp6[hi][((x >> 6) & 63) as usize] as u32;
         a | b << (lo as u32).count_ones()
@@ -206,13 +297,12 @@ impl FastTables {
     /// Multiset rank (same numbering as [`Mset::rank`]) from the label masks.
     #[inline(always)]
     pub fn rank(&self, m: &[u16; 4]) -> u32 {
-        let (m0, m1, m2) = (m[0] as u32, m[1] as u32, m[2] as u32);
-        let r0 = self.c12[m0 as usize] as u32;
+        let (m0, m1, m2) = (m[0] as u32 & 0xfff, m[1] as u32, m[2] as u32);
         let free = 0xfff & !m0;
-        let r1 = self.c9[self.compress(m1, free) as usize] as u32;
         let free2 = free & !m1;
-        let r2 = self.c6[self.compress(m2, free2) as usize] as u32;
-        r0 + 220 * (r1 + 84 * r2)
+        self.r12[m0 as usize]
+            + self.r9[self.compress(m1, free) as usize & 511]
+            + self.r6[self.compress(m2, free2) as usize & 63]
     }
 
     #[inline(always)]
@@ -232,31 +322,32 @@ impl FastTables {
     /// (rank, chirality bits).
     #[inline(always)]
     pub fn sym_e(&self, x: &Fc, em: &[u16; 4], g: usize, t: usize) -> (u32, u8) {
-        let s = syms();
-        // relabel: triple k becomes triple a_col[g][k]; positions unchanged
-        let b1 = s.relab_bits[g][x.ebits as usize];
-        let mut rm = [0u16; 4];
-        for k in 0..4 {
-            rm[s.a_col[g][k] as usize] = em[k];
-        }
-        // reposition: chirality flips depend on the occupied positions
-        let ft = &self.flip_t[t];
+        // Reposition flips depend only on the occupied positions, and relabelling is a bit
+        // permutation applied after xor-ing constants, so the flips can be applied before
+        // relabelling: relab_bits[g][bits ^ flips(t, positions of each original triple)].
+        let ft = &self.flip_t[t & 31];
         let mut flips = 0u8;
         for k in 0..4 {
-            let q = rm[k] as usize;
+            let q = em[k] as usize & 0xfff;
             flips |= ((ft[q >> 6] >> (q & 63)) as u8 & 1) << k;
         }
+        let b = self.relab_bits[g & 31][((x.ebits ^ flips) & 15) as usize];
         // label map: e1[p] = map[e[p]]; then gather positions
-        let e2 = shuffle(&shuffle(&self.relab_map[g], &x.e), &self.repos_gather[t]);
-        (self.rank(&masks(&e2)), b1 ^ flips)
+        let e2 = shuffle(
+            &shuffle(&self.relab_map[g & 31], &x.e),
+            &self.repos_gather[t & 31],
+        );
+        (self.rank(&masks(&e2)), b)
     }
 
     /// Relabel only (large tier).
     #[inline(always)]
     pub fn relabel_e(&self, x: &Fc, g: usize) -> (u32, u8) {
-        let s = syms();
-        let e2 = shuffle(&self.relab_map[g], &x.e);
-        (self.rank(&masks(&e2)), s.relab_bits[g][x.ebits as usize])
+        let e2 = shuffle(&self.relab_map[g & 31], &x.e);
+        (
+            self.rank(&masks(&e2)),
+            self.relab_bits[g & 31][(x.ebits & 15) as usize],
+        )
     }
 }
 
@@ -289,6 +380,28 @@ pub fn shuffle(v: &[u8; 16], s: &[u8; 16]) -> [u8; 16] {
                 v[(s[i] & 15) as usize]
             }
         })
+    }
+}
+
+/// Bit mask of the positions (0..12) holding label `l`.
+#[inline(always)]
+pub fn label_mask(v: &[u8; 16], l: u8) -> u16 {
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+    // SAFETY: SSE2 is baseline on x86_64
+    unsafe {
+        use core::arch::x86_64::*;
+        let x = _mm_loadu_si128(v.as_ptr() as *const __m128i);
+        (_mm_movemask_epi8(_mm_cmpeq_epi8(x, _mm_set1_epi8(l as i8))) & 0xfff) as u16
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
+    {
+        let mut m = 0u16;
+        for p in 0..12 {
+            if v[p] == l {
+                m |= 1 << p;
+            }
+        }
+        m
     }
 }
 

@@ -32,17 +32,17 @@ pub const N_ROW: usize = N_MSET * N_E1;
 pub const CODE_LB: [u8; 4] = [0, 7, 8, 9];
 
 pub struct CbeIndex {
-    /// per triple k and corner id: (class id, symmetry M, combined reposition R*M)
-    kt: [Vec<(u16, u8, u8)>; 4],
+    /// per corner id (padded to 1024) and triple k: (class id, symmetry M, reposition R*M)
+    kt: Box<[[(u16, u8, u8); 4]; 1024]>,
     /// class id -> representative corner id
     pub rep: Vec<u16>,
     /// per class: (M, R*M) pairs other than the identity that fix the representative
     stab: Vec<Vec<(u8, u8)>>,
-    bmap: [[u8; 16]; N_GEO],
-    bgather: [[u8; 16]; N_GEO],
-    amap: [[u8; 16]; N_GEO],
-    egather: [[u8; 16]; N_GEO],
-    relab_flip: [[u8; 4]; N_GEO],
+    /// (per symmetry, padded to 32 so that `& 31` replaces bounds checks)
+    bmap: [[u8; 16]; 32],
+    bgather: [[u8; 16]; 32],
+    egather: [[u8; 16]; 32],
+    relab_flip: [[u8; 4]; 32],
     c12_unrank: Vec<u16>,
 }
 
@@ -116,7 +116,7 @@ impl CbeIndex {
             .enumerate()
             .map(|(i, &r)| (r, i as u16))
             .collect();
-        let kt: [Vec<(u16, u8, u8)>; 4] = std::array::from_fn(|k| {
+        let kt4: [Vec<(u16, u8, u8)>; 4] = std::array::from_fn(|k| {
             (0..N_CORNER)
                 .map(|c| {
                     let (m, (c2, r)) = to0(k)
@@ -137,15 +137,25 @@ impl CbeIndex {
                     .collect()
             })
             .collect();
-        let pad_map = |col: &[u8; 4]| {
+        let mut kt = Box::new([[(0u16, 0u8, 0u8); 4]; 1024]);
+        for c in 0..N_CORNER {
+            for k in 0..4 {
+                kt[c][k] = kt4[k][c];
+            }
+        }
+        let pad_map = |m: usize| {
             let mut v = [0u8; 16];
-            v[..4].copy_from_slice(col);
+            if m < N_GEO {
+                v[..4].copy_from_slice(&s.b_col[m]);
+            }
             v
         };
-        let gather = |pos: &[u8; 12]| {
+        let gather = |pos: &[[u8; 12]; N_GEO], t: usize| {
             let mut g = [0x80u8; 16];
-            for p in 0..12 {
-                g[pos[p] as usize] = p as u8;
+            if t < N_GEO {
+                for p in 0..12 {
+                    g[pos[t][p] as usize] = p as u8;
+                }
             }
             g
         };
@@ -160,12 +170,15 @@ impl CbeIndex {
             kt,
             rep,
             stab,
-            bmap: std::array::from_fn(|m| pad_map(&s.b_col[m])),
-            bgather: std::array::from_fn(|t| gather(&s.b_pos[t])),
-            amap: std::array::from_fn(|m| pad_map(&s.a_col[m])),
-            egather: std::array::from_fn(|t| gather(&s.e_pos[t])),
+            bmap: std::array::from_fn(pad_map),
+            bgather: std::array::from_fn(|t| gather(&s.b_pos, t)),
+            egather: std::array::from_fn(|t| gather(&s.e_pos, t)),
             relab_flip: std::array::from_fn(|m| {
-                std::array::from_fn(|k| (s.relab_bits[m][0] >> s.a_col[m][k]) & 1)
+                if m < N_GEO {
+                    std::array::from_fn(|k| (s.relab_bits[m][0] >> s.a_col[m][k]) & 1)
+                } else {
+                    [0; 4]
+                }
             }),
             c12_unrank,
         }
@@ -175,23 +188,25 @@ impl CbeIndex {
         self.rep.len() * N_ROW
     }
 
-    /// Row offset within a class for the (B, triple k) part after symmetry (m, t).
+    /// Row offset within a class for the (B, triple k) part after symmetry (m, t), where m
+    /// maps triple k to triple 0.
     #[inline(always)]
     fn row(&self, f: &FastTables, x: &Fc, em: &[u16; 4], k: usize, m: usize, t: usize) -> usize {
+        let (m, t) = (m & 31, t & 31);
         let b = shuffle(&shuffle(&self.bmap[m], &x.b), &self.bgather[t]);
-        let e = shuffle(&shuffle(&self.amap[m], &x.e), &self.egather[t]);
-        let mask = masks(&e)[0] as usize;
+        // positions of triple k after repositioning (it is relabelled to 0)
+        let mask = label_mask(&shuffle(&x.e, &self.egather[t]), k as u8) as usize;
         let ft = &f.flip_t[t];
-        let q = em[k] as usize;
+        let q = em[k] as usize & 0xfff;
         let bit =
             ((x.ebits >> k) & 1) ^ self.relab_flip[m][k] ^ ((ft[q >> 6] >> (q & 63)) as u8 & 1);
-        f.rank(&masks(&b)) as usize * N_E1 + f.c12[mask] as usize * 2 + bit as usize
+        f.rank(&masks(&b)) as usize * N_E1 + f.c12[mask & 0xfff] as usize * 2 + bit as usize
     }
 
     /// Index of triple `k` of position `x` (`em` = edge masks of `x`).
     #[inline(always)]
     pub fn index(&self, f: &FastTables, x: &Fc, em: &[u16; 4], k: usize) -> usize {
-        let (cls, m, t) = self.kt[k][x.c as usize];
+        let (cls, m, t) = self.kt[x.c as usize & 1023][k];
         cls as usize * N_ROW + self.row(f, x, em, k, m as usize, t as usize)
     }
 
