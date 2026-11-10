@@ -187,9 +187,9 @@ Threads helped little in JavaScriptCore. Its WebAssembly atomic loads behave lik
 read-modify-writes. In a micro-benchmark, eight threads reading shared words got 7 M loads/s
 each, against 226 M/s for one thread. The search read atomics for every node: the `OnceLock`
 statics such as `fast()`, and the stop and best-length flags. Since the search keeps its tables
-in plain fields (`opt/cbref`, `opt/atomics`), 8 threads search 58.8 M nodes/s instead of 34.7 M
-(6 random positions, 5 s each; one thread 20 M); the stop and best-length flags are still read
-per node, and the table generator still reads `OnceLock`s often. V8 (Chrome) and
+in plain fields and caches the flags per worker (`opt/cbref`, `opt/atomics`, `opt/stopcache`),
+8 threads search 144 M nodes/s instead of 34.7 M (6 random positions, 5 s each; one thread
+20 M); the table generator still reads `OnceLock`s often. V8 (Chrome) and
 SpiderMonkey (Firefox) compile atomic loads on x86 to plain loads, so they should scale like
 the native build. No browser was available to measure this. Before a solve, the page runs a
 short warm-up so that V8 compiles the search with its optimizing tier.
