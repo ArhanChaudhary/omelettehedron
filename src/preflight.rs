@@ -46,6 +46,7 @@ fn free_disk(dir: &Path) -> io::Result<u64> {
 
 /// Unknown elsewhere: do not block generation.
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // same signature as the Unix version
 fn free_disk(_dir: &Path) -> io::Result<u64> {
     Ok(u64::MAX)
 }
