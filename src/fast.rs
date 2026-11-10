@@ -34,6 +34,11 @@ impl Fc {
 }
 
 pub struct FastTables {
+    /// the corner/B-centre symmetry index, held here so that `CbTable::index_fast` reads no
+    /// `OnceLock` per child (an atomic load: cheap natively, slow with threads in WebAssembly
+    /// on `JavaScriptCore`). Speedup: WebAssembly with 8 threads in Bun 33.1 -> 36.7 M nodes/s
+    /// (1.11x, two rounds); native and one-thread WebAssembly unchanged.
+    pub cbsym: &'static crate::cbsym::CbSymIndex,
     /// gather shuffles of the 16 moves: new[p] = old[src[p]]
     shuf_a: [[u8; 16]; N_MOVES],
     shuf_b: [[u8; 16]; N_MOVES],
@@ -212,6 +217,7 @@ impl FastTables {
         let r9 = Box::new(c9.map(|x| 220 * u32::from(x)));
         let r6 = c6.map(|x| 220 * 84 * u32::from(x));
         FastTables {
+            cbsym: crate::cbsym::cbsym(),
             shuf_a,
             shuf_b,
             shuf_e,
