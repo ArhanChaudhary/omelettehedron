@@ -94,6 +94,8 @@ struct Shared<'a, I: AeIndex> {
     cb_max: u8,
     /// FTO_SKIPLAST: optimality is proven once both variants have exhausted bound best - 2
     skip_last: bool,
+    /// FTO_DELAY latency probe (see `dfs`)
+    delay: u32,
     /// bound of the iteration in progress
     cur_depth: AtomicUsize,
     /// set when an improvement proved optimality in the middle of an iteration
@@ -327,6 +329,15 @@ impl<I: AeIndex> Shared<'_, I> {
         if ae_first {
             t.ae_ix
                 .index_batch_fast_pf(f, &ys[..n], &mut idx[..n], &t.ae.data);
+            // FTO_DELAY=k: latency probe, k dependent multiplies between the AE prefetches
+            // and the AE reads (if the reads stall on memory, this costs less than k * 3 cycles)
+            if self.delay > 0 {
+                let mut z = idx[0] as u64 | 1;
+                for _ in 0..self.delay {
+                    z = z.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+                }
+                std::hint::black_box(z);
+            }
             let mut k = 0;
             let mut min_ha = u8::MAX;
             for i in 0..n {
@@ -860,6 +871,10 @@ pub fn solve<I: AeIndex>(
         mb: swap_moves(),
         cb_max: (t.cb.tab.hist.len() - 1) as u8,
         skip_last: std::env::var("FTO_SKIPLAST").is_ok_and(|v| v == "1"),
+        delay: std::env::var("FTO_DELAY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
         cur_depth: AtomicUsize::new(0),
         proven: AtomicBool::new(false),
         prune_len: AtomicUsize::new(usize::MAX),
