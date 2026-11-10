@@ -27,11 +27,16 @@ pub struct Limits {
     pub time: Option<Duration>,
     /// stop once a solution of at most this length is found
     pub max_length: Option<usize>,
+    /// stop after the phase-1 iteration with this depth bound (used by tests)
+    pub max_depth: Option<usize>,
 }
 
 impl Limits {
     pub fn is_optimal(&self) -> bool {
-        self.max_solutions.is_none() && self.time.is_none() && self.max_length.is_none()
+        self.max_solutions.is_none()
+            && self.time.is_none()
+            && self.max_length.is_none()
+            && self.max_depth.is_none()
     }
 }
 
@@ -57,6 +62,8 @@ pub struct Outcome {
     pub length: Option<usize>,
     pub solutions_found: u64,
     pub nodes: u64,
+    /// phase-1 leaves reached: paths that pass every bound at their iteration's depth
+    pub leaves: u64,
     pub elapsed: f64,
     /// true if the search proved that no shorter solution exists
     pub optimal: bool,
@@ -87,6 +94,8 @@ struct Shared<'a, I: AeIndex> {
     best_len: AtomicUsize,
     count: AtomicU64,
     nodes: AtomicU64,
+    /// leaves that turned out not to be in `H_A` (rare: the tables certify the rest)
+    rejected: AtomicU64,
     stop: AtomicBool,
     best: Mutex<(Option<Vec<PhysMove>>, Vec<Event>)>,
     mb: [usize; N_MOVES],
@@ -181,7 +190,8 @@ impl<I: AeIndex> Shared<'_, I> {
         let var = &self.variants[v];
         let cube = var.cube.apply_seq(path);
         let d1 = path.len();
-        // with the small tier the edge chirality is not in the tables: verify membership
+        // The tables only bound the distance to H_A, so membership is checked in full here
+        // (with the small tier, for example, the edge chirality is not in the tables).
         if let Some(d2) = self.t.p2.length(&cube) {
             let n = self.count.fetch_add(1, Ordering::Relaxed) + 1;
             if self.limits.max_solutions.is_some_and(|k| n >= k) {
@@ -218,6 +228,8 @@ impl<I: AeIndex> Shared<'_, I> {
                     }
                 }
             }
+        } else {
+            self.rejected.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -698,6 +710,7 @@ pub fn solve<I: AeIndex>(
             length: None,
             solutions_found: 0,
             nodes: 0,
+            leaves: 0,
             elapsed: start.elapsed().as_secs_f64(),
             optimal: false,
             events: vec![],
@@ -716,6 +729,7 @@ pub fn solve<I: AeIndex>(
         best_len: AtomicUsize::new(usize::MAX),
         count: AtomicU64::new(0),
         nodes: AtomicU64::new(0),
+        rejected: AtomicU64::new(0),
         stop: AtomicBool::new(false),
         best: Mutex::new((None, vec![])),
         mb: swap_moves(),
@@ -737,6 +751,9 @@ pub fn solve<I: AeIndex>(
     loop {
         if depth >= sh.best_len.load(Ordering::Relaxed) {
             optimal = true;
+            break;
+        }
+        if limits.max_depth.is_some_and(|d| depth > d) {
             break;
         }
         // Small iterations run on this thread: waking the pool costs more than they do.
@@ -848,6 +865,7 @@ pub fn solve<I: AeIndex>(
         length,
         solutions_found: sh.count.load(Ordering::Relaxed),
         nodes: sh.nodes.load(Ordering::Relaxed),
+        leaves: sh.count.load(Ordering::Relaxed) + sh.rejected.load(Ordering::Relaxed),
         elapsed: start.elapsed().as_secs_f64(),
         optimal,
         events,
