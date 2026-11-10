@@ -316,6 +316,14 @@ impl FastTables {
     /// (rank, chirality bits).
     #[inline(always)]
     pub fn sym_e(&self, x: &Fc, em: &[u16; 4], g: usize, t: usize) -> (u32, u8) {
+        let (r, flips) = self.sym_e_parts(x, em, g, t);
+        (r, self.relab(g, x.ebits ^ flips))
+    }
+
+    /// [`FastTables::sym_e`] before relabelling the chirality: (rank, flips), where the
+    /// chirality bits are `relab(g, x.ebits ^ flips)`.
+    #[inline(always)]
+    pub fn sym_e_parts(&self, x: &Fc, em: &[u16; 4], g: usize, t: usize) -> (u32, u8) {
         // Reposition flips depend only on the occupied positions, and relabelling is a bit
         // permutation applied after xor-ing constants, so the flips can be applied before
         // relabelling: relab_bits[g][bits ^ flips(t, positions of each original triple)].
@@ -325,23 +333,30 @@ impl FastTables {
             let q = em[k] as usize & 0xfff;
             flips |= ((ft[q >> 6] >> (q & 63)) as u8 & 1) << k;
         }
-        let b = self.relab_bits[g & 31][((x.ebits ^ flips) & 15) as usize];
         // label map: e1[p] = map[e[p]]; then gather positions
         let e2 = shuffle(
             &shuffle(&self.relab_map[g & 31], &x.e),
             &self.repos_gather[t & 31],
         );
-        (self.rank(&masks(&e2)), b)
+        (self.rank(&masks(&e2)), flips)
+    }
+
+    /// Chirality bits after relabelling with symmetry `g`.
+    #[inline(always)]
+    pub fn relab(&self, g: usize, bits: u8) -> u8 {
+        self.relab_bits[g & 31][(bits & 15) as usize]
     }
 
     /// Relabel only (large tier).
     #[inline(always)]
     pub fn relabel_e(&self, x: &Fc, g: usize) -> (u32, u8) {
-        let e2 = shuffle(&self.relab_map[g & 31], &x.e);
-        (
-            self.rank(&masks(&e2)),
-            self.relab_bits[g & 31][(x.ebits & 15) as usize],
-        )
+        (self.relabel_rank(x, g), self.relab(g, x.ebits))
+    }
+
+    /// Rank of the relabelled edge labelling.
+    #[inline(always)]
+    pub fn relabel_rank(&self, x: &Fc, g: usize) -> u32 {
+        self.rank(&masks(&shuffle(&self.relab_map[g & 31], &x.e)))
     }
 }
 

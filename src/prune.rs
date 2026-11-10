@@ -211,6 +211,15 @@ pub trait Graph: Sync {
     /// Append every other index that denotes a position equivalent to index `j`, if indices
     /// are not unique. Equivalent indices always get the same value.
     fn equivalents(&self, _j: usize, _out: &mut Vec<usize>) {}
+    /// Call `out` with the neighbour of entry `i` by each move (what a forward step needs).
+    /// A graph can override it to share work between consecutive entries.
+    #[inline(always)]
+    fn neighbours(&self, i: usize, cache: &mut Self::Cache, mut out: impl FnMut(usize)) {
+        let x = self.node(i, cache);
+        for m in 0..Self::MOVES {
+            out(self.step(&x, m));
+        }
+    }
 }
 
 /// A level runs forward if frontier * `MOVES` < unvisited * `FORWARD_RATIO`. A forward step
@@ -343,16 +352,14 @@ fn forward<G: Graph>(g: &G, tab: &[AtomicU64], lo: usize, hi: usize, cur: u8, ne
     let mut nb: Vec<usize> = Vec::with_capacity(16);
     let mut cache = G::Cache::default();
     for i in Scan::new(tab, lo, hi, cur) {
-        let x = g.node(i, &mut cache);
-        for m in 0..G::MOVES {
-            let j = g.step(&x, m);
+        g.neighbours(i, &mut cache, |j| {
             push(j, &mut cnt);
             nb.clear();
             g.equivalents(j, &mut nb);
             for &k in &nb {
                 push(k, &mut cnt);
             }
-        }
+        });
     }
     for k in ring {
         if k != usize::MAX {

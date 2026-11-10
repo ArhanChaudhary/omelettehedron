@@ -55,6 +55,10 @@ pub trait AeIndex: Send + Sync + 'static {
     fn index_entry(&self, f: &FastTables, x: &Fc, v: u32) -> usize;
     /// Entries per A-centre class (the index is class * `class_size()` + edge part).
     fn class_size(&self) -> usize;
+    /// [`AeIndex::index_entry`] in parts, for the generator: `(base, g, flips)` such that the
+    /// index is `base + (f.relab(g, x.ebits ^ flips) & 7)` whatever the chirality bits of `x`
+    /// are; `None` if the index holds no chirality bits.
+    fn entry_parts(&self, f: &FastTables, x: &Fc, v: u32) -> Option<(usize, usize, u8)>;
     /// The symmetry-class table read first by `index_fast` (for prefetching).
     fn class_entry(&self, a_rank: u32) -> &u32;
     /// Pipelined `index_fast` over a batch.
@@ -215,6 +219,15 @@ impl AeIndex for AeSym {
         }
     }
     #[inline(always)]
+    fn entry_parts(&self, f: &FastTables, x: &Fc, v: u32) -> Option<(usize, usize, u8)> {
+        if !self.chiral {
+            return None;
+        }
+        let (g, t) = ((v >> 16 & 0xff) as usize, (v >> 24) as usize);
+        let (e, flips) = f.sym_e_parts(x, &masks(&x.e), g, t);
+        Some(((v & 0xffff) as usize * N_ECOSET + e as usize * 8, g, flips))
+    }
+    #[inline(always)]
     fn class_entry(&self, a_rank: u32) -> &u32 {
         &self.cls.sym[a_rank as usize]
     }
@@ -312,6 +325,12 @@ impl AeIndex for AeRelabel {
     }
     fn class_size(&self) -> usize {
         N_ECOSET
+    }
+    #[inline(always)]
+    fn entry_parts(&self, f: &FastTables, x: &Fc, v: u32) -> Option<(usize, usize, u8)> {
+        let g = ROT_IDX[(v >> 16) as usize] as usize;
+        let base = (v & 0xffff) as usize * N_ECOSET + f.relabel_rank(x, g) as usize * 8;
+        Some((base, g, 0))
     }
     #[inline(always)]
     fn class_entry(&self, a_rank: u32) -> &u32 {
@@ -573,6 +592,18 @@ struct AeGraph<'a, I: AeIndex> {
     f: &'static FastTables,
     /// class-table entry of each class representative after each move
     next: Vec<[u32; N_MOVES]>,
+    /// whether the index holds chirality bits (see [`AeIndex::entry_parts`])
+    chiral: bool,
+}
+
+/// The neighbours of the 8 entries that differ only in their chirality bits (same A class and
+/// edge labelling): the neighbour by move m of the entry with bits b is
+/// `base[m] + (relab(g[m], b ^ flips[m]) & 7)`.
+#[derive(Clone, Copy)]
+struct AeGroup {
+    base: [usize; N_MOVES],
+    g: [u8; N_MOVES],
+    flips: [u8; N_MOVES],
 }
 
 impl<'a, I: AeIndex> AeGraph<'a, I> {
@@ -596,7 +627,50 @@ impl<'a, I: AeIndex> AeGraph<'a, I> {
                 std::array::from_fn(|m| *ix.class_entry(f.a_rank(&f.apply_w(&x, 0, m))))
             })
             .collect();
-        AeGraph { ix, f, next }
+        let zero = Fc {
+            a: [0; 16],
+            b: [0; 16],
+            e: [0; 16],
+            c: 0,
+            ebits: 0,
+        };
+        let chiral = ix.entry_parts(f, &zero, *ix.class_entry(0)).is_some();
+        AeGraph {
+            ix,
+            f,
+            next,
+            chiral,
+        }
+    }
+
+    /// The group of entries `8 * key .. 8 * key + 8` (chiral indices only).
+    fn group(&self, key: usize) -> AeGroup {
+        let i0 = key * 8;
+        let (_, e, _) = self.ix.decode(i0);
+        let c = i0 / self.ix.class_size();
+        let x = Fc {
+            a: [0; 16],
+            b: [0; 16],
+            e: mset_labels()[e as usize],
+            c: 0,
+            ebits: 0,
+        };
+        let fw = self.f.flip_word(&masks(&x.e));
+        let mut g = AeGroup {
+            base: [0; N_MOVES],
+            g: [0; N_MOVES],
+            flips: [0; N_MOVES],
+        };
+        for m in 0..N_MOVES {
+            // (x has no chirality bits, so y has the flips of the move)
+            let y = self.f.apply_w(&x, fw, m);
+            if let Some((base, gm, fl)) = self.ix.entry_parts(self.f, &y, self.next[c][m]) {
+                g.base[m] = base;
+                g.g[m] = gm as u8;
+                g.flips[m] = y.ebits ^ fl;
+            }
+        }
+        g
     }
 }
 
@@ -604,9 +678,10 @@ impl<I: AeIndex> Graph for AeGraph<'_, I> {
     const MOVES: usize = N_MOVES;
     /// edges (the A-centres are not needed), flip word and A class
     type Node = (Fc, u64, usize);
-    type Cache = ();
+    /// the last group of a forward step and its key
+    type Cache = Option<(usize, AeGroup)>;
     #[inline(always)]
-    fn node(&self, i: usize, (): &mut ()) -> (Fc, u64, usize) {
+    fn node(&self, i: usize, _: &mut Option<(usize, AeGroup)>) -> (Fc, u64, usize) {
         let (_, e, bits) = self.ix.decode(i);
         let x = Fc {
             a: [0; 16],
@@ -624,6 +699,30 @@ impl<I: AeIndex> Graph for AeGraph<'_, I> {
     }
     fn equivalents(&self, j: usize, out: &mut Vec<usize>) {
         self.ix.equivalents(j, out);
+    }
+    /// For chiral indices the neighbours are made per group of 8 entries (most of the work
+    /// is shared: only the chirality part differs). (Medium tier 6.9 -> 6.6 s at 48T, 185.7 ->
+    /// 167.0 s at 1T when added, opt/gen.)
+    #[inline(always)]
+    fn neighbours(&self, i: usize, cache: &mut Self::Cache, mut out: impl FnMut(usize)) {
+        if !self.chiral {
+            let x = self.node(i, cache);
+            for m in 0..N_MOVES {
+                out(self.step(&x, m));
+            }
+            return;
+        }
+        let key = i / 8;
+        if !matches!(cache, Some((k, _)) if *k == key) {
+            *cache = Some((key, self.group(key)));
+        }
+        let Some((_, g)) = cache else {
+            return;
+        };
+        let bits = self.ix.decode(i).2;
+        for m in 0..N_MOVES {
+            out(g.base[m] + (self.f.relab(g.g[m] as usize, bits ^ g.flips[m]) & 7) as usize);
+        }
     }
 }
 
@@ -899,9 +998,21 @@ mod tests {
                 e,
                 ebits,
             };
-            let node = g.node(i, &mut ());
+            let node = g.node(i, &mut None);
             for m in 0..N_MOVES {
                 assert_eq!(g.step(&node, m), ix.index(&mt.apply(&x, m)), "{i} {m}");
+            }
+        }
+        // grouped neighbours of consecutive entries
+        let mut cache = None;
+        for _ in 0..200 {
+            let i0 = rng.gen_range(0..ix.size() - 20);
+            for i in i0..i0 + 20 {
+                let node = g.node(i, &mut None);
+                let mut v = vec![];
+                g.neighbours(i, &mut cache, |j| v.push(j));
+                let want: Vec<usize> = (0..N_MOVES).map(|m| g.step(&node, m)).collect();
+                assert_eq!(v, want, "{i}");
             }
         }
     }
