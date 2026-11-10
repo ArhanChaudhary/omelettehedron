@@ -107,6 +107,8 @@ struct Shared<'a, I: AeIndex, const N: usize> {
     /// leaves that turned out not to be in `H_A` (rare: the tables certify the rest)
     rejected: AtomicU64,
     stop: AtomicBool,
+    /// in this iteration the last move of a phase-1 path must be a slice (see `solve`)
+    slice_last: AtomicBool,
     best: Mutex<(Option<Vec<PhysMove>>, Vec<Event>)>,
     mb: [usize; N],
     /// largest CB distance (8): with at least this many moves left CB cannot prune
@@ -226,6 +228,9 @@ const fn allowed_masks(slice: bool) -> [u32; MAX_MOVES + 1] {
     }
     a
 }
+
+/// The slice moves (`N_MOVES..MAX_MOVES`) as a bit mask.
+const SLICE_MOVES: u32 = ((1 << MAX_MOVES) - 1) & !((1 << N_MOVES) - 1);
 
 /// The class-A moves as a bit mask.
 static A_MOVES: u32 = {
@@ -393,6 +398,9 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         let mut moves = ALLOWED[usize::from(N > N_MOVES)][last.min(MAX_MOVES)];
         if budget == 0 {
             moves &= !A_MOVES;
+            if N > N_MOVES && self.slice_last.load(Ordering::Relaxed) {
+                moves &= SLICE_MOVES;
+            }
         }
         while moves != 0 {
             let m = moves.trailing_zeros() as usize;
@@ -1007,6 +1015,7 @@ fn solve_n<I: AeIndex, const N: usize>(
         nodes: AtomicU64::new(0),
         rejected: AtomicU64::new(0),
         stop: AtomicBool::new(false),
+        slice_last: AtomicBool::new(false),
         best: Mutex::new((None, vec![])),
         mb: swap_moves::<N>(),
         cb_max: (t.cb.tab.hist.len() - 1) as u8,
@@ -1108,6 +1117,22 @@ fn solve_n<I: AeIndex, const N: usize>(
             // search stops there instead of finishing the iteration.
             sh.proof_len
                 .store(if early { depth + 1 } else { 0 }, Ordering::Relaxed);
+        }
+        // With slices, an iteration that can only improve on the bound with a phase-1 path of
+        // exactly its depth and phase-2 length 0 (depth + 1 >= prune_len: the last iteration of
+        // the proof, or depth T of target pass T) needs only the paths that end in a slice. A
+        // solving path that ends in a class-B move is a prefix ending in a move outside H_B
+        // followed by class-B moves, so the class-B variant found it in an earlier, completed
+        // iteration (the argument of the early proof end, which fails only for slices). Any
+        // solution found there has `depth` moves and is optimal at once.
+        // Speedup (slices): see docs/OPTIMIZATION_LOG.md.
+        let slice_last = t.moves.slice
+            && limits.max_solutions.is_none()
+            && !full_proof()
+            && depth + 1 >= sh.prune_len.load(Ordering::Relaxed);
+        sh.slice_last.store(slice_last, Ordering::Relaxed);
+        if slice_last {
+            sh.proof_len.store(depth, Ordering::Relaxed);
         }
         // Small iterations run on this thread: waking the pool costs more than they do.
         let predicted = prev_nodes.map_or(if depth < 14 { 0 } else { u64::MAX }, |n| {
