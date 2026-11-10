@@ -1,4 +1,4 @@
-# fto-solver
+# omelettehedron 🥚
 
 A fast two-phase solver for the face-turning octahedron (FTO), written in Rust.
 
@@ -38,19 +38,19 @@ orientation. Internally the front corner is held fixed.
 
 ```sh
 # optimal solution (default when no stopping rule is given)
-target/release/fto solve --tier large "U R' BL F D B' L BR"
+target/release/omelettehedron solve --tier large "U R' BL F D B' L BR"
 
 # stop after 2 seconds, printing every improvement as it is found
-target/release/fto solve --tier large -t 2 -p improvements "R U' L F' BR B' ..."
+target/release/omelettehedron solve --tier large -t 2 -p improvements "R U' L F' BR B' ..."
 
 # stop at the first solution of at most 22 moves
-target/release/fto solve --tier large -l 22 "..."
+target/release/omelettehedron solve --tier large -l 22 "..."
 
 # stop after 1000 solutions (every phase-2 completion counts, even if longer than the best)
-target/release/fto solve --tier large -n 1000 "..."
+target/release/omelettehedron solve --tier large -n 1000 "..."
 
 # one scramble per line on stdin
-target/release/fto solve --tier large -t 1 < scrambles.txt
+target/release/omelettehedron solve --tier large -t 1 < scrambles.txt
 ```
 
 Stopping rules can be combined; the search stops when any of them triggers. `-j N` sets the
@@ -60,7 +60,7 @@ thread count (default: all cores).
 
 `--tier` is required (there is no default size): choose the largest tier that fits
 comfortably in RAM. Tables are generated on first use. They are written to `./tables`, or to `--tables DIR` or
-`$FTO_TABLES` if given. `fto gen --tier T` generates them ahead of time. Before generating a
+`$FTO_TABLES` if given. `omelettehedron gen --tier T` generates them ahead of time. Before generating a
 table, the solver checks that the disk and the free memory can hold it, and stops at once
 with a message if not.
 
@@ -76,8 +76,8 @@ All tiers also use the 89 MB corner/B-centre table and the in-memory phase-2 tab
 ## Benchmarks
 
 ```sh
-target/release/fto bench --tier large -N 40 -t 5       # 40 seeded random positions, 5 s each
-target/release/fto bench --tier large -N 20 -t 5 -j 1  # single-threaded
+target/release/omelettehedron bench --tier large -N 40 -t 5       # 40 seeded random positions, 5 s each
+target/release/omelettehedron bench --tier large -N 20 -t 5 -j 1  # single-threaded
 scripts/bench.sh <label> [tier]                 # the standard set used during optimisation
 scripts/bench-opt.sh <label> [tier]             # optimal mode: time to prove optimality
 scripts/bench-randopt.sh <label> <tier>         # optimal mode on random positions (slow)

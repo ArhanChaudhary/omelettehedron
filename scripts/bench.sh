@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 exec 9>/tmp/cube-bench.lock
 flock 9
 cargo build --release -q
-bin=${CARGO_TARGET_DIR:-target}/release/fto
+bin=${CARGO_TARGET_DIR:-target}/release/omelettehedron
 mkdir -p bench-results
 load=$(cut -d' ' -f1 /proc/loadavg)
 echo "load before benchmark: $load" >&2

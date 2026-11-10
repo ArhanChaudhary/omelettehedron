@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn rejects_tables_that_do_not_fit() {
-        let dir = std::env::temp_dir().join("fto-preflight-test");
+        let dir = std::env::temp_dir().join("omelettehedron-preflight-test");
         let plan = |bytes| {
             vec![Planned {
                 path: dir.join("missing.prun"),

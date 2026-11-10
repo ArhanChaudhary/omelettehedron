@@ -2,9 +2,9 @@
 //! Needs both tables on disk: `fto gen --tier medium && fto gen --tier large`, then
 //! `cargo test --release -- --ignored`.
 
-use fto_solver::coord::*;
-use fto_solver::cube::*;
-use fto_solver::tables::*;
+use omelettehedron::coord::*;
+use omelettehedron::cube::*;
+use omelettehedron::tables::*;
 use rand::SeedableRng;
 
 #[test]

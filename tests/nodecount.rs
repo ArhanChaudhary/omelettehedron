@@ -7,12 +7,12 @@
 //! parallel split, the task scheduling or the batched child evaluation drops or repeats part of
 //! the tree. The tables themselves are not involved.
 
-use fto_solver::cube::*;
-use fto_solver::mem::HugeBuf;
-use fto_solver::notation::Frame;
-use fto_solver::prune::Table2;
-use fto_solver::search::*;
-use fto_solver::tables::*;
+use omelettehedron::cube::*;
+use omelettehedron::mem::HugeBuf;
+use omelettehedron::notation::Frame;
+use omelettehedron::prune::Table2;
+use omelettehedron::search::*;
+use omelettehedron::tables::*;
 use rand::SeedableRng;
 
 fn zero_table(n: usize) -> Table2 {

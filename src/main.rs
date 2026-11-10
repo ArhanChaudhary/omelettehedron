@@ -27,11 +27,11 @@
 )]
 
 use clap::{Parser, Subcommand};
-use fto_solver::bench;
-use fto_solver::cube::Cube;
-use fto_solver::notation::{parse_moves, scramble_to_cube, Frame};
-use fto_solver::search::{solve, Limits, Report};
-use fto_solver::tables::{table_dir, AeIndex, AeRelabel, AeSym, Tables, Tier};
+use omelettehedron::bench;
+use omelettehedron::cube::Cube;
+use omelettehedron::notation::{parse_moves, scramble_to_cube, Frame};
+use omelettehedron::search::{solve, Limits, Report};
+use omelettehedron::tables::{table_dir, AeIndex, AeRelabel, AeSym, Tables, Tier};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -40,7 +40,7 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(Parser)]
 #[command(
-    name = "fto",
+    name = "omelettehedron",
     version,
     about = "Two-phase solver for the face-turning octahedron (FTO)"
 )]
@@ -188,7 +188,7 @@ fn run_solve<I: AeIndex>(
 macro_rules! dispatch {
     ($tab:expr, |$t:ident, $name:ident| $body:expr) => {{
         let dir = table_dir($tab.tables.as_deref());
-        fto_solver::preflight::set_force($tab.force);
+        omelettehedron::preflight::set_force($tab.force);
         match $tab.tier {
             Tier::Small => {
                 let $t = Tables::load(&dir, AeSym::new(false), $tab.verbose)

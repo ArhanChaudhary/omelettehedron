@@ -11,7 +11,7 @@ seeds=${3:-1 2 3}
 cap=${4:-1200}
 cd "$(dirname "$0")/.."
 mkdir -p bench-results
-bin=${CARGO_TARGET_DIR:-target}/release/fto
+bin=${CARGO_TARGET_DIR:-target}/release/omelettehedron
 for seed in $seeds; do
   # one lock turn per position, so other jobs can run in between
   flock /tmp/cube-bench.lock sh -c "cargo build --release -q && \
