@@ -67,25 +67,26 @@ without slices.
 
 ## Hard positions (`bench/hard.tsv`)
 
-Positions supplied by the user, solved optimally in the normal FTO (centres of a colour
-interchangeable), large tier, 48 threads, main b677856. Every solution was checked on the sticker
-model; the `edge_hard` scramble gives an edges-only position here, as listed, so the notation
-agrees with the source's.
+Positions supplied by the user: each is the position its listed algorithm solves (the
+algorithm inverted, applied to the solved puzzle). Solved optimally in the normal FTO (centres of
+a colour interchangeable), large tier, 48 threads. (A first run took the algorithms themselves as
+scrambles, i.e. the inverse positions, which in the normal FTO need not have the same length:
+21 / 21 / 21 / 22 there. Those numbers do not apply to the listed positions.)
 
-| position | listed | proven optimum | proof | solves the pure FTO too |
-|---|---|---|---|---|
-| tri_adj+edge_opp | 23 | 21 | 76 s | no |
-| tri_adj+edge_adj | 23 | 21 | 122 s | no |
-| tri_adj-[Uf_Fu;Db_Bd] | 23 | 21 | 76 s | no |
-| tri_adj+[UB_FD,NL_MR] | 23 | 22 | 654 s | no |
-| edge_hard | 21 | 21 | 74 s | no (a different 21 does, per the source) |
-| pure_corn_6flip | >= 24 (pure) | 19-23 (normal FTO) | stopped | no |
+| position | listed | proven optimum (normal FTO) | proof |
+|---|---|---|---|
+| tri_adj+edge_opp | 23 | (running) | |
+| tri_adj+edge_adj | 23 | (running) | |
+| tri_adj-[Uf_Fu;Db_Bd] | 23 | (running) | |
+| tri_adj+[UB_FD,NL_MR] | 23 | (running) | |
+| edge_hard | 21 | (running) | |
+| pure_corn_6flip | >= 24 (pure) | 20 | 661 s (`--lower-bound 19`, after an earlier run excluded 18) |
 
-The corner 6-flip leaves edges and centres solved, so the A-centre/edge table bounds it by 0 and
-only the corner tables prune: each target pass costs about 9 times the previous one (no
-solution of at most 17 moves after 14.8 s, at most 18 after 128.7 s; pass 18 alone 114 s), so
-excluding 22 moves would take about 10 days at this rate. Its normal-FTO optimum lies between
-19 and 23 (a 23-move solution is found in 1 s); the pure optimum is at least that.
+The corner 6-flip undoes itself, so it is the same position either way. Its normal-FTO optimum is
+20 (no solution of at most 19 moves after 620 s, a 20-move solution at 661 s; verified on the
+sticker model); the solution exchanges centres of a colour, so it does not bear on the pure
+count of at least 24. With edges and centres solved, the A-centre/edge table bounds it by 0 and
+only the corner tables prune: each target pass costs about 9 times the previous one.
 
 ## Start-up
 

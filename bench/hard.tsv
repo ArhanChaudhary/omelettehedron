@@ -1,10 +1,12 @@
-# Hard positions supplied by the user on 2026-11-10 (names and known lengths as given).
+# Hard positions supplied by the user on 2026-11-10 (names and known lengths as given). Each
+# position is the one the given algorithm SOLVES: the scramble column is that algorithm
+# inverted (reversed, every move inverted), the solution column the algorithm itself.
 # normal = the usual FTO (centres of a colour interchangeable: what omelettehedron solves);
-# pure = every centre unique (omelettehedron's normal-FTO optimum is a lower bound there).
-# name	known	config	scramble
-tri_adj+edge_opp	23	normal	U F U' B' BR' D' L' D' R L' R BR U' R D' BR F R' F' BL U F L Lv
-tri_adj+edge_adj	23	normal	U F BL B' U B' BL BR' D' BL BR L R BL' D R F' B U' BL B' U F' Rv'
-tri_adj-[Uf_Fu;Db_Bd]	23	normal	U F D L' D' U' L BR' U' B' BL' R' D L B D' BR BL D BR B U B Rv
-tri_adj+[UB_FD,NL_MR]	23	normal	U F U' L' BL B U' R U' D R' U D BR' F BL' U' R' B R F BR' F Uv'
-edge_hard	21	edges-only (also pure)	U' L BR' BL R' F' R BL' D R' BL U' D BL' R B' F BL' R' F B'
-pure_corn_6flip	>=24	pure	U F' U' R' L' R L U F U' F' L' R' L R BL L F' L U F' R' U R' BR' U B BR' B BL BR' D' BL D'
+# pure = every centre unique (the normal optimum is a lower bound there).
+# name	known	config	scramble	solution
+tri_adj+edge_opp	23	normal	Lv' L' F' U' BL' F R F' BR' D R' U BR' R' L R' D L D BR B U F' U'	U F U' B' BR' D' L' D' R L' R BR U' R D' BR F R' F' BL U F L Lv
+tri_adj+edge_adj	23	normal	Rv F U' B BL' U B' F R' D' BL R' L' BR' BL' D BR BL' B U' B BL' F' U'	U F BL B' U B' BL BR' D' BL BR L R BL' D R F' B U' BL B' U F' Rv'
+tri_adj-[Uf_Fu;Db_Bd]	23	normal	Rv' B' U' B' BR' D' BL' BR' D B' L' D' R BL B U BR L' U D L D' F' U'	U F D L' D' U' L BR' U' B' BL' R' D L B D' BR BL D BR B U B Rv
+tri_adj+[UB_FD,NL_MR]	23	normal	Uv F' BR F' R' B' R U BL F' BR D' U' R D' U R' U B' BL' L U F' U'	U F U' L' BL B U' R U' D R' U D BR' F BL' U' R' B R F BR' F Uv'
+edge_hard	21	edges-only (also pure)	B F' R BL F' B R' BL D' U BL' R D' BL R' F R BL' BR L' U	U' L BR' BL R' F' R BL' D R' BL U' D BL' R B' F BL' R' F B'
+pure_corn_6flip	>=24	pure	D BL' D BR BL' B' BR B' U' BR R U' R F U' L' F L' BL' R' L' R L F U F' U' L' R' L R U F U'	U F' U' R' L' R L U F U' F' L' R' L R BL L F' L U F' R' U R' BR' U B BR' B BL BR' D' BL D'

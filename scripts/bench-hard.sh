@@ -8,7 +8,7 @@ tier=${1:?tier (small|medium|large|huge)}
 shift
 cd "$(dirname "$0")/.."
 bin=${CARGO_TARGET_DIR:-target}/release/omelettehedron
-grep -v '^#' bench/hard.tsv | while IFS=$'\t' read -r name known config scramble; do
+grep -v '^#' bench/hard.tsv | while IFS=$'\t' read -r name known config scramble solution; do
   echo "== $name (known $known, $config)"
   flock /tmp/cube-bench.lock "$bin" solve --tier "$tier" -v "$@" "$scramble" 2>&1 | grep -vE "^loaded|^  depth .*split done" || true
 done
