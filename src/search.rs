@@ -472,6 +472,34 @@ impl<'a, I: AeIndex> Shared<'a, I> {
             }
             n = k;
         }
+        // Joint-table bound on the class-B side against the best solution so far (its codes
+        // saturate at 9, so it can only prune with at most 8 moves to spare).
+        if B && n > 0 {
+            let lim = self.best_len.load(Ordering::Relaxed).saturating_sub(g + 2);
+            if lim <= 8 {
+                if let Some(cbe) = &t.cbe {
+                    let mut ci = [[0usize; 4]; N_MOVES];
+                    for i in 0..n {
+                        cbe.prefetch_all(f, &ybs[i], &mut ci[i]);
+                    }
+                    let mut k = 0;
+                    for i in 0..n {
+                        if cbe.bound(&ci[i]) as usize <= lim {
+                            ys[k] = ys[i];
+                            ms[k] = ms[i];
+                            has[k] = has[i];
+                            hcs[k] = hcs[i];
+                            pend[k] = pend[i];
+                            ybs[k] = ybs[i];
+                            hbas[k] = hbas[i];
+                            hbcs[k] = hbcs[i];
+                            k += 1;
+                        }
+                    }
+                    n = k;
+                }
+            }
+        }
         // Ordering statistic of the task: how close its subtree gets to the phase-1 target.
         for i in 0..n {
             *stat += STAT_W[has[i].max(hcs[i]) as usize];
