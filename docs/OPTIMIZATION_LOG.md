@@ -36,6 +36,7 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | Greedy probe for a quick first solution | `neg/probe` | never finds a solution within 20000 nodes; 48T first solution 1.26x | no |
 | Sibling pipeline in the search (expand / stage2 / finish) | `opt/micro3` | 1.34x nodes/s (48T and 1T); optimal 0.74x / 0.77x; first solution 0.88x / 0.79x | yes |
 | Target-length passes in optimal mode (default with one thread) | `opt/target2` | optimal 1T 0.39x, 48T 0.98x | yes |
+| Optional 1 GiB pages for large tables (`FTO_HUGE1G=1`) | `opt/huge1g` | A-centre/edge table on a 1 GiB page: optimal 0.96x / 0.97x, nodes/s 1.01x / 1.03x (opt-in) | yes |
 | Faster table generation (egg-solver's techniques) | `opt/gen` | large tier 121 -> 30 s and peak 14.9 -> 8.1 GB; medium 16.0 -> 6.6 s (48T); tables byte-identical | yes |
 
 Cumulative (48 threads, 40 random positions, 5 s): mean best length 21.60 -> 21.20; first
