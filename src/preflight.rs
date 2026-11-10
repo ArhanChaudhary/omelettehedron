@@ -8,6 +8,7 @@ use std::path::Path;
 const MARGIN: u64 = 256 << 20;
 
 /// Bytes available to unprivileged users on the file system holding `dir`.
+#[cfg(unix)]
 fn free_disk(dir: &Path) -> io::Result<u64> {
     use std::os::unix::ffi::OsStrExt;
     let mut c = dir.as_os_str().as_bytes().to_vec();
@@ -15,11 +16,18 @@ fn free_disk(dir: &Path) -> io::Result<u64> {
     // SAFETY: statvfs is plain old data, for which all-zero bytes are a valid value
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
     // SAFETY: `c` is a NUL-terminated path and `st` is a valid, writable statvfs
-    let r = unsafe { libc::statvfs(c.as_ptr().cast(), &mut st) };
+    let r = unsafe { libc::statvfs(c.as_ptr().cast(), &raw mut st) };
     if r != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(st.f_bavail as u64 * st.f_frsize as u64)
+    // (the field widths differ between platforms)
+    Ok(u64::from(st.f_bavail).saturating_mul(u64::from(st.f_frsize)))
+}
+
+/// Unknown elsewhere: do not block generation.
+#[cfg(not(unix))]
+fn free_disk(_dir: &Path) -> io::Result<u64> {
+    Ok(u64::MAX)
 }
 
 /// `MemAvailable` from /proc/meminfo, if it can be read.
@@ -39,23 +47,23 @@ pub fn check_table(path: &Path, bytes: u64) -> io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
     let disk = free_disk(dir)?;
-    if disk < bytes + MARGIN {
+    if disk < bytes.saturating_add(MARGIN) {
         return Err(io::Error::other(format!(
             "not enough disk space to save {}: it needs {:.2} GB, {} has {:.2} GB free. \
              Free some space or choose another directory with --tables.",
             path.display(),
-            gb(bytes + MARGIN),
+            gb(bytes.saturating_add(MARGIN)),
             dir.display(),
             gb(disk)
         )));
     }
     if let Some(mem) = available_memory() {
-        if mem < bytes + MARGIN {
+        if mem < bytes.saturating_add(MARGIN) {
             return Err(io::Error::other(format!(
                 "not enough memory to generate {}: it needs {:.2} GB, {:.2} GB is available. \
                  Use a smaller --tier.",
                 path.display(),
-                gb(bytes + MARGIN),
+                gb(bytes.saturating_add(MARGIN)),
                 gb(mem)
             )));
         }

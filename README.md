@@ -60,7 +60,9 @@ thread count (default: all cores).
 
 `--tier` is required (there is no default size): choose the largest tier that fits
 comfortably in RAM. Tables are generated on first use. They are written to `./tables`, or to `--tables DIR` or
-`$FTO_TABLES` if given. `fto gen --tier T` generates them ahead of time.
+`$FTO_TABLES` if given. `fto gen --tier T` generates them ahead of time. Before generating a
+table, the solver checks that the disk and the free memory can hold it, and stops at once
+with a message if not.
 
 | `--tier` | Memory | Generation (48 cores) | Contents |
 |---|---|---|---|
