@@ -178,6 +178,10 @@ const CHECK_EVERY: u64 = 1 << 14;
 /// only as part of it: +10% / +14% nodes/s).
 const AE_FIRST: usize = 6;
 
+/// Scratch frames per search level: the node's own evaluation and the sibling pipeline of its
+/// children (see `finish`), with the first lookups issued three siblings ahead.
+const FRAMES: usize = 4;
+
 /// No deferred CB lookup (see `finish`).
 const NO_CB: usize = usize::MAX;
 
@@ -424,7 +428,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         bound: usize,
         ctr: &mut Counter,
         stat: &mut f32,
-        frames: &mut [[Scratch<N>; 3]],
+        frames: &mut [[Scratch<N>; FRAMES]],
     ) {
         let g = path.len();
         if g == bound {
@@ -439,11 +443,12 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         if self.stop.load(Ordering::Relaxed) {
             return;
         }
-        // (the caller provides three frames per remaining level)
-        let Some(([fr, _, _], frames)) = frames.split_first_mut() else {
+        // (the caller provides `FRAMES` frames per remaining level)
+        let Some((fs, frames)) = frames.split_first_mut() else {
             debug_assert!(false, "out of search frames");
             return;
         };
+        let fr = &mut fs[0];
         let last = path.last().copied().unwrap_or(usize::MAX);
         let budget = bound - g - 1;
         // (a node alive on side 1 only has that side in slot 0)
@@ -515,7 +520,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         ctr: &mut Counter,
         stat: &mut f32,
         fr: &mut Scratch<N>,
-        frames: &mut [[Scratch<N>; 3]],
+        frames: &mut [[Scratch<N>; FRAMES]],
     ) {
         if sides == BOTH {
             self.finish::<BOTH, B>(0, x, path, bound, ctr, stat, fr, frames);
@@ -787,7 +792,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         ctr: &mut Counter,
         stat: &mut f32,
         fr: &mut Scratch<N>,
-        frames: &mut [[Scratch<N>; 3]],
+        frames: &mut [[Scratch<N>; FRAMES]],
     ) {
         if self.stop.load(Ordering::Relaxed) {
             return;
@@ -1022,14 +1027,15 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             }
             return;
         }
-        // (the caller provides three frames per remaining level)
+        // (the caller provides `FRAMES` frames per remaining level)
         let Some((trio, frames)) = frames.split_first_mut() else {
             debug_assert!(false, "out of search frames");
             return;
         };
         // Sibling pipeline: child j is finished in `f0` while child j+1 has had its first
-        // lookups read (`f1`) and child j+2 its first lookups issued (`f2`).
-        let [mut f0, mut f1, mut f2] = trio.each_mut();
+        // lookups read (`f1`) and children j+2 and j+3 their first lookups issued (`f2`, `f3`):
+        // the first lookups get two siblings' work before they are read (see `FRAMES`).
+        let [mut f0, mut f1, mut f2, mut f3] = trio.each_mut();
         let cb = budget - 1;
         // the class-B limit of the children's children (at depth g + 2)
         let clim = if B {
@@ -1079,15 +1085,19 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             let i = child(1);
             self.expand_any(kind(i), slots(i).0, xs(i), ms[i] as usize, cb, f1, ctr);
         }
+        if n > 2 {
+            let i = child(2);
+            self.expand_any(kind(i), slots(i).0, xs(i), ms[i] as usize, cb, f2, ctr);
+        }
         if n > 0 {
             let i = child(0);
             let (ha, hc, pd) = hs(i);
             self.stage2_any::<B>(kind(i), slots(i).0, xs(i), ha, hc, pd, cb, clim, f0);
         }
         for j in 0..n {
-            if j + 2 < n {
-                let i = child(j + 2);
-                self.expand_any(kind(i), slots(i).0, xs(i), ms[i] as usize, cb, f2, ctr);
+            if j + 3 < n {
+                let i = child(j + 3);
+                self.expand_any(kind(i), slots(i).0, xs(i), ms[i] as usize, cb, f3, ctr);
             }
             if j + 1 < n {
                 let i = child(j + 1);
@@ -1102,7 +1112,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             if self.stop.load(Ordering::Relaxed) {
                 return;
             }
-            (f0, f1, f2) = (f1, f2, f0);
+            (f0, f1, f2, f3) = (f1, f2, f3, f0);
         }
     }
 
@@ -1523,7 +1533,8 @@ fn solve_n<I: AeIndex, const N: usize>(
         let worker = || {
             let mut path: Vec<usize> = Vec::with_capacity(64);
             // one frame per level below a task (tasks are at depth >= 0)
-            let mut frames = vec![[Scratch::<N>::new(), Scratch::new(), Scratch::new()]; depth + 1];
+            let mut frames: Vec<[Scratch<N>; FRAMES]> =
+                vec![std::array::from_fn(|_| Scratch::new()); depth + 1];
             // the per-thread counters persist across tasks so time checks happen regularly
             let mut ctr = Counter::default();
             loop {
