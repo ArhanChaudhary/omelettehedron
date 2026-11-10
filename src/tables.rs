@@ -500,7 +500,9 @@ pub struct CbTable {
     pub attach: Vec<u32>,
 }
 
-pub const N_CB: usize = N_CORNER * N_MSET;
+/// Entries of the CB table: 51 corner classes under the 24 class-preserving symmetries x the
+/// B-centre colourings (see [`crate::cbsym`]).
+pub const N_CB: usize = 51 * N_MSET;
 
 impl CbTable {
     pub fn attach_targets() -> Vec<u32> {
@@ -537,20 +539,36 @@ impl CbTable {
 
     pub fn build(verbose: bool) -> Table2 {
         let attach = Self::attach_targets();
-        let targets: Vec<usize> = (0..N_CORNER)
-            .map(|c| c * N_MSET + attach[c] as usize)
-            .collect();
-        bfs(&CbGraph(move_tables()), N_CB, &targets, "cb", verbose)
+        let ix = crate::cbsym::cbsym();
+        let f = fast();
+        let mut targets: Vec<usize> = vec![];
+        for (c, &b) in attach.iter().enumerate().take(N_CORNER) {
+            let mut x = ix.decode(0);
+            x.c = c as u16;
+            x.b[..12].copy_from_slice(&mset().unrank(b));
+            let i = ix.index(f, &x);
+            targets.push(i);
+            ix.equivalents(i, &mut targets);
+        }
+        targets.sort_unstable();
+        targets.dedup();
+        bfs(&crate::cbsym::CbSymGraph, N_CB, &targets, "cb", verbose)
     }
 
-    #[inline(always)]
+    /// Index of a position given by its coordinates.
     pub fn index(x: &Coords) -> usize {
-        x.c as usize * N_MSET + x.b as usize
+        let ix = crate::cbsym::cbsym();
+        let mut y = ix.decode(0);
+        y.c = x.c;
+        y.b[..12].copy_from_slice(&mset().unrank(x.b));
+        ix.index(fast(), &y)
     }
 
+    /// Index of a position (reduced by the 24 class-preserving symmetries, so that the table
+    /// is 4.7 MB instead of 89 MB and stays in the cache).
     #[inline(always)]
     pub fn index_fast(f: &FastTables, x: &Fc) -> usize {
-        x.c as usize * N_MSET + f.b_rank(x) as usize
+        crate::cbsym::cbsym().index(f, x)
     }
 }
 
@@ -562,23 +580,6 @@ pub fn ae_targets<I: AeIndex>(ix: &I) -> Vec<usize> {
     v.sort_unstable();
     v.dedup();
     v
-}
-
-/// Moves between CB entries.
-struct CbGraph(&'static MoveTables);
-
-impl Graph for CbGraph {
-    const MOVES: usize = N_MOVES;
-    type Node = (usize, usize);
-    type Cache = ();
-    #[inline(always)]
-    fn node(&self, i: usize, (): &mut ()) -> (usize, usize) {
-        (i / N_MSET, i % N_MSET)
-    }
-    #[inline(always)]
-    fn step(&self, &(c, b): &(usize, usize), m: usize) -> usize {
-        self.0.c[c][m] as usize * N_MSET + self.0.b[b][m] as usize
-    }
 }
 
 /// Moves between AE entries, with the cache-resident coordinates of the search: a move is a
@@ -840,7 +841,7 @@ impl<I: AeIndex> Tables<I> {
         };
         let mut plan = vec![
             planned(ae_path.clone(), &|| ae_ix.size()),
-            planned(dir.join("cb.prun"), &|| N_CB),
+            planned(dir.join("cb-sym24.prun"), &|| N_CB),
         ];
         if with_cbe {
             plan.push(planned(dir.join("cbe.prun"), &|| {
@@ -851,7 +852,7 @@ impl<I: AeIndex> Tables<I> {
         let ae = load_or_build(&ae_path, ae_ix.size(), verbose, || {
             build_ae(&ae_ix, verbose)
         })?;
-        let cbt = load_or_build(&dir.join("cb.prun"), N_CB, verbose, || {
+        let cbt = load_or_build(&dir.join("cb-sym24.prun"), N_CB, verbose, || {
             CbTable::build(verbose)
         })?;
         let cb = CbTable {
@@ -981,6 +982,55 @@ impl<I: AeIndex> Tables<I> {
 mod tests {
     use super::*;
     use rand::{Rng, SeedableRng};
+
+    /// Moves between entries of the unreduced CB coordinate (corner state x B colouring).
+    struct RawCbGraph(&'static MoveTables);
+
+    impl Graph for RawCbGraph {
+        const MOVES: usize = N_MOVES;
+        type Node = (usize, usize);
+        type Cache = ();
+        fn node(&self, i: usize, (): &mut ()) -> (usize, usize) {
+            (i / N_MSET, i % N_MSET)
+        }
+        fn step(&self, &(c, b): &(usize, usize), m: usize) -> usize {
+            self.0.c[c][m] as usize * N_MSET + self.0.b[b][m] as usize
+        }
+    }
+
+    /// The symmetry-reduced CB table gives the same distances as the unreduced one, whose
+    /// depth histogram was computed independently with a Python/GAP sticker model.
+    #[test]
+    fn reduced_cb_table_matches_the_unreduced_one() {
+        let attach = CbTable::attach_targets();
+        let targets: Vec<usize> = (0..N_CORNER)
+            .map(|c| c * N_MSET + attach[c] as usize)
+            .collect();
+        let raw = bfs(
+            &RawCbGraph(move_tables()),
+            N_CORNER * N_MSET,
+            &targets,
+            "cb raw",
+            false,
+        );
+        assert_eq!(
+            raw.hist,
+            vec![960, 7488, 83400, 841890, 7856382, 53951003, 178902609, 111497121, 1675147]
+        );
+        let red = CbTable::build(false);
+        assert_eq!(red.hist.len(), raw.hist.len());
+        let f = fast();
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(31);
+        for _ in 0..20_000 {
+            let x = f.of(&Cube::random(&mut rng));
+            let em = masks(&x.e);
+            for m in 0..N_MOVES {
+                let y = f.apply(&x, &em, m);
+                let raw_i = y.c as usize * N_MSET + f.b_rank(&y) as usize;
+                assert_eq!(raw.get(raw_i), red.get(CbTable::index_fast(f, &y)));
+            }
+        }
+    }
 
     /// The generator's neighbour indices equal the index of each moved position.
     fn check_graph<I: AeIndex>(ix: &I) {
