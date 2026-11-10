@@ -16,8 +16,10 @@ for why this split was chosen and how it compares with alternatives.
 cargo build --release
 ```
 
-The build targets `x86-64-v3` (AVX2/BMI2, any x86-64 CPU from about 2015 on); see
-`.cargo/config.toml`.
+On x86-64 the build targets `x86-64-v3` (AVX2/BMI2, any x86-64 CPU from about 2015 on); see
+`.cargo/config.toml`. Other targets build too: aarch64 (e.g. Apple Silicon) uses NEON for
+the byte shuffles, wasm32 uses simd128 when enabled (`-C target-feature=+simd128`), and
+anything else falls back to scalar code.
 
 ## Notation
 

@@ -9,7 +9,6 @@ use rayon::prelude::*;
 use std::alloc::{alloc, dealloc, Layout};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 const HUGE: usize = 2 << 20;
 
@@ -25,7 +24,21 @@ unsafe impl<T: Copy + Send> Send for HugeBuf<T> {}
 // SAFETY: shared access only hands out &[T].
 unsafe impl<T: Copy + Sync> Sync for HugeBuf<T> {}
 
-static WARNED: AtomicBool = AtomicBool::new(false);
+/// Ask the kernel to back the `bytes` bytes at `p` with transparent huge pages.
+#[cfg(target_os = "linux")]
+fn advise_huge(p: *mut u8, bytes: usize) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    // SAFETY: advisory call on memory the caller owns; the range is 2 MiB aligned
+    let r = unsafe { libc::madvise(p.cast::<libc::c_void>(), bytes, libc::MADV_HUGEPAGE) };
+    if r != 0 && !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!("warning: madvise(MADV_HUGEPAGE) failed; tables use normal pages");
+    }
+}
+
+/// Elsewhere the buffer simply uses the system's normal pages.
+#[cfg(not(target_os = "linux"))]
+fn advise_huge(_p: *mut u8, _bytes: usize) {}
 
 /// Layout of a buffer of `len` elements of `T`, rounded up to whole huge pages and aligned to
 /// them. A size beyond the address space is handled like a failed allocation (the process
@@ -57,14 +70,7 @@ impl<T: Copy> HugeBuf<T> {
         let Some(ptr) = NonNull::new(p.cast::<T>()) else {
             std::alloc::handle_alloc_error(layout)
         };
-        #[cfg(target_os = "linux")]
-        {
-            // SAFETY: advisory call on memory we own; the range is 2 MiB aligned
-            let r = unsafe { libc::madvise(p.cast::<libc::c_void>(), bytes, libc::MADV_HUGEPAGE) };
-            if r != 0 && !WARNED.swap(true, Ordering::Relaxed) {
-                eprintln!("warning: madvise(MADV_HUGEPAGE) failed; tables use normal pages");
-            }
-        }
+        advise_huge(p, bytes);
         // SAFETY: the allocation is `bytes` long; zero bytes are valid for T (documented)
         let raw = unsafe { std::slice::from_raw_parts_mut(p, bytes) };
         raw.par_chunks_mut(HUGE).for_each(|c| c.fill(0));
@@ -85,14 +91,7 @@ impl<T: Copy> HugeBuf<T> {
         let Some(ptr) = NonNull::new(p.cast::<T>()) else {
             std::alloc::handle_alloc_error(layout)
         };
-        #[cfg(target_os = "linux")]
-        {
-            // SAFETY: advisory call on memory we own; the range is 2 MiB aligned
-            let r = unsafe { libc::madvise(p.cast::<libc::c_void>(), bytes, libc::MADV_HUGEPAGE) };
-            if r != 0 && !WARNED.swap(true, Ordering::Relaxed) {
-                eprintln!("warning: madvise(MADV_HUGEPAGE) failed; tables use normal pages");
-            }
-        }
+        advise_huge(p, bytes);
         HugeBuf {
             ptr,
             len,

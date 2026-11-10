@@ -46,6 +46,10 @@ pub struct FastTables {
     pub(crate) flip_t: Box<[[u64; 64]; 32]>,
     /// use the BMI2 `pext` instruction for `compress` (it is microcoded and slow on AMD
     /// before Zen 3)
+    #[cfg_attr(
+        not(all(target_arch = "x86_64", target_feature = "bmi2")),
+        allow(dead_code)
+    )]
     pext: bool,
 }
 
@@ -401,7 +405,34 @@ pub fn shuffle(v: &[u8; 16], s: &[u8; 16]) -> [u8; 16] {
         _mm_storeu_si128(o.as_mut_ptr().cast::<__m128i>(), r);
         o
     }
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "ssse3")))]
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is baseline on aarch64; the loads and the store are of 16-byte arrays
+    unsafe {
+        use core::arch::aarch64::*;
+        // TBL gives 0 for indices >= 16; keeping bit 7 and the low 4 bits gives pshufb's rule
+        let idx = vandq_u8(vld1q_u8(s.as_ptr()), vdupq_n_u8(0x8f));
+        let mut o = [0u8; 16];
+        vst1q_u8(o.as_mut_ptr(), vqtbl1q_u8(vld1q_u8(v.as_ptr()), idx));
+        o
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    // SAFETY: simd128 is enabled for this build; v128 loads and stores may be unaligned
+    unsafe {
+        use core::arch::wasm32::*;
+        // swizzle gives 0 for indices >= 16; keeping bit 7 and the low 4 bits gives pshufb's rule
+        let idx = v128_and(v128_load(s.as_ptr().cast()), u8x16_splat(0x8f));
+        let mut o = [0u8; 16];
+        v128_store(
+            o.as_mut_ptr().cast(),
+            i8x16_swizzle(v128_load(v.as_ptr().cast()), idx),
+        );
+        o
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "ssse3"),
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    )))]
     {
         std::array::from_fn(|i| {
             if s[i] & 0x80 != 0 {
@@ -410,6 +441,19 @@ pub fn shuffle(v: &[u8; 16], s: &[u8; 16]) -> [u8; 16] {
                 v[(s[i] & 15) as usize]
             }
         })
+    }
+}
+
+/// Bit i set for each lane i of `eq` that is all ones (NEON has no `movemask`).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn neon_movemask(eq: core::arch::aarch64::uint8x16_t) -> u16 {
+    use core::arch::aarch64::*;
+    const BIT: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
+    // SAFETY: (caller) NEON is available; BIT is a 16-byte array
+    unsafe {
+        let b = vandq_u8(eq, vld1q_u8(BIT.as_ptr()));
+        u16::from(vaddv_u8(vget_low_u8(b))) | u16::from(vaddv_u8(vget_high_u8(b))) << 8
     }
 }
 
@@ -425,7 +469,23 @@ pub fn label_mask(v: &[u8; 16], l: u8) -> u16 {
         let eq = _mm_cmpeq_epi8(x, _mm_set1_epi8(l.cast_signed()));
         (_mm_movemask_epi8(eq).cast_unsigned() & 0xfff) as u16
     }
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is baseline on aarch64; the load is of a 16-byte array
+    unsafe {
+        use core::arch::aarch64::*;
+        neon_movemask(vceqq_u8(vld1q_u8(v.as_ptr()), vdupq_n_u8(l))) & 0xfff
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    // SAFETY: simd128 is enabled for this build; v128 loads may be unaligned
+    unsafe {
+        use core::arch::wasm32::*;
+        u8x16_bitmask(u8x16_eq(v128_load(v.as_ptr().cast()), u8x16_splat(l))) & 0xfff
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "sse2"),
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    )))]
     {
         let mut m = 0u16;
         for p in 0..12 {
@@ -451,7 +511,25 @@ pub fn masks(v: &[u8; 16]) -> [u16; 4] {
             (_mm_movemask_epi8(eq).cast_unsigned() & 0xfff) as u16
         })
     }
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is baseline on aarch64; the load is of a 16-byte array
+    unsafe {
+        use core::arch::aarch64::*;
+        let x = vld1q_u8(v.as_ptr());
+        std::array::from_fn(|l| neon_movemask(vceqq_u8(x, vdupq_n_u8(l as u8))) & 0xfff)
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    // SAFETY: simd128 is enabled for this build; v128 loads may be unaligned
+    unsafe {
+        use core::arch::wasm32::*;
+        let x = v128_load(v.as_ptr().cast());
+        std::array::from_fn(|l| u8x16_bitmask(u8x16_eq(x, u8x16_splat(l as u8))) & 0xfff)
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "sse2"),
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    )))]
     {
         let mut m = [0u16; 4];
         for p in 0..12 {
@@ -487,6 +565,36 @@ mod tests {
             for &(g, t) in &s.pairs {
                 let (e, b) = f.sym_e(&x, &em, g as usize, t as usize);
                 assert_eq!((e, b), s.apply_e(g as usize, t as usize, r.e, r.ebits));
+            }
+        }
+    }
+
+    /// The SIMD byte-vector helpers (SSE, NEON or wasm simd128, depending on the target) agree
+    /// with plain scalar code, including shuffle indices with the top bit set or above 15.
+    #[test]
+    fn simd_helpers_match_scalar() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(16);
+        for _ in 0..20_000 {
+            let v: [u8; 16] = std::array::from_fn(|_| rng.gen());
+            let s: [u8; 16] = std::array::from_fn(|_| rng.gen());
+            let want: [u8; 16] = std::array::from_fn(|i| {
+                if s[i] & 0x80 != 0 {
+                    0
+                } else {
+                    v[(s[i] & 15) as usize]
+                }
+            });
+            assert_eq!(shuffle(&v, &s), want);
+            let labels: [u8; 16] =
+                std::array::from_fn(|i| if i < 12 { rng.gen_range(0..4) } else { 0 });
+            let mut want_m = [0u16; 4];
+            for p in 0..12 {
+                want_m[labels[p] as usize] |= 1 << p;
+            }
+            assert_eq!(masks(&labels), want_m);
+            for l in 0..4u8 {
+                assert_eq!(label_mask(&labels, l), want_m[l as usize]);
             }
         }
     }

@@ -102,6 +102,17 @@ pub fn prefetch<T>(p: &T) {
             core::arch::x86_64::_MM_HINT_T0,
         );
     }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: PRFM is a hint and never faults, whatever the address
+    unsafe {
+        core::arch::asm!(
+            "prfm pldl1keep, [{0}]",
+            in(reg) std::ptr::from_ref(p),
+            options(nostack, preserves_flags, readonly)
+        );
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let _ = p;
 }
 
 pub struct AeSym {
