@@ -265,8 +265,8 @@ impl<'a, I: AeIndex> Shared<'a, I> {
         let mut hcs = [0u8; N_MOVES];
         let mut idx = [0usize; N_MOVES];
         let mut cbi = [0usize; N_MOVES];
-        // The CB table (max 8) prunes almost nothing with 7+ moves left: check AE first there.
-        let ae_first = budget >= 7;
+        // The CB table (max 8) prunes almost nothing with 6+ moves left: check AE first there.
+        let ae_first = budget >= 6;
         if ae_first {
             t.ae_ix.index_batch_fast_pf(f, &ys[..n], &mut idx[..n], &t.ae.data);
             let mut k = 0;
