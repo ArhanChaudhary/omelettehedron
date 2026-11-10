@@ -73,7 +73,12 @@ impl<T: Copy> HugeBuf<T> {
         advise_huge(p, bytes);
         // SAFETY: the allocation is `bytes` long; zero bytes are valid for T (documented)
         let raw = unsafe { std::slice::from_raw_parts_mut(p, bytes) };
+        // (sequential under Miri: rayon's crossbeam-epoch uses a container-of cast that Stacked
+        // Borrows rejects, which would hide checks of this module's own unsafe code)
+        #[cfg(not(miri))]
         raw.par_chunks_mut(HUGE).for_each(|c| c.fill(0));
+        #[cfg(miri)]
+        raw.fill(0);
         HugeBuf {
             ptr,
             len,
