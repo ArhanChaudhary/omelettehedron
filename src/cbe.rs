@@ -220,6 +220,7 @@ impl CbeIndex {
             a: [0; 16],
             b: [0; 16],
             e: [0; 16],
+            ep: [0; 16],
             c: self.rep[cls],
             ebits: (e1 % 2) as u8,
         };

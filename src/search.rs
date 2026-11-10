@@ -472,6 +472,34 @@ impl<'a, I: AeIndex> Shared<'a, I> {
             }
             n = k;
         }
+        // Direct distance-to-solved bound against the best solution so far. The phase-1
+        // bounds above only measure the distance to H_A (or H_B), which is small near H_A even
+        // when the phase-2 part still needs many moves.
+        if B && n > 0 {
+            if let Some(dt) = &t.direct {
+                let lim = self.best_len.load(Ordering::Relaxed).saturating_sub(g + 2);
+                let mut di = [0usize; N_MOVES];
+                for i in 0..n {
+                    di[i] = crate::direct::DirectTables::index(&ys[i]);
+                    dt.prefetch(di[i]);
+                }
+                let mut k = 0;
+                for i in 0..n {
+                    if dt.bound(&ys[i], di[i]) as usize <= lim {
+                        ys[k] = ys[i];
+                        ms[k] = ms[i];
+                        has[k] = has[i];
+                        hcs[k] = hcs[i];
+                        pend[k] = pend[i];
+                        ybs[k] = ybs[i];
+                        hbas[k] = hbas[i];
+                        hbcs[k] = hbcs[i];
+                        k += 1;
+                    }
+                }
+                n = k;
+            }
+        }
         // Ordering statistic of the task: how close its subtree gets to the phase-1 target.
         for i in 0..n {
             *stat += STAT_W[has[i].max(hcs[i]) as usize];

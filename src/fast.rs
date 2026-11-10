@@ -18,6 +18,8 @@ pub struct Fc {
     pub a: [u8; 16],
     pub b: [u8; 16],
     pub e: [u8; 16],
+    /// full edge permutation (piece in each position), for the direct bounds
+    pub ep: [u8; 16],
     pub c: u16,
     pub ebits: u8,
 }
@@ -241,12 +243,14 @@ impl FastTables {
             a: [0; 16],
             b: [0; 16],
             e: [0; 16],
+            ep: [0; 16],
             c: corners().id(cube),
             ebits: edge_chirality(&cube.ep),
         };
         f.a[..12].copy_from_slice(&cube.xa);
         f.b[..12].copy_from_slice(&cube.xb);
         f.e[..12].copy_from_slice(&e);
+        f.ep[..12].copy_from_slice(&cube.ep);
         f
     }
 
@@ -256,6 +260,12 @@ impl FastTables {
     pub fn flip_word(&self, em: &[u16; 4]) -> u64 {
         let w = em.map(|q| self.flip_moves[q as usize & 0xfff] as u64);
         w[0] | w[1] << 16 | w[2] << 32 | w[3] << 48
+    }
+
+    /// Corner id after move `m`.
+    #[inline(always)]
+    pub fn corner_move(&self, c: u16, m: usize) -> u16 {
+        self.corner[c as usize & 1023][m & 15]
     }
 
     /// Apply move `m`. `em` are the edge-label masks of `x` (from [`masks`]).
@@ -274,6 +284,7 @@ impl FastTables {
             a: shuffle(&x.a, &self.shuf_a[m]),
             b: shuffle(&x.b, &self.shuf_b[m]),
             e: shuffle(&x.e, &self.shuf_e[m]),
+            ep: shuffle(&x.ep, &self.shuf_e[m]),
             c: self.corner[x.c as usize & 1023][m & 15],
             ebits: x.ebits ^ flips,
         }

@@ -8,6 +8,7 @@ pub mod bench;
 pub mod cbe;
 pub mod coord;
 pub mod cube;
+pub mod direct;
 pub mod fast;
 pub mod geometry;
 pub mod mem;

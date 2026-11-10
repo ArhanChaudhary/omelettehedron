@@ -540,6 +540,14 @@ pub struct Tables<I: AeIndex> {
     pub cb: CbTable,
     pub p2: Phase2,
     pub cbe: Option<crate::cbe::CbeTable>,
+    /// direct distance-to-solved bounds (experimental: FTO_DIRECT=1)
+    pub direct: Option<crate::direct::DirectTables>,
+}
+
+fn direct_from_env(verbose: bool) -> Option<crate::direct::DirectTables> {
+    std::env::var_os("FTO_DIRECT")
+        .is_some_and(|v| v != "0")
+        .then(|| crate::direct::DirectTables::build(verbose))
 }
 
 pub fn table_dir(dir: Option<&Path>) -> PathBuf {
@@ -594,6 +602,7 @@ impl<I: AeIndex> Tables<I> {
             cb,
             p2: Phase2::new(),
             cbe: None,
+            direct: direct_from_env(false),
         }
     }
 
@@ -653,6 +662,7 @@ impl<I: AeIndex> Tables<I> {
             cb,
             p2: Phase2::new(),
             cbe,
+            direct: direct_from_env(verbose),
         })
     }
 
