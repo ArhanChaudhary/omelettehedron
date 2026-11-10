@@ -24,7 +24,6 @@ use crate::tables::{prefetch, CbTable, Phase2};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// 220 position sets x 1 chirality bit
 pub const N_E1: usize = 440;
@@ -334,43 +333,20 @@ impl CbeTable {
             .collect();
         targets.sort_unstable();
         targets.dedup();
-        let codes_raw: Vec<AtomicU64> = (0..n.div_ceil(32))
-            .into_par_iter()
-            .map(|_| AtomicU64::new(0))
-            .collect();
-        let tab = bfs_with(
-            &CbeGraph { ix: &ix, f },
-            n,
-            &targets,
-            &|i, d| {
-                if d >= 7 {
-                    let code = (d - 6).min(3) as u64;
-                    codes_raw[i >> 5].fetch_or(code << ((i & 31) << 1), Ordering::Relaxed);
-                }
-            },
-            "cbe",
-            verbose,
-        );
-        let hist = tab.hist.clone();
-        drop(tab);
-        let mut codes = HugeBuf::<u64>::zeroed(n.div_ceil(32));
-        codes
-            .par_iter_mut()
-            .zip(codes_raw.par_iter())
-            .for_each(|(o, a)| *o = a.load(Ordering::Relaxed));
-        CbeTable { ix, codes, hist }
+        // The codes are made directly (see `saturating`).
+        let t = saturating(&CbeGraph { ix: &ix, f }, n, &targets, 6, "cbe", verbose);
+        CbeTable {
+            ix,
+            codes: t.data,
+            hist: t.hist,
+        }
     }
 
     /// # Errors
     ///
     /// If the file cannot be written.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let t = Table2 {
-            data: HugeBuf::from_slice(&self.codes),
-            n: self.ix.size(),
-            hist: self.hist.clone(),
-        };
-        t.save(path)
+        save_words(path, self.ix.size(), &self.hist, &self.codes)
     }
 
     /// # Errors

@@ -43,25 +43,7 @@ impl Table2 {
     ///
     /// If the file cannot be written.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let tmp = path.with_extension("tmp");
-        let mut f = std::io::BufWriter::with_capacity(1 << 24, std::fs::File::create(&tmp)?);
-        f.write_all(b"FTOPRUN2")?;
-        f.write_all(&(self.n as u64).to_le_bytes())?;
-        f.write_all(&(self.hist.len() as u64).to_le_bytes())?;
-        for h in &self.hist {
-            f.write_all(&h.to_le_bytes())?;
-        }
-        f.write_all(&checksum(&self.data).to_le_bytes())?;
-        // SAFETY: u64 slice reinterpreted as bytes for writing
-        let bytes = unsafe {
-            std::slice::from_raw_parts(self.data.as_ptr().cast::<u8>(), self.data.len() * 8)
-        };
-        for chunk in bytes.chunks(1 << 26) {
-            f.write_all(chunk)?;
-        }
-        f.flush()?;
-        drop(f);
-        std::fs::rename(tmp, path)
+        save_words(path, self.n, &self.hist, &self.data)
     }
 
     /// Read a table of `n` entries from `path`. (Parallel fused read and checksum, part of the
@@ -112,6 +94,32 @@ impl Table2 {
         }
         Ok(Table2 { data, n, hist })
     }
+}
+
+/// Write a table of `n` entries with histogram `hist` and words `data` to `path` (through a
+/// temporary file, renamed when complete).
+///
+/// # Errors
+///
+/// If the file cannot be written.
+pub fn save_words(path: &Path, n: usize, hist: &[u64], data: &[u64]) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    let mut f = std::io::BufWriter::with_capacity(1 << 24, std::fs::File::create(&tmp)?);
+    f.write_all(b"FTOPRUN2")?;
+    f.write_all(&(n as u64).to_le_bytes())?;
+    f.write_all(&(hist.len() as u64).to_le_bytes())?;
+    for h in hist {
+        f.write_all(&h.to_le_bytes())?;
+    }
+    f.write_all(&checksum(data).to_le_bytes())?;
+    // SAFETY: u64 slice reinterpreted as bytes for writing
+    let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), data.len() * 8) };
+    for chunk in bytes.chunks(1 << 26) {
+        f.write_all(chunk)?;
+    }
+    f.flush()?;
+    drop(f);
+    std::fs::rename(tmp, path)
 }
 
 /// Words per checksum chunk.
@@ -310,21 +318,12 @@ const RING: usize = 32;
 
 /// Forward step over `lo..hi`: set every unvisited neighbour (and its equivalents) of the
 /// entries holding `cur` to `next`. Returns the number of entries set.
-fn forward<G: Graph>(
-    g: &G,
-    tab: &[AtomicU64],
-    lo: usize,
-    hi: usize,
-    cur: u8,
-    next: u8,
-    on_set: &(dyn Fn(usize) + Sync),
-) -> u64 {
+fn forward<G: Graph>(g: &G, tab: &[AtomicU64], lo: usize, hi: usize, cur: u8, next: u8) -> u64 {
     let mut ring = [usize::MAX; RING];
     let mut head = 0;
     let mut cnt = 0;
     let write = |k: usize, cnt: &mut u64| {
         if set_if_empty(tab, k, next) {
-            on_set(k);
             *cnt += 1;
         }
     };
@@ -382,7 +381,6 @@ fn backward<G: Graph>(
     hi: usize,
     (cur, next): (u8, u8),
     set: bool,
-    on_set: &(dyn Fn(usize) + Sync),
     mut misses: Option<&mut Vec<usize>>,
 ) -> u64 {
     let start = |i: usize| -> Lane<G::Node> {
@@ -408,7 +406,6 @@ fn backward<G: Graph>(
                     let sh = (l.i & 31) << 1;
                     let v = w.load(Ordering::Relaxed);
                     w.store(v & !(u64::from(3 ^ next) << sh), Ordering::Relaxed);
-                    on_set(l.i);
                 }
             } else if let Some(v) = misses.as_deref_mut() {
                 v.push(l.i);
@@ -430,6 +427,23 @@ fn backward<G: Graph>(
         }
     }
     cnt
+}
+
+/// Map every 2-bit entry `v` of a word to `map[v]`.
+#[inline(always)]
+fn remap_word(w: u64, map: [u8; 4]) -> u64 {
+    let (lo, hi) = (w & LOW, (w >> 1) & LOW);
+    let is = [!hi & !lo & LOW, !hi & lo, hi & !lo, hi & lo];
+    let (mut nlo, mut nhi) = (0, 0);
+    for v in 0..4 {
+        if map[v] & 1 != 0 {
+            nlo |= is[v];
+        }
+        if map[v] & 2 != 0 {
+            nhi |= is[v];
+        }
+    }
+    nlo | nhi << 1
 }
 
 /// Level-by-level breadth-first search over the 2-bit entries of a table; 3 marks an
@@ -491,11 +505,11 @@ impl<'g, G: Graph> Bfs<'g, G> {
         self.n as u64 - self.done
     }
 
-    /// One level: every unvisited entry next to an entry holding `cur` gets `next`, and
-    /// `on_set(i)` is called for it. Returns the number of entries reached (also appended to
-    /// `hist` if non-zero). Older entries may hold `cur` too (mod-3 distances): a forward step
-    /// expands them for nothing, a backward step cannot meet them.
-    pub fn level(&mut self, cur: u8, next: u8, on_set: &(dyn Fn(usize) + Sync)) -> u64 {
+    /// One level: every unvisited entry next to an entry holding `cur` gets `next`. Returns
+    /// the number of entries reached (also appended to `hist` if non-zero). Older entries may
+    /// hold `cur` too (mod-3 distances): a forward step expands them for nothing, a backward
+    /// step cannot meet them.
+    pub fn level(&mut self, cur: u8, next: u8) -> u64 {
         let tab = self.tab();
         let (g, n) = (self.g, self.n);
         let frontier = self.hist.last().copied().unwrap_or(0);
@@ -506,9 +520,9 @@ impl<'g, G: Graph> Bfs<'g, G> {
             .map(|c| {
                 let (lo, hi) = (c * CH, ((c + 1) * CH).min(n));
                 if fwd {
-                    forward(g, tab, lo, hi, cur, next, on_set)
+                    forward(g, tab, lo, hi, cur, next)
                 } else {
-                    backward(g, tab, lo, hi, (cur, next), true, on_set, None)
+                    backward(g, tab, lo, hi, (cur, next), true, None)
                 }
             })
             .sum();
@@ -526,6 +540,81 @@ impl<'g, G: Graph> Bfs<'g, G> {
             );
         }
         newc
+    }
+
+    /// Replace every entry value `v` by `map[v]`.
+    pub fn remap(&mut self, map: [u8; 4]) {
+        self.raw
+            .par_chunks_mut(1 << 16)
+            .for_each(|c| c.iter_mut().for_each(|w| *w = remap_word(*w, map)));
+    }
+
+    /// Append the distances of the entries not reached yet to `hist`, without changing the
+    /// table: a backward pass counts the unvisited entries next to one holding `cur` (the
+    /// last level), and a BFS restricted to the entries it does not reach (meant to be few)
+    /// counts the rest.
+    pub fn count_rest(&mut self, cur: u8) {
+        let tab = self.tab();
+        let (g, n) = (self.g, self.n);
+        let (cnt, mut rest) = (0..n.div_ceil(CH))
+            .into_par_iter()
+            .map(|c| {
+                let mut v = vec![];
+                let lo = c * CH;
+                let k = backward(
+                    g,
+                    tab,
+                    lo,
+                    (lo + CH).min(n),
+                    (cur, cur),
+                    false,
+                    Some(&mut v),
+                );
+                (k, v)
+            })
+            .reduce(
+                || (0, vec![]),
+                |(a, mut va), (b, vb)| {
+                    va.extend(vb);
+                    (a + b, va)
+                },
+            );
+        if cnt == 0 {
+            return;
+        }
+        let mut counts = vec![cnt];
+        // Distances among the rest: the previous level is the unvisited entries outside the
+        // rest at first, then the entries found last. (Equivalent indices are in the same
+        // sets, so neighbours are made without them.)
+        rest.par_sort_unstable();
+        let mut last: Option<Vec<usize>> = None;
+        loop {
+            let in_last = |j: usize| match &last {
+                None => get(tab, j) == 3 && rest.binary_search(&j).is_err(),
+                Some(l) => l.binary_search(&j).is_ok(),
+            };
+            let (mut found, left): (Vec<usize>, Vec<usize>) = rest.par_iter().partition(|&&i| {
+                let x = g.node(i);
+                (0..G::MOVES).any(|m| in_last(g.step(&x, m)))
+            });
+            if found.is_empty() {
+                break;
+            }
+            counts.push(found.len() as u64);
+            found.par_sort_unstable();
+            last = Some(found);
+            rest = left;
+        }
+        if self.verbose {
+            eprintln!(
+                "  {}: depths {}.. {counts:?} (counted) {:.1}s",
+                self.name,
+                self.hist.len(),
+                self.t0.elapsed().as_secs_f64()
+            );
+        }
+        self.done += counts.iter().sum::<u64>();
+        self.hist.extend(counts);
     }
 
     /// The table with the distance histogram.
@@ -554,29 +643,46 @@ impl<'g, G: Graph> Bfs<'g, G> {
     }
 }
 
-/// Distance mod 3 of every entry from `targets` (unreachable entries keep 3).
-pub fn bfs<G: Graph>(g: &G, n: usize, targets: &[usize], name: &str, verbose: bool) -> Table2 {
-    bfs_with(g, n, targets, &|_, _| {}, name, verbose)
-}
-
-/// [`bfs`] that also calls `on_set(index, depth)` for every entry when its depth is found
-/// (depth >= 1; targets are depth 0).
-pub fn bfs_with<G: Graph>(
+/// Saturating distance codes from `targets`: 0 = at most `base`, 1 = `base + 1`,
+/// 2 = `base + 2`, 3 = more (or unreachable). The histogram covers all distances.
+///
+/// Distances are kept mod 3 up to `base`; then the frontier becomes code 1 and everything
+/// older code 0, the next level writes 2 and is relabelled to 1, and the BFS stops after
+/// `base + 2`, where the codes are final. Only the histogram of the rest is counted. (Used
+/// for CBE: no second array and no copies when building or saving; peak memory of the
+/// large-tier generation 14.9 -> 8.1 GB, CBE generation 47.3 -> 44.8 s at 48T when added,
+/// opt/gen.)
+pub fn saturating<G: Graph>(
     g: &G,
     n: usize,
     targets: &[usize],
-    on_set: &(dyn Fn(usize, usize) + Sync),
+    base: u8,
     name: &str,
     verbose: bool,
 ) -> Table2 {
     let mut b = Bfs::new(g, n, targets, 0, name, verbose);
-    let mut d = 0;
-    while b.unvisited() > 0 {
-        let cur = (d % 3) as u8;
-        if b.level(cur, (cur + 1) % 3, &|i| on_set(i, d + 1)) == 0 {
-            break;
-        }
-        d += 1;
+    for d in 0..base {
+        b.level(d % 3, (d + 1) % 3);
+    }
+    // Distance `base` -> 1, the rest of <= base -> 0. (Distances base - 3, base - 6, ...
+    // share the value of `base` and become frontier entries too; that is harmless: all their
+    // neighbours are reached.)
+    let mut map = [0, 0, 0, 3];
+    map[(base % 3) as usize] = 1;
+    b.remap(map);
+    b.level(1, 2);
+    b.remap([0, 0, 1, 3]);
+    b.level(1, 2);
+    b.count_rest(2);
+    b.finish()
+}
+
+/// Distance mod 3 of every entry from `targets` (unreachable entries keep 3).
+pub fn bfs<G: Graph>(g: &G, n: usize, targets: &[usize], name: &str, verbose: bool) -> Table2 {
+    let mut b = Bfs::new(g, n, targets, 0, name, verbose);
+    let mut cur = 0;
+    while b.unvisited() > 0 && b.level(cur, (cur + 1) % 3) > 0 {
+        cur = (cur + 1) % 3;
     }
     b.finish()
 }
@@ -682,6 +788,20 @@ mod tests {
         assert_eq!(t.hist, hist);
         for i in 0..g.0 {
             assert_eq!(t.get(i) as u32, dist[i] % 3);
+        }
+    }
+
+    #[test]
+    fn saturating_matches_reference() {
+        let g = Chords(300_007);
+        let (dist, hist) = reference(&g);
+        for base in [2u8, 6, 7] {
+            let t = saturating(&g, g.0, &[0], base, "chords", false);
+            assert_eq!(t.hist, hist);
+            for i in 0..g.0 {
+                let code = dist[i].saturating_sub(base as u32).min(3);
+                assert_eq!(t.get(i) as u32, code, "base {base} index {i}");
+            }
         }
     }
 }
