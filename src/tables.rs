@@ -601,11 +601,12 @@ fn load_or_build(
             Ok(t)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // 2 bits per entry
+            crate::preflight::check_table(path, n.div_ceil(4) as u64)?;
             if verbose {
                 eprintln!("generating {} ...", path.display());
             }
             let t = build();
-            std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
             t.save(path)?;
             Ok(t)
         }
@@ -679,6 +680,8 @@ impl<I: AeIndex> Tables<I> {
                     t
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    let size = crate::cbe::CbeIndex::new().size();
+                    crate::preflight::check_table(&path, size.div_ceil(4) as u64)?;
                     if verbose {
                         eprintln!("generating {} ...", path.display());
                     }
