@@ -145,7 +145,7 @@ Measured in Bun 1.4.4 (JavaScriptCore, Safari's engine) on the 48-core EPYC VM:
 | table generation | 23.6 s (1T), ~1 s (48T) | 32.7 s | 31.0 s | 16.4 s |
 | table load (both files) | | 2.2 s | 0.5 s | |
 | search speed (10 random positions, 5 s each) | 58 / 399 / 2162 M nodes/s (1/8/48T) | 23 M nodes/s | 36 M nodes/s | 74 M nodes/s |
-| random positions solved within 5 s | 9 / 10 / 10 of 10 | 4 | 7 | 10 |
+| random positions with any solution after 5 s | 9 / 10 / 10 of 10 | 4 | 7 | 10 |
 
 The modules are 0.55 MB each. The single-thread module grows to 352 MiB while generating and
 428 MiB while loading table files. The optimal solves of short scrambles (6-14 moves) take

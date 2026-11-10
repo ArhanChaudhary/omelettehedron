@@ -61,7 +61,7 @@ Measured in Bun (JavaScriptCore) on the same machine; see the README's WebAssemb
 |---|---|---|---|
 | table generation | 27 s (1T), 1.2 s (48T) | 32.7 s | 16.4 s |
 | search speed | 58 M nodes/s (1T) | 23 M nodes/s | 74 M nodes/s |
-| random positions solved within 5 s | 9 of 10 (1T) | 4 of 10 | 10 of 10 |
+| random positions with any solution after 5 s | 9 of 10 (1T) | 4 of 10 | 10 of 10 |
 
 The modules are 0.55 MB each. Threads scale poorly in JavaScriptCore because its WebAssembly
 atomic loads are slow under contention.
