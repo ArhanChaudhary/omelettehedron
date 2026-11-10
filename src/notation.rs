@@ -211,6 +211,38 @@ pub fn scramble_to_cube(moves: &[PhysMove]) -> (Cube, Frame) {
     (c, fr)
 }
 
+/// The solved cube with every centre labelled: centre i of each orbit carries label i, whose
+/// colour is i / 3 (the colouring of [`Cube::solved`]). Used for pure-FTO solves.
+pub fn labelled_solved() -> Cube {
+    Cube {
+        xa: std::array::from_fn(|i| i as u8),
+        xb: std::array::from_fn(|i| i as u8),
+        ..Cube::solved()
+    }
+}
+
+/// [`scramble_to_cube`] on the labelled solved cube: the position of a pure FTO, every centre
+/// distinguishable (its colouring is [`colours`] of it).
+pub fn scramble_to_labelled(moves: &[PhysMove]) -> Cube {
+    let mut fr = Frame::identity();
+    let mut c = labelled_solved();
+    for &pm in moves {
+        let (m, nf) = fr.to_internal(pm);
+        c = c.apply(m);
+        fr = nf;
+    }
+    c
+}
+
+/// The colouring of a labelled cube (label i has colour i / 3).
+pub fn colours(c: &Cube) -> Cube {
+    Cube {
+        xa: c.xa.map(|l| l / 3),
+        xb: c.xb.map(|l| l / 3),
+        ..*c
+    }
+}
+
 /// Convert an internal solution, starting in frame `fr`, to physical moves (with `wide`, wide
 /// internal moves are printed as wide turns: see [`Frame::to_physical`]).
 pub fn solution_to_physical(fr: Frame, sol: &[usize], wide: bool) -> Vec<PhysMove> {
