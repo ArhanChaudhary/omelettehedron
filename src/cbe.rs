@@ -48,9 +48,15 @@ pub struct CbeIndex {
 
 /// Conjugate the corner state `c` by symmetry `m` and re-fix the front corner; returns the new
 /// corner id and the index of the rotation used.
+#[cfg(test)]
 fn conj_renorm_corner(c: u16, m: usize) -> (u16, usize) {
+    let wps: Vec<Vec<usize>> = syms().mats.iter().map(|r| defs().sm.whole(r)).collect();
+    conj_renorm_corner_with(c, m, &wps)
+}
+
+/// [`conj_renorm_corner`] with the sticker permutations of the symmetries precomputed.
+fn conj_renorm_corner_with(c: u16, m: usize, wps: &[Vec<usize>]) -> (u16, usize) {
     let s = syms();
-    let d = defs();
     let (cp, co) = corners().id_to_state[c as usize];
     let st = Cube {
         cp,
@@ -59,7 +65,7 @@ fn conj_renorm_corner(c: u16, m: usize) -> (u16, usize) {
     }
     .to_stickers();
     let mm = &s.mats[m];
-    let wp = d.sm.whole(mm);
+    let wp = &wps[m];
     let mut n = [0u8; 72];
     for i in 0..72 {
         n[wp[i]] = face_of_normal(mat_vec(mm, FACES[st[i] as usize])) as u8;
@@ -68,7 +74,7 @@ fn conj_renorm_corner(c: u16, m: usize) -> (u16, usize) {
         if det(r) != 1 {
             continue;
         }
-        let rp = d.sm.whole(r);
+        let rp = &wps[ri];
         let mut n2 = [0u8; 72];
         for i in 0..72 {
             n2[rp[i]] = n[i];
@@ -88,10 +94,12 @@ impl CbeIndex {
         // symmetries mapping A-face k to A-face 0
         let to0 = |k: usize| -> Vec<usize> { (0..N_GEO).filter(|&m| s.a_col[m][k] == 0).collect() };
         let s0 = to0(0);
+        let wps: Vec<Vec<usize>> = s.mats.iter().map(|r| defs().sm.whole(r)).collect();
         let conj: Vec<Vec<(u16, usize)>> = (0..N_GEO)
+            .into_par_iter()
             .map(|m| {
                 (0..N_CORNER as u16)
-                    .map(|c| conj_renorm_corner(c, m))
+                    .map(|c| conj_renorm_corner_with(c, m, &wps))
                     .collect()
             })
             .collect();

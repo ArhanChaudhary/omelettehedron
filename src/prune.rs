@@ -65,7 +65,7 @@ impl Table2 {
                 format!("{}: {m}", path.display()),
             )
         };
-        let mut f = std::io::BufReader::with_capacity(1 << 24, std::fs::File::open(path)?);
+        let mut f = std::io::BufReader::with_capacity(1 << 16, std::fs::File::open(path)?);
         let mut b8 = [0u8; 8];
         f.read_exact(&mut b8)?;
         if &b8 != b"FTOPRUN2" {
@@ -85,16 +85,76 @@ impl Table2 {
         f.read_exact(&mut b8)?;
         let sum = u64::from_le_bytes(b8);
         let words = n.div_ceil(32);
-        let mut data = alloc_words(words);
-        // SAFETY: reading raw bytes into the u64 buffer
-        let bytes =
-            unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, words * 8) };
-        f.read_exact(bytes)?;
-        if checksum(&data) != sum {
+        let offset = (32 + 8 * nh) as u64;
+        let file = f.into_inner();
+        // Read in parallel and checksum each piece while it is in cache; the buffer is not
+        // zeroed first since every word is overwritten.
+        let mut data = HugeBuf::<u64>::for_overwrite(words);
+        let sums: std::io::Result<Vec<u64>> = data
+            .par_chunks_mut(CK * GROUP)
+            .enumerate()
+            .map(|(gi, g)| read_and_hash(&file, offset, gi * GROUP, g))
+            .collect();
+        if sums?.into_iter().fold(0, |a, b| a ^ b) != sum {
             return Err(err("checksum mismatch"));
         }
         Ok(Table2 { data, n, hist })
     }
+}
+
+/// Words per checksum chunk.
+const CK: usize = 1 << 20;
+/// Checksum chunks hashed together (independent dependency chains) by one worker.
+const GROUP: usize = 4;
+/// Words read per `pread`.
+const PIECE: usize = 1 << 17;
+
+/// One chunk's hash step (see [`checksum`]).
+#[inline(always)]
+fn hash_step(h: u64, x: u64) -> u64 {
+    (h ^ x).wrapping_mul(0x100000001b3).rotate_left(23)
+}
+
+/// Fill `g` (chunks `c0..` of the table) from the file and return the XOR of their checksums.
+fn read_and_hash(file: &std::fs::File, offset: u64, c0: usize, g: &mut [u64]) -> std::io::Result<u64> {
+    use std::os::unix::fs::FileExt;
+    let nc = g.len().div_ceil(CK);
+    let mut h: [u64; GROUP] = std::array::from_fn(|j| 0x9e3779b97f4a7c15u64 ^ (c0 + j) as u64);
+    let full = g.len() / CK == GROUP;
+    let mut pos = 0;
+    while pos < CK.min(g.len()) {
+        let len = PIECE.min(CK - pos);
+        for j in 0..nc {
+            let lo = (j * CK + pos).min(g.len());
+            let hi = (j * CK + pos + len).min(g.len()).min((j + 1) * CK);
+            if lo >= hi {
+                continue;
+            }
+            // SAFETY: reading raw bytes into the u64 buffer
+            let bytes = unsafe {
+                std::slice::from_raw_parts_mut(g[lo..hi].as_mut_ptr() as *mut u8, (hi - lo) * 8)
+            };
+            file.read_exact_at(bytes, offset + ((c0 * CK + lo) * 8) as u64)?;
+        }
+        if full {
+            // four independent chains: the multiply latency is shared
+            for i in pos..pos + len {
+                for j in 0..GROUP {
+                    h[j] = hash_step(h[j], g[j * CK + i]);
+                }
+            }
+        } else {
+            for j in 0..nc {
+                let lo = (j * CK + pos).min(g.len());
+                let hi = (j * CK + pos + len).min(g.len()).min((j + 1) * CK);
+                for &x in &g[lo..hi.max(lo)] {
+                    h[j] = hash_step(h[j], x);
+                }
+            }
+        }
+        pos += len;
+    }
+    Ok(h[..nc].iter().fold(0, |a, b| a ^ b))
 }
 
 fn checksum(d: &[u64]) -> u64 {

@@ -59,6 +59,34 @@ impl<T: Copy> HugeBuf<T> {
         }
     }
 
+    /// Buffer of `len` elements whose contents are unspecified (any bit pattern must be valid
+    /// for `T`); the caller overwrites all of it. Skips the zeroing pass of [`Self::zeroed`].
+    pub fn for_overwrite(len: usize) -> HugeBuf<T> {
+        let bytes = (len * std::mem::size_of::<T>())
+            .max(1)
+            .next_multiple_of(HUGE);
+        let align = HUGE.max(std::mem::align_of::<T>());
+        let layout = Layout::from_size_align(bytes, align).expect("layout");
+        // SAFETY: layout has non-zero size
+        let p = unsafe { alloc(layout) };
+        let Some(ptr) = NonNull::new(p as *mut T) else {
+            std::alloc::handle_alloc_error(layout)
+        };
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: advisory call on memory we own; the range is 2 MiB aligned
+            let r = unsafe { libc::madvise(p as *mut libc::c_void, bytes, libc::MADV_HUGEPAGE) };
+            if r != 0 && !WARNED.swap(true, Ordering::Relaxed) {
+                eprintln!("warning: madvise(MADV_HUGEPAGE) failed; tables use normal pages");
+            }
+        }
+        HugeBuf {
+            ptr,
+            len,
+            layout: Some(layout),
+        }
+    }
+
     /// Copy a slice into a new huge-page buffer.
     pub fn from_slice(s: &[T]) -> HugeBuf<T> {
         let mut b = Self::zeroed(s.len());
