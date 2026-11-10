@@ -10,6 +10,7 @@ use crate::cube::*;
 use crate::fast::*;
 use crate::prune::*;
 use crate::sym::*;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -45,7 +46,15 @@ pub trait AeIndex: Send + Sync + 'static {
         }
     }
     /// Index of a fast-coordinate position, given its A rank.
-    fn index_fast(&self, f: &FastTables, x: &Fc, a_rank: u32) -> usize;
+    #[inline(always)]
+    fn index_fast(&self, f: &FastTables, x: &Fc, a_rank: u32) -> usize {
+        self.index_entry(f, x, *self.class_entry(a_rank))
+    }
+    /// Index of a fast-coordinate position, given the symmetry-class table entry of its A
+    /// rank (only the edges of `x` are read).
+    fn index_entry(&self, f: &FastTables, x: &Fc, v: u32) -> usize;
+    /// Entries per A-centre class (the index is class * `class_size()` + edge part).
+    fn class_size(&self) -> usize;
     /// The symmetry-class table read first by `index_fast` (for prefetching).
     fn class_entry(&self, a_rank: u32) -> &u32;
     /// Pipelined `index_fast` over a batch.
@@ -188,8 +197,7 @@ impl AeIndex for AeSym {
         }
     }
     #[inline(always)]
-    fn index_fast(&self, f: &FastTables, x: &Fc, a_rank: u32) -> usize {
-        let v = self.cls.sym[a_rank as usize];
+    fn index_entry(&self, f: &FastTables, x: &Fc, v: u32) -> usize {
         let (g, t) = (v >> 16 & 0xff, v >> 24);
         let (e, b) = f.sym_e(x, &masks(&x.e), g as usize, t as usize);
         let c = (v & 0xffff) as usize;
@@ -197,6 +205,13 @@ impl AeIndex for AeSym {
             c * N_ECOSET + e as usize * 8 + (b & 7) as usize
         } else {
             c * N_MSET + e as usize
+        }
+    }
+    fn class_size(&self) -> usize {
+        if self.chiral {
+            N_ECOSET
+        } else {
+            N_MSET
         }
     }
     #[inline(always)]
@@ -290,11 +305,13 @@ impl AeIndex for AeRelabel {
         (self.cls.rep[c], e, b3 | bit3 << 3)
     }
     #[inline(always)]
-    fn index_fast(&self, f: &FastTables, x: &Fc, a_rank: u32) -> usize {
-        let v = self.cls.sym[a_rank as usize];
+    fn index_entry(&self, f: &FastTables, x: &Fc, v: u32) -> usize {
         let g = ROT_IDX[(v >> 16) as usize] as usize;
         let (e, b) = f.relabel_e(x, g);
         (v & 0xffff) as usize * N_ECOSET + e as usize * 8 + (b & 7) as usize
+    }
+    fn class_size(&self) -> usize {
+        N_ECOSET
     }
     #[inline(always)]
     fn class_entry(&self, a_rank: u32) -> &u32 {
@@ -544,35 +561,73 @@ impl Graph for CbGraph {
     }
 }
 
-/// Moves between AE entries.
-struct AeGraph<'a, I: AeIndex>(&'a I, &'static MoveTables);
+/// Moves between AE entries, with the cache-resident coordinates of the search: a move is a
+/// byte shuffle and the index needs only small tables (the move and symmetry tables of
+/// [`Coords`] are megabytes each). An entry's A-centres are its class representative, so the
+/// A part of each neighbour (its class-table entry) is tabulated per class and move. (Fast
+/// coordinates: small tier 2.2 -> 1.5 s, AE medium generation 9.4 -> 8.1 s at 48T; the
+/// per-class table: AE medium 7.6 -> 6.1 s, medium tier 8.1 -> 6.7 s; when added, opt/gen.)
+struct AeGraph<'a, I: AeIndex> {
+    ix: &'a I,
+    f: &'static FastTables,
+    /// class-table entry of each class representative after each move
+    next: Vec<[u32; N_MOVES]>,
+}
+
+impl<'a, I: AeIndex> AeGraph<'a, I> {
+    fn new(ix: &'a I) -> Self {
+        let f = fast();
+        // `decode` reads the move tables; their lazy initialisation runs parallel work, so it
+        // must not start inside a rayon job (the initialising thread could steal a job that
+        // waits for it).
+        move_tables();
+        let cs = ix.class_size();
+        let next = (0..ix.size() / cs)
+            .into_par_iter()
+            .map(|c| {
+                let x = Fc {
+                    a: mset_labels()[ix.decode(c * cs).0 as usize],
+                    b: [0; 16],
+                    e: [0; 16],
+                    c: 0,
+                    ebits: 0,
+                };
+                std::array::from_fn(|m| *ix.class_entry(f.a_rank(&f.apply_w(&x, 0, m))))
+            })
+            .collect();
+        AeGraph { ix, f, next }
+    }
+}
 
 impl<I: AeIndex> Graph for AeGraph<'_, I> {
     const MOVES: usize = N_MOVES;
-    type Node = Coords;
+    /// edges (the A-centres are not needed), flip word and A class
+    type Node = (Fc, u64, usize);
     #[inline(always)]
-    fn node(&self, i: usize) -> Coords {
-        let (a, e, bits) = self.0.decode(i);
-        Coords {
+    fn node(&self, i: usize) -> (Fc, u64, usize) {
+        let (_, e, bits) = self.ix.decode(i);
+        let x = Fc {
+            a: [0; 16],
+            b: [0; 16],
+            e: mset_labels()[e as usize],
             c: 0,
-            a,
-            b: 0,
-            e,
             ebits: bits,
-        }
+        };
+        (x, self.f.flip_word(&masks(&x.e)), i / self.ix.class_size())
     }
     #[inline(always)]
-    fn step(&self, x: &Coords, m: usize) -> usize {
-        self.0.index(&self.1.apply(x, m))
+    fn step(&self, (x, fw, c): &(Fc, u64, usize), m: usize) -> usize {
+        let y = self.f.apply_w(x, *fw, m);
+        self.ix.index_entry(self.f, &y, self.next[*c][m])
     }
     fn equivalents(&self, j: usize, out: &mut Vec<usize>) {
-        self.0.equivalents(j, out);
+        self.ix.equivalents(j, out);
     }
 }
 
 pub fn build_ae<I: AeIndex>(ix: &I, verbose: bool) -> Table2 {
     bfs(
-        &AeGraph(ix, move_tables()),
+        &AeGraph::new(ix),
         ix.size(),
         &ae_targets(ix),
         ix.name(),

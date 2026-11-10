@@ -227,12 +227,11 @@ impl CbeIndex {
         let mask = self.c12_unrank[e1 / 2];
         let mut x = Fc {
             a: [0; 16],
-            b: [0; 16],
+            b: mset_labels()[b],
             e: [0; 16],
             c: self.rep[cls],
             ebits: (e1 % 2) as u8,
         };
-        x.b[..12].copy_from_slice(&mset().unrank(b as u32));
         for p in 0..12 {
             x.e[p] = u8::from(mask >> p & 1 == 0);
         }

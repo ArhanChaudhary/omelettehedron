@@ -345,6 +345,26 @@ impl FastTables {
     }
 }
 
+/// Label vector (lanes 0..12, zero padded) of every multiset rank, for decoding table
+/// entries during generation ([`Mset::unrank`] is a loop of unpredictable branches; this is
+/// one load, and consecutive entries mostly share a row). (CBE generation 45.0 -> 38.1 s,
+/// small tier 1.46 -> 1.24 s at 48T when added, opt/gen.)
+pub fn mset_labels() -> &'static [[u8; 16]] {
+    static L: OnceLock<Vec<[u8; 16]>> = OnceLock::new();
+    // (Sequential: it may first be called inside a rayon job, and an initialiser that runs
+    // parallel work itself can then steal a job that waits for this initialisation.)
+    L.get_or_init(|| {
+        let ms = mset();
+        (0..N_MSET as u32)
+            .map(|r| {
+                let mut v = [0u8; 16];
+                v[..12].copy_from_slice(&ms.unrank(r));
+                v
+            })
+            .collect()
+    })
+}
+
 pub fn fast() -> &'static FastTables {
     static F: OnceLock<FastTables> = OnceLock::new();
     F.get_or_init(FastTables::new)
