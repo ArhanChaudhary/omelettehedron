@@ -39,7 +39,8 @@ fn free_disk(dir: &Path) -> io::Result<u64> {
     if r != 0 {
         return Err(io::Error::last_os_error());
     }
-    // (the field widths differ between platforms)
+    // (the field widths differ between platforms: u64 on Linux, u32 on macOS)
+    #[allow(clippy::useless_conversion)]
     Ok(u64::from(st.f_bavail).saturating_mul(u64::from(st.f_frsize)))
 }
 
