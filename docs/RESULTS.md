@@ -39,6 +39,22 @@ and the sibling pipeline):
 | 2 | 21 | 24 @ 3 ms | 64.6 s (481 s) |
 | 3 | 20 | 23 @ 6 ms | 5.2 s (39 s) |
 
+## Move sets (`--moves`)
+
+Large tier; wide turns never shorten a solution, so only slices are measured.
+
+| | face turns | with slices |
+|---|---|---|
+| optimal length, 10 × 19-move scrambles (mean) | 18.10 | 16.80 |
+| time to prove optimality (48 threads, mean) | 1.29 s | 39.4 s |
+| random positions, best after 5 s (48 threads) | 21.10 | 18.93 |
+| random positions, best after 5 s (1 thread) | 22.00 | 19.80 |
+| large-tier table generation (48 threads) | 30 s | 43 s |
+
+With slices the early end of the proof is off (see docs/PHASES.md section 8) and the branching
+factor rises from 12.9 to about 18.3, so proofs take about 20 times as long as the full proof
+without slices.
+
 ## Start-up
 
 Wall time of a solve of a 2-move scramble, tables already on disk (mostly loading the tables and
