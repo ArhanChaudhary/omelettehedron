@@ -65,6 +65,9 @@ struct TableArgs {
     /// Print progress information to stderr
     #[arg(short, long)]
     verbose: bool,
+    /// Generate missing tables even if the disk or memory check says they do not fit
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(clap::Args, Clone)]
@@ -185,6 +188,7 @@ fn run_solve<I: AeIndex>(
 macro_rules! dispatch {
     ($tab:expr, |$t:ident, $name:ident| $body:expr) => {{
         let dir = table_dir($tab.tables.as_deref());
+        fto_solver::preflight::set_force($tab.force);
         match $tab.tier {
             Tier::Small => {
                 let $t = Tables::load(&dir, AeSym::new(false), $tab.verbose)
