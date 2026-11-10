@@ -3,16 +3,22 @@
 //! Face turns can rotate the whole puzzle, so the front corner (vertex 0, `+x`, shared by
 //! U, R, L and F) is held fixed. A turn of a front face is replaced by the equivalent
 //! two-layer turn of the opposite back face followed by a whole-puzzle rotation, giving 16
-//! internal moves: single turns of B, BR, BL, D and wide turns of B, BR, BL, D.
+//! internal moves: single turns of B, BR, BL, D and wide turns of B, BR, BL, D. With slice
+//! moves (see [`MoveSet`]) there are 8 more: the middle layer of each of these four axes. A
+//! slice holds no corner, so it never moves the front corner either.
 //!
-//! Internal move index `m = 2 * slot + dir`, `dir` 0 = clockwise, 1 = anticlockwise.
-//! Slots 0..4 are single turns of faces 4..8 (B, BR, BL, D); slots 4..8 are wide turns of
-//! the same faces (equivalent to F, L, R, U plus a rotation).
+//! Internal move index `m = 2 * slot + dir`, `dir` 0 = clockwise, 1 = anticlockwise (seen from
+//! the back face). Slots 0..4 are single turns of faces 4..8 (B, BR, BL, D); slots 4..8 are
+//! wide turns of the same faces (equivalent to F, L, R, U plus a rotation); slots 8..12 are
+//! slice turns of the same axes, turned like the back face.
 
 use crate::geometry::*;
 use std::sync::OnceLock;
 
+/// Internal moves of the face-turn metric (moves `0..N_MOVES`).
 pub const N_MOVES: usize = 16;
+/// Internal moves with the slice moves (`N_MOVES..MAX_MOVES` are the slices).
+pub const MAX_MOVES: usize = 24;
 
 #[inline]
 pub fn slot(m: usize) -> usize {
@@ -24,7 +30,11 @@ pub fn slot_face(s: usize) -> usize {
 }
 #[inline]
 pub fn slot_is_wide(s: usize) -> bool {
-    s >= 4
+    s >> 2 == 1
+}
+#[inline]
+pub fn slot_is_slice(s: usize) -> bool {
+    s >> 2 == 2
 }
 #[inline]
 pub fn move_cw(m: usize) -> bool {
@@ -38,20 +48,99 @@ pub fn inverse_move(m: usize) -> usize {
 /// Class-A internal moves: BR, BL, Bw (= F), Dw (= U).
 pub const A_SLOTS: [usize; 4] = [1, 2, 4, 7];
 
+/// Whether `m` is a class-A move (a generator of `H_A`; slices are not).
 #[inline]
 pub fn is_a_move(m: usize) -> bool {
     matches!(slot(m), 1 | 2 | 4 | 7)
 }
 
-/// Canonical move order: never the same slot twice in a row; on a shared axis the single
-/// turn comes before the wide turn (they commute).
-#[inline]
-pub fn allowed_after(last: usize, m: usize) -> bool {
-    if last >= N_MOVES {
+/// Canonical move order (`last >= MAX_MOVES`: no previous move). Never the same slot twice in
+/// a row. The three layers of an axis commute, and modulo the free rotation about the axis
+/// they generate 9 elements; of the same-axis pairs only one representative of each element
+/// that needs two moves is allowed:
+/// * face metric (`slice == false`): single before wide, either direction (the four
+///   products are distinct and none is a single move);
+/// * with slices: single then wide of the same direction only (X Xw, X' Xw'). The products
+///   X Xw' and X' Xw are slices, and every pair with a slice is a single move or equals one
+///   of the two allowed pairs.
+///
+/// (Checked against the axis group by `canonical_pairs_match_axis_group`, and against
+/// whole-puzzle breadth-first search by `canonical_sequences_are_distinct_positions`.)
+pub const fn allowed_after(slice: bool, last: usize, m: usize) -> bool {
+    if last >= MAX_MOVES {
         return true;
     }
-    let (ls, s) = (slot(last), slot(m));
-    !(s == ls || ((s & 3) == (ls & 3) && s < ls))
+    let (ls, s) = (last >> 1, m >> 1);
+    if s == ls {
+        return false;
+    }
+    if s & 3 != ls & 3 {
+        return true;
+    }
+    if slice {
+        ls < 4 && s >> 2 == 1 && last & 1 == m & 1
+    } else {
+        s > ls
+    }
+}
+
+/// The moves a solution may use. Face turns are always allowed; every allowed move counts as
+/// one move.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct MoveSet {
+    /// Wide (two-layer) turns. A wide turn is a turn of the opposite face plus a whole-puzzle
+    /// rotation, and any orientation counts as solved, so they never shorten a solution: the
+    /// search is unchanged and only the output differs (the front corner stays still, so
+    /// front-face turns are printed as wide turns of the opposite back face).
+    pub wide: bool,
+    /// Slice (middle-layer) turns: 8 more internal moves, with their own pruning tables.
+    pub slice: bool,
+}
+
+impl MoveSet {
+    /// Face turns only.
+    pub const FACE: MoveSet = MoveSet {
+        wide: false,
+        slice: false,
+    };
+
+    /// Number of internal moves (`0..n_moves()`).
+    #[inline]
+    pub const fn n_moves(self) -> usize {
+        if self.slice {
+            MAX_MOVES
+        } else {
+            N_MOVES
+        }
+    }
+
+    /// [`allowed_after`] for this move set.
+    #[inline]
+    pub const fn allowed_after(self, last: usize, m: usize) -> bool {
+        allowed_after(self.slice, last, m)
+    }
+
+    /// Suffix of the pruning-table file names: the tables hold distances in the move metric,
+    /// so slices need their own (wide turns do not change the metric).
+    pub fn table_suffix(self) -> &'static str {
+        if self.slice {
+            "-slice"
+        } else {
+            ""
+        }
+    }
+
+    /// Short name, e.g. `face+slice`.
+    pub fn name(self) -> String {
+        let mut s = String::from("face");
+        if self.wide {
+            s.push_str("+wide");
+        }
+        if self.slice {
+            s.push_str("+slice");
+        }
+        s
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -86,7 +175,7 @@ pub struct Defs {
     pub b_pos: [usize; 12],
     pub solved: Cube,
     /// move tables as "source" arrays: new[p] = old[src[p]] (corner orientation added)
-    pub moves: [Cube; N_MOVES],
+    pub moves: [Cube; MAX_MOVES],
     /// sticker permutations of the internal moves
     pub move_perms: Vec<Vec<usize>>,
 }
@@ -189,7 +278,7 @@ fn build_defs() -> Defs {
             ep: [0; 12],
             xa: [0; 12],
             xb: [0; 12],
-        }; N_MOVES],
+        }; MAX_MOVES],
         move_perms: vec![],
     };
     // every piece at home; three centres per face, faces in class order
@@ -202,10 +291,12 @@ fn build_defs() -> Defs {
     };
     let solved_st = solved_stickers(&d);
     debug_assert_eq!(stickers_to_cube_with(&d, &solved_st), Some(d.solved));
-    for m in 0..N_MOVES {
+    for m in 0..MAX_MOVES {
         let s = slot(m);
         let f = slot_face(s);
-        let perm = if slot_is_wide(s) {
+        let perm = if slot_is_slice(s) {
+            d.sm.slice_turn(f, move_cw(m))
+        } else if slot_is_wide(s) {
             d.sm.wide_turn(f, move_cw(m))
         } else {
             d.sm.face_turn(f, move_cw(m))
@@ -424,12 +515,13 @@ pub fn perm_parity(p: &[u8]) -> u8 {
 /// The 90° rotation about the axis through the fixed corner; it swaps the A and B face classes.
 pub const SWAP_AB: Mat = [[1, 0, 0], [0, 0, -1], [0, 1, 0]];
 
-/// Internal move index after conjugating by a symmetry that fixes vertex 0.
+/// Internal move index after conjugating by a symmetry that fixes vertex 0 (it maps back faces
+/// to back faces, so single, wide and slice turns to turns of the same kind).
 pub fn conjugate_move(m: usize, sym: &Mat) -> usize {
     let s = slot(m);
     let f = face_of_normal(mat_vec(sym, FACES[slot_face(s)]));
     debug_assert!(f >= 4);
-    let ns = (f - 4) + if slot_is_wide(s) { 4 } else { 0 };
+    let ns = (f - 4) + 4 * (s >> 2);
     let cw = move_cw(m) == (det(sym) == 1);
     2 * ns + usize::from(!cw)
 }
@@ -456,7 +548,7 @@ mod tests {
     #[test]
     fn moves_fix_corner_and_have_order_three() {
         let d = defs();
-        for m in 0..N_MOVES {
+        for m in 0..MAX_MOVES {
             assert_eq!(d.moves[m].cp[0], 0);
             assert_eq!(d.moves[m].co[0], 0);
             let c = Cube::solved().apply(m).apply(m).apply(m);
@@ -466,8 +558,15 @@ mod tests {
                 Cube::solved()
             );
         }
+        // slices move no corner at all
+        for m in N_MOVES..MAX_MOVES {
+            assert_eq!(d.moves[m].cp, Cube::solved().cp);
+            assert_eq!(d.moves[m].co, [0; 6]);
+            assert_ne!(Cube::solved().apply(m), Cube::solved());
+        }
     }
 
+    /// Every internal move, slices included, agrees with the sticker model.
     #[test]
     fn cubie_apply_matches_stickers() {
         let d = defs();
@@ -476,7 +575,7 @@ mod tests {
             let c = Cube::random(&mut rng);
             let st = c.to_stickers();
             assert_eq!(Cube::from_stickers(&st), Some(c));
-            for m in 0..N_MOVES {
+            for m in 0..MAX_MOVES {
                 let a = c.apply(m);
                 let b = Cube::from_stickers(&permute_stickers(&st, &d.move_perms[m])).unwrap();
                 assert_eq!(a, b);
@@ -484,14 +583,99 @@ mod tests {
         }
     }
 
+    /// A slice is the wide turn followed by the inverse single turn of the same face.
     #[test]
-    fn axis_partners_commute() {
-        for s in 0..4 {
-            let (a, b) = (2 * s, 2 * (s + 4));
-            assert_eq!(
-                Cube::solved().apply(a).apply(b),
-                Cube::solved().apply(b).apply(a)
-            );
+    fn slice_is_wide_then_inverse_single() {
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(4);
+        for _ in 0..20 {
+            let c = Cube::random(&mut rng);
+            for k in 0..4 {
+                for dir in 0..2 {
+                    let (single, wide, slice) = (2 * k + dir, 2 * (k + 4) + dir, 2 * (k + 8) + dir);
+                    assert_eq!(c.apply(slice), c.apply(wide).apply(inverse_move(single)));
+                }
+            }
+        }
+    }
+
+    /// The six moves of an axis (single, wide and slice turns of one back face).
+    fn axis_moves(k: usize) -> [usize; 6] {
+        [
+            2 * k,
+            2 * k + 1,
+            2 * (k + 4),
+            2 * (k + 4) + 1,
+            2 * (k + 8),
+            2 * (k + 8) + 1,
+        ]
+    }
+
+    #[test]
+    fn axis_layers_commute() {
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(3);
+        let c = Cube::random(&mut rng);
+        for k in 0..4 {
+            for a in axis_moves(k) {
+                for b in axis_moves(k) {
+                    assert_eq!(c.apply(a).apply(b), c.apply(b).apply(a));
+                }
+            }
+        }
+    }
+
+    /// The move-order rules derived from the axis group: by breadth-first search over the
+    /// moves of one axis, the group has 9 elements (6 single moves and 2 two-move elements
+    /// with slices; 4 and 4 without). An allowed same-axis pair must give a two-move element,
+    /// and every two-move element must have exactly one allowed pair.
+    #[test]
+    fn canonical_pairs_match_axis_group() {
+        use std::collections::HashMap;
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(5);
+        let c = Cube::random(&mut rng);
+        for slice in [false, true] {
+            for k in 0..4 {
+                let moves = &axis_moves(k)[..if slice { 6 } else { 4 }];
+                let mut dist = HashMap::from([(c, 0usize)]);
+                let mut front = vec![c];
+                let mut d = 0;
+                while !front.is_empty() {
+                    d += 1;
+                    let mut next = vec![];
+                    for x in &front {
+                        for &m in moves {
+                            let y = x.apply(m);
+                            if let std::collections::hash_map::Entry::Vacant(e) = dist.entry(y) {
+                                e.insert(d);
+                                next.push(y);
+                            }
+                        }
+                    }
+                    front = next;
+                }
+                let mut hist = [0; 3];
+                for &d in dist.values() {
+                    hist[d] += 1;
+                }
+                assert_eq!(hist, if slice { [1, 6, 2] } else { [1, 4, 4] });
+                let mut reps: HashMap<Cube, usize> = HashMap::new();
+                for &u in moves {
+                    for &v in moves {
+                        let p = c.apply(u).apply(v);
+                        if allowed_after(slice, u, v) {
+                            assert_eq!(dist[&p], 2, "pair {u} {v} (slice {slice})");
+                            *reps.entry(p).or_default() += 1;
+                        }
+                    }
+                }
+                assert_eq!(reps.len(), hist[2]);
+                assert!(reps.values().all(|&n| n == 1));
+                // moves of different axes are never restricted
+                for m in 0..MAX_MOVES {
+                    if (m >> 1) & 3 != k {
+                        assert!(allowed_after(slice, moves[0], m));
+                    }
+                }
+            }
         }
     }
 
@@ -499,14 +683,20 @@ mod tests {
     fn swap_conjugation_maps_moves() {
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(2);
         let c = Cube::random(&mut rng);
-        for m in 0..N_MOVES {
+        for m in 0..MAX_MOVES {
+            let n = conjugate_move(m, &SWAP_AB);
             let lhs = c.apply(m).conjugate(&SWAP_AB).unwrap();
-            let rhs = c
-                .conjugate(&SWAP_AB)
-                .unwrap()
-                .apply(conjugate_move(m, &SWAP_AB));
+            let rhs = c.conjugate(&SWAP_AB).unwrap().apply(n);
             assert_eq!(lhs, rhs);
-            assert_ne!(is_a_move(m), is_a_move(conjugate_move(m, &SWAP_AB)));
+            if m < N_MOVES {
+                // the swap exchanges the classes of single and wide turns
+                assert!(n < N_MOVES);
+                assert_ne!(is_a_move(m), is_a_move(n));
+            } else {
+                // slices stay slices (and are in neither class)
+                assert!(n >= N_MOVES);
+                assert!(!is_a_move(m) && !is_a_move(n));
+            }
         }
     }
 }

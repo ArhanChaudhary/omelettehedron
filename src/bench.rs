@@ -24,6 +24,8 @@ pub struct ScrambleResult {
 #[derive(Serialize, Clone, Debug)]
 pub struct Summary {
     pub tier: String,
+    /// the move set (`face`, `face+slice`, ...)
+    pub moves: String,
     pub threads: usize,
     pub scrambles: usize,
     pub time_limit: Option<f64>,
@@ -55,10 +57,7 @@ pub fn scrambled_positions(n: usize, len: usize, seed: u64) -> Vec<Cube> {
             while moves.len() < len {
                 let face = rng.gen_range(0..8);
                 if face != last {
-                    moves.push(crate::notation::PhysMove {
-                        face,
-                        cw: rng.gen(),
-                    });
+                    moves.push(crate::notation::PhysMove::face(face, rng.gen()));
                     last = face;
                 }
             }
@@ -147,6 +146,7 @@ pub fn run<I: AeIndex>(
     let total_time: f64 = results.iter().map(|r| r.elapsed).sum();
     Summary {
         tier: tier.to_string(),
+        moves: tables.moves.name(),
         threads: rayon::current_num_threads(),
         scrambles: n,
         time_limit: tl,
@@ -164,8 +164,9 @@ pub fn run<I: AeIndex>(
 
 pub fn print_summary(s: &Summary) {
     println!(
-        "tier {}  threads {}  scrambles {}  seed {}  time limit {}",
+        "tier {}  moves {}  threads {}  scrambles {}  seed {}  time limit {}",
         s.tier,
+        s.moves,
         s.threads,
         s.scrambles,
         s.seed,

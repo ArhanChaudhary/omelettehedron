@@ -28,7 +28,7 @@
 
 use clap::{Parser, Subcommand};
 use omelettehedron::bench;
-use omelettehedron::cube::Cube;
+use omelettehedron::cube::{Cube, MoveSet};
 use omelettehedron::notation::{parse_moves, scramble_to_cube, Frame};
 use omelettehedron::search::{solve, Limits, Report};
 use omelettehedron::tables::{table_dir, AeIndex, AeRelabel, AeSym, Tables, Tier};
@@ -68,6 +68,31 @@ struct TableArgs {
     /// Generate missing tables even if the disk or memory check says they do not fit
     #[arg(long)]
     force: bool,
+    /// Move families allowed in solutions besides face turns, comma-separated; every move
+    /// counts as one. slice: middle-layer turns (own pruning tables, `*-slice.prun`). wide:
+    /// two-layer turns; they never shorten a solution (a wide turn is the opposite face turn
+    /// plus a rotation), so only the output changes: wide turns of the back faces instead of
+    /// front-face turns, with the front corner held still
+    #[arg(long, value_enum, value_delimiter = ',')]
+    moves: Vec<Family>,
+}
+
+/// A move family for `--moves`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum Family {
+    /// two-layer turns, e.g. `Uw`
+    Wide,
+    /// middle-layer turns, e.g. `Us` (= `Ds'`)
+    Slice,
+}
+
+impl TableArgs {
+    fn move_set(&self) -> MoveSet {
+        MoveSet {
+            wide: self.moves.contains(&Family::Wide),
+            slice: self.moves.contains(&Family::Slice),
+        }
+    }
 }
 
 #[derive(clap::Args, Clone)]
@@ -89,7 +114,8 @@ enum Cmd {
     /// Solve scrambles given as arguments, or one per line on stdin. Without stopping
     /// options the search runs until the solution is proven optimal.
     Solve {
-        /// Scramble in FTO notation (U R F L B BR BL D, ' for anticlockwise)
+        /// Scramble in FTO notation (U R F L B BR BL D, ' for anticlockwise; a w after the
+        /// face for a wide turn, an s for a slice turn: always accepted)
         scramble: Vec<String>,
         #[command(flatten)]
         stop: StopArgs,
@@ -204,6 +230,7 @@ fn run_solve<I: AeIndex>(
 macro_rules! dispatch {
     ($tab:expr, |$t:ident, $name:ident| $body:expr) => {{
         let dir = table_dir($tab.tables.as_deref());
+        let moves = $tab.move_set();
         omelettehedron::preflight::set_force($tab.force);
         // The larger tiers' indices exceed 2^32 entries (and their tables 4 GB): 32-bit
         // targets such as WebAssembly support the small tier only.
@@ -214,25 +241,25 @@ macro_rules! dispatch {
         }
         match $tab.tier {
             Tier::Small => {
-                let $t = Tables::load(&dir, AeSym::new(false), $tab.verbose)
+                let $t = Tables::load(&dir, AeSym::new(false), moves, $tab.verbose)
                     .map_err(|e| table_error(&dir, &e))?;
                 let $name = "small";
                 $body
             }
             Tier::Medium => {
-                let $t = Tables::load(&dir, AeSym::new(true), $tab.verbose)
+                let $t = Tables::load(&dir, AeSym::new(true), moves, $tab.verbose)
                     .map_err(|e| table_error(&dir, &e))?;
                 let $name = "medium";
                 $body
             }
             Tier::Large => {
-                let $t = Tables::load_with(&dir, AeSym::new(true), true, $tab.verbose)
+                let $t = Tables::load_with(&dir, AeSym::new(true), true, moves, $tab.verbose)
                     .map_err(|e| table_error(&dir, &e))?;
                 let $name = "large";
                 $body
             }
             Tier::Huge => {
-                let $t = Tables::load_with(&dir, AeRelabel::new(), true, $tab.verbose)
+                let $t = Tables::load_with(&dir, AeRelabel::new(), true, moves, $tab.verbose)
                     .map_err(|e| table_error(&dir, &e))?;
                 let $name = "huge";
                 $body
@@ -314,13 +341,17 @@ fn run(cli: Cli) -> Result<(), Error> {
             p.install(|| {
                 dispatch!(tab, |t, name| {
                     eprintln!(
-                        "tier {name}: AE {:.1} MB, CB {:.1} MB; phase-2 depths {:?}",
+                        "tier {name}, moves {}: AE {:.1} MB, CB {:.1} MB; phase-2 depths {:?}",
+                        t.moves.name(),
                         t.ae.bytes() as f64 / 1e6,
                         t.cb.tab.bytes() as f64 / 1e6,
                         t.p2.histogram()
                     );
                     eprintln!("AE depth histogram {:?}", t.ae.hist);
                     eprintln!("CB depth histogram {:?}", t.cb.tab.hist);
+                    if let Some(cbe) = &t.cbe {
+                        eprintln!("CBE depth histogram {:?}", cbe.hist);
+                    }
                 });
                 Ok(())
             })

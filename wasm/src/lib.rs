@@ -36,7 +36,7 @@
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 
 use omelettehedron::bench;
-use omelettehedron::cube::{defs, solved_stickers};
+use omelettehedron::cube::{defs, solved_stickers, MoveSet};
 use omelettehedron::mem::HugeBuf;
 use omelettehedron::notation::{
     apply_physical, format_moves, is_solved_physical, parse_moves, scramble_to_cube, Frame,
@@ -229,7 +229,7 @@ pub extern "C" fn fto_generate() -> i32 {
         state.tables = None;
         state.incoming = [Vec::new(), Vec::new()];
         let start = Instant::now();
-        let t = Tables::generate(AeSym::new(false), true);
+        let t = Tables::generate(AeSym::new(false), MoveSet::FACE, true);
         let info = tables_json(&t, &json!({ "seconds": start.elapsed().as_secs_f64() }));
         state.tables = Some(t);
         Ok(info)
@@ -337,6 +337,7 @@ pub extern "C" fn fto_load() -> i32 {
             },
             p2: Phase2::new(),
             cbe: None,
+            moves: MoveSet::FACE,
         };
         let info = tables_json(&t, &json!({ "seconds": start.elapsed().as_secs_f64() }));
         state.tables = Some(t);
@@ -464,6 +465,7 @@ pub extern "C" fn fto_random_scramble(seed: u32) -> i32 {
             .rev()
             .map(|m| PhysMove {
                 face: m.face,
+                layer: m.layer,
                 cw: !m.cw,
             })
             .collect();

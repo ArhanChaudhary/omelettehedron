@@ -337,7 +337,9 @@ impl Coords {
     }
 }
 
-/// Move tables. `e` entries pack the new triple rank (low 20 bits) and the chirality flip mask.
+/// Move tables of the face-metric moves (`0..N_MOVES`). `e` entries pack the new triple rank
+/// (low 20 bits) and the chirality flip mask. (The slice moves have no tables here: the search
+/// and the generators use [`crate::fast::FastTables`].)
 pub struct MoveTables {
     pub c: Vec<[u16; N_MOVES]>,
     pub a: HugeBuf<[u32; N_MOVES]>,
@@ -409,7 +411,9 @@ impl MaskPerm {
     }
 }
 
-pub fn label_perm_table(src: &[[u8; 12]; N_MOVES]) -> Vec<[u32; N_MOVES]> {
+/// Rank of each multiset labelling after each of `K` label permutations (`src[m]` as in
+/// [`Defs::moves`]).
+pub fn label_perm_table<const K: usize>(src: &[[u8; 12]; K]) -> Vec<[u32; K]> {
     let ms = mset();
     let perms: Vec<MaskPerm> = src.iter().map(MaskPerm::gather).collect();
     (0..N_MSET as u32)

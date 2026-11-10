@@ -162,11 +162,12 @@ impl CbSymIndex {
     }
 }
 
-/// Moves between reduced CB entries (for table generation).
-pub struct CbSymGraph;
+/// Moves between reduced CB entries (for table generation), `N` moves (16, or 24 with the
+/// slices: the reduction stays valid, as every symmetry maps slices to slices).
+pub struct CbSymGraph<const N: usize>;
 
-impl Graph for CbSymGraph {
-    const MOVES: usize = N_MOVES;
+impl<const N: usize> Graph for CbSymGraph<N> {
+    const MOVES: usize = N;
     type Node = Fc;
     type Cache = ();
     fn node(&self, i: usize, (): &mut ()) -> Fc {
@@ -175,7 +176,7 @@ impl Graph for CbSymGraph {
     fn step(&self, x: &Fc, m: usize) -> usize {
         let f = fast();
         // (the edge labels are all 0, so no chirality flips are needed)
-        cbsym().index(f, &f.apply(x, &[0xfff, 0, 0, 0], m))
+        cbsym().index(f, &f.apply_m(x, &[0xfff, 0, 0, 0], m))
     }
     fn equivalents(&self, j: usize, out: &mut Vec<usize>) {
         cbsym().equivalents(j, out);
