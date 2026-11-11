@@ -336,6 +336,9 @@ reloads once; where a browser refuses, the demo runs on one thread.
   it goes back to the small one and says so. The page shows each better solution while
   solving. **Stop** cancels a solve. Without shared memory, it restarts the worker and reloads
   the stored tables.
+* **Invert** turns the moves in the box around (reversed, each turned the other way), so a
+  solution found elsewhere becomes a scramble of the position it solves; solve that to find
+  other solutions. It works on the text alone, before the tables are ready too.
 * The page also solves a pattern (see [Patterns](#patterns)): the visitor colours a picture of
   the front and the back (`wasm/pattern-picture.mjs`, `wasm/pattern-input.mjs`; the palette is
   their colour scheme, kept in localStorage), and gets a solution and a scramble that makes the
