@@ -560,6 +560,13 @@ mixed (medium 1.002x / 1.008x and 0.993x / 0.987x at 1T / 48T; large 1.008x / 0.
 1.029x / 0.959x): the static order is close to the best on average, and the per-node order
 costs about what it saves.
 
+**Task order in the last iteration.** The tasks of an iteration are searched in the order of a
+statistic from the previous one (each surviving child weighs 8^-bound). With the large tier the
+first solution comes relatively later than with medium (0.55x / 0.52x the nodes to the first
+solution on the 15 / 17-move sets, against 0.29x / 0.34x for the full trees), so other weights
+were tried (node counts, one thread, 17-move set): 2^-bound and 4^-bound give 1.025x and
+1.019x the large tier's nodes (medium 1.059x and 1.029x); 8 stays.
+
 **Duplicates.** Canonical move sequences against distinct positions from solved: identical up
 to depth 4, 0.2% duplicates at depth 5, 0.6% at depth 6. A transposition table would cost a
 memory access per node for very little; not pursued.
@@ -581,33 +588,42 @@ moves), 23 5.56e10 until the first solution (266.5 s); 1.23e11 nodes in all, aga
 the two-phase solver. Solution `B D' L R' D L' B U L BL' F' BL D U BR B' R' BR L' B' U' BL
 D'`; `omelettehedron pattern` of scramble plus solution prints each face in one colour.
 
-## Missing (v0)
+**tri_adj+edge_adj proven 23 in 803.0 s** (same setting; the two-phase solver: 11,877 s). 24
+symmetries, 1450 tasks; depth 20 7.44e8 nodes (1.8 s), 21 1.07e10 (25.2 s), 22 1.52e11 (345.1
+s, complete), 23 2.34e11 until the first solution (803.0 s); 3.97e11 nodes in all, against
+1.9e13. Solution `B' D F' U' D R BR' D' U' F BL' D' L' F BL' D B' L BL U' L BL' U'`, checked
+with `omelettehedron pattern`.
 
-* Timings: the machine was busy with long two-phase proofs, so only node counts are measured.
+## Open
+
 * Printing improvements (`-p`) has no use here (the first solution is optimal); resuming a
-  proof from a known lower bound.
-* Lanes / micro-threading and huge-page tuning: not done.
+  proof from a known lower bound is not implemented.
+* 1 GiB pages for the 21 GB triple table (the tables sit in 2 MB transparent huge pages; 1 GiB
+  pages need a reserved hugetlb pool on the machine).
+* Lanes (several depth-first stacks per worker, so that the misses of different subtrees
+  overlap): not tried; the sibling pipeline covers the first stage only.
 
-## Next optimisations (ranked)
+## Done and next
 
-1. **A bound on the A-centres and edges (AE) and its `SWAP_AB` twin.** Done in round 1
-   (`optimal/ae`, above): the two-phase solver's AE-to-`H_A` table, 24.7x / 26.1x fewer nodes
-   on the 15 / 17-move sets. A real AE-to-solved table would be stronger, but in the fixed
-   frame it keeps only the 4 class-preserving symmetries that fix the front corner (it has no
-   corners, so no re-fixing rotation): 2.7e11 entries (68 GB) with chirality, 3.4e10 (8.5 GB)
-   without.
-2. **Corners x B-centres x one A-face's edges, to solved** ("CBE-to-solved"): round 2 (the
-   `large` tier, above). Only the 6 symmetries that fix A-face 0 reduce it (the others move the
-   triple), so it has 172 x 369,600 x 1,320 = 8.39e10 entries (21.0 GB), looked up four times
-   (each A-face mapped to face 0 by a symmetry) and four more times through `SWAP_AB`.
-3. **Timing, once the machine is free** (node counts unchanged): lanes (several depth-first
-   stacks per worker, so the misses of different nodes overlap, not only those of siblings) or
-   the two-phase solver's sibling pipeline; staged lookups with an early exit (corners x edges
-   first, the corner x centre lookups only for children it keeps); no lookups with one move left
-   (a child must then be one of the 16 neighbours of solved); 1 GiB pages for the corners x
-   edges table (`FTO_HUGE1G`); a SIMD even-permutation rank.
-4. **A centres table** (A x B colourings to solved; 8 front-corner-fixing symmetries, 1.7e10 to
-   3.4e10 entries): complementary to corners x edges.
+Done: the A-centre/edge bound on both sides (round 1, 24.7x / 26.1x fewer nodes), staged
+lookups with early exits (0.82x time), slice turns, the corner x B-centre x edge-triple table to
+solved (the `large` tier, round 2: 0.47x time at 48 threads on 19 moves, the corner 6-flip 58x
+faster), next-stage prefetch and the sibling pipeline, SIMD piece positions, the first stage's
+A-centre/edge class entries prefetched with the children (round 3: about 0.74x / 0.70x time,
+medium / large, 1 thread). Measured and not kept: the two-phase CBE table as a saturating second
+stage, an A-centre/edge class prefetch pass before every stage, per-node lookup orders.
+
+Next, by expected value:
+
+1. **The table-read stall** (still the largest single cost, about 27% of the medium tier's
+   samples): lanes, or a deeper pipeline than one sibling.
+2. **A stronger bound for the 10-11 moves-left nodes** beyond the triple table: an
+   A-centre/edge table to solved with chirality would prune about as much as the triple table
+   (0.34x on the 13-move set) but needs 68.7 GB; added to the triple table, the one without
+   chirality (8.6 GB more) would take the 13-move set only from 0.342x to 0.322x (estimated the
+   same way): not worth it.
+3. **A centres table** (A x B colourings to solved, 4.3 GB): only 0.88x nodes when estimated
+   on its own; not worth it.
 
 Not applicable here: sibling pruning with bounds learned from subtrees (with consistent tables
 the bound learned from a subtree never exceeds the node's own: for a descendant at distance j,
