@@ -474,3 +474,119 @@ fn symmetric_start_keeps_optimal_lengths() {
     );
     assert!(filtered_nodes < full_nodes);
 }
+
+/// A tier with a saturating bound (the search's second stage, used by the large tier's joint
+/// table): the edge table alone (weak, so that the second stage has something to prune) plus
+/// the brute force's ball, which gives the exact distance within 5 moves and "at least 6"
+/// outside, a saturating lower bound with `SAT_MAX` 6.
+struct BallBounds<'a> {
+    inner: SmallBounds<'a>,
+    ball: &'a HashMap<Cube, u8>,
+}
+
+impl Bounds for BallBounds<'_> {
+    const K: usize = 1;
+    fn index(&self, k: usize, p: &Pos) -> usize {
+        self.inner.index(k, p)
+    }
+    fn table(&self, k: usize) -> &omelettehedron::prune::Table2 {
+        self.inner.table(k)
+    }
+    fn is_target(&self, k: usize, i: usize) -> bool {
+        self.inner.is_target(k, i)
+    }
+    fn name(&self, k: usize) -> &'static str {
+        self.inner.name(k)
+    }
+    const S: usize = 1;
+    const SAT_MAX: u8 = 6;
+    fn sat_index(&self, _s: usize, p: &Pos, out: &mut [usize; 4]) {
+        out[0] = usize::from(self.ball.get(&p.to_cube()).copied().unwrap_or(6));
+    }
+    fn sat_bound(&self, _s: usize, idx: &[usize; 4]) -> u8 {
+        idx[0] as u8
+    }
+}
+
+/// The edge table alone (`BallBounds` without its saturating stage).
+struct EdgeBounds<'a>(SmallBounds<'a>);
+
+impl Bounds for EdgeBounds<'_> {
+    const K: usize = 1;
+    fn index(&self, k: usize, p: &Pos) -> usize {
+        self.0.index(k, p)
+    }
+    fn table(&self, k: usize) -> &omelettehedron::prune::Table2 {
+        self.0.table(k)
+    }
+    fn is_target(&self, k: usize, i: usize) -> bool {
+        self.0.is_target(k, i)
+    }
+    fn name(&self, k: usize) -> &'static str {
+        self.0.name(k)
+    }
+}
+
+/// The saturating stage keeps the optimal lengths (brute force) and prunes: fewer nodes than the
+/// same search without it, on one thread.
+#[test]
+fn saturating_bounds_keep_optimal_lengths() {
+    let small = EdgeBounds(tables().small().unwrap());
+    let b = BallBounds {
+        inner: tables().small().unwrap(),
+        ball: &mitm().ball,
+    };
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(109);
+    let (mut with, mut without) = (0u64, 0u64);
+    for len in [4usize, 6, 8, 9, 10] {
+        for _ in 0..3 {
+            let scr = random_scramble(&mut rng, len);
+            let (c, fr) = scramble_to_cube(&scr);
+            let Some(truth) = mitm().distance(&c) else {
+                continue;
+            };
+            let o = pool(1).install(|| solve(&b, c, fr, &Limits::default(), false));
+            assert_eq!(o.length, Some(truth), "scramble {}", format_moves(&scr));
+            check_solution(&scr, &o.solutions[0]);
+            let p = pool(1).install(|| solve(&small, c, fr, &Limits::default(), false));
+            assert_eq!(p.length, Some(truth));
+            assert!(o.nodes <= p.nodes, "{} > {}", o.nodes, p.nodes);
+            with += o.nodes;
+            without += p.nodes;
+            let m = pool(8).install(|| solve(&b, c, fr, &Limits::default(), false));
+            assert_eq!(m.length, Some(truth));
+        }
+    }
+    eprintln!("saturating stage: {with} nodes, without {without}");
+    assert!(with < without);
+}
+
+/// The large tier (the two-phase joint table on both sides, on top of medium; 10.4 GB, from
+/// `$FTO_TABLES`): the brute force's lengths, and its saturating bounds never exceed the true
+/// distance.
+#[test]
+#[ignore = "needs the large tier's tables (10.4 GB; `omelettehedron optimal gen --tier large`)"]
+fn large_tier_matches_brute_force() {
+    let dir = omelettehedron::tables::table_dir(None);
+    let t = OptTables::load(&dir, OptTier::Large, false).unwrap();
+    let b = t.large().unwrap();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(110);
+    for len in [0usize, 2, 4, 6, 8, 9, 10, 11, 12] {
+        for _ in 0..4 {
+            let scr = random_scramble(&mut rng, len);
+            let (c, fr) = scramble_to_cube(&scr);
+            let Some(truth) = mitm().distance(&c) else {
+                continue;
+            };
+            let o = pool(8).install(|| solve(&b, c, fr, &Limits::default(), false));
+            assert_eq!(o.length, Some(truth), "scramble {}", format_moves(&scr));
+            check_solution(&scr, &o.solutions[0]);
+            let p = Pos::of(&c);
+            for s in 0..LargeBounds::S {
+                let mut idx = [0; 4];
+                b.sat_index(s, &p, &mut idx);
+                assert!(usize::from(b.sat_bound(s, &idx)) <= truth);
+            }
+        }
+    }
+}

@@ -19,6 +19,7 @@
 //! at most one per move, so they are decoded like the others.
 
 use super::coords::*;
+use crate::cbe::CbeTable;
 use crate::cube::*;
 use crate::fast::{fast, FastTables};
 use crate::preflight::{check_plan, Planned};
@@ -40,6 +41,9 @@ pub enum OptTier {
     /// ~3.4 GB: corners x centres, corners x edges (48 symmetries, 2.4 GB) and the two-phase
     /// A-centre/edge table with chirality (1.03 GB); 64-bit targets only
     Medium,
+    /// ~10.4 GB: medium and the two-phase corner/B-centre/edge-triple table (7.0 GB) on both
+    /// sides; 64-bit targets only
+    Large,
 }
 
 impl OptTier {
@@ -47,6 +51,7 @@ impl OptTier {
         match self {
             OptTier::Small => "small",
             OptTier::Medium => "medium",
+            OptTier::Large => "large",
         }
     }
 }
@@ -63,7 +68,24 @@ pub trait Bounds: Sync {
     fn is_target(&self, k: usize, i: usize) -> bool;
     /// Short name of lookup `k` (for messages).
     fn name(&self, k: usize) -> &'static str;
+    /// Saturating lower bounds (codes, not exact distances, so read without the parent's
+    /// values): `S` groups of 4 lookups (at most [`MAX_S`]), each giving a bound of at most
+    /// `SAT_MAX`. A child is checked against them only when they can prune it: when fewer than
+    /// `SAT_MAX` moves are left after it.
+    const S: usize = 0;
+    const SAT_MAX: u8 = 0;
+    /// Compute the indices of saturating group `s` of `p` into `out` and prefetch them.
+    #[inline(always)]
+    fn sat_index(&self, _s: usize, _p: &Pos, _out: &mut [usize; 4]) {}
+    /// The lower bound of saturating group `s` from its indices.
+    #[inline(always)]
+    fn sat_bound(&self, _s: usize, _idx: &[usize; 4]) -> u8 {
+        0
+    }
 }
+
+/// Most saturating groups of any tier.
+pub const MAX_S: usize = 2;
 
 /// Moves between entries of the corner x B-centre table.
 struct CcGraph<'a> {
@@ -187,15 +209,21 @@ impl AeBound {
         }
     }
 
+    /// The two-phase coordinates of the position, or (`swap`) of its `SWAP_AB` conjugate.
+    #[inline(always)]
+    fn fc(&self, p: &Pos, swap: bool) -> crate::fast::Fc {
+        if swap {
+            self.maps.fc_swap(p)
+        } else {
+            self.maps.fc(p)
+        }
+    }
+
     /// Index of the position (`swap == false`: distance to `H_A`) or of its `SWAP_AB`
     /// conjugate (`swap == true`: the position's distance to `H_B`).
     #[inline(always)]
     pub fn index(&self, p: &Pos, swap: bool) -> usize {
-        let x = if swap {
-            self.maps.fc_swap(p)
-        } else {
-            self.maps.fc(p)
-        };
+        let x = self.fc(p, swap);
         self.ix.index_fast(self.f, &x, self.f.a_rank(&x))
     }
 
@@ -217,12 +245,16 @@ pub struct OptTables {
     pub ce: Option<(CeIndex, Table2)>,
     /// the two-phase A-centre/edge table (every tier)
     pub ae: AeBound,
+    /// the two-phase corner/B-centre/edge-triple table (large tier)
+    pub cbe: Option<CbeTable>,
 }
 
 /// File names of the tables (all start with `opt-`, apart from the two-phase solver's).
 const CC_FILE: &str = "opt-cc-sym24.prun";
 const EDGES_FILE: &str = "opt-edges.prun";
 const CE_FILE: &str = "opt-ce-sym48.prun";
+/// The two-phase solver's joint table (its large tier's file, shared).
+const CBE_FILE: &str = "cbe.prun";
 
 fn load_or_build(
     path: &Path,
@@ -277,7 +309,7 @@ impl OptTables {
         let cc = build_cc(&cc_ix, verbose);
         let (edges, ce) = match tier {
             OptTier::Small => (Some(build_edges(verbose)), None),
-            OptTier::Medium => {
+            OptTier::Medium | OptTier::Large => {
                 let ix = CeIndex::new();
                 let t = build_ce(&ix, verbose);
                 (None, Some((ix, t)))
@@ -286,7 +318,8 @@ impl OptTables {
         let ae_ix = AeBound::index_for(tier);
         let ae_tab = build_ae(&ae_ix, MoveSet::FACE, verbose);
         let ae = AeBound::new(ae_ix, ae_tab);
-        Ok(Self::assemble(tier, cc_ix, cc, edges, ce, ae))
+        let cbe = (tier == OptTier::Large).then(|| CbeTable::build(MoveSet::FACE, verbose));
+        Ok(Self::assemble(tier, cc_ix, cc, edges, ce, ae, cbe))
     }
 
     fn assemble(
@@ -296,6 +329,7 @@ impl OptTables {
         edges: Option<Table2>,
         ce: Option<(CeIndex, Table2)>,
         ae: AeBound,
+        cbe: Option<CbeTable>,
     ) -> OptTables {
         let cc_target = cc_ix.targets().first().copied().unwrap_or(0);
         OptTables {
@@ -306,6 +340,7 @@ impl OptTables {
             edges,
             ce,
             ae,
+            cbe,
         }
     }
 
@@ -327,7 +362,8 @@ impl OptTables {
         let cc_path = dir.join(CC_FILE);
         let edges_path = dir.join(EDGES_FILE);
         let ce_path = dir.join(CE_FILE);
-        let ce_ix = (tier == OptTier::Medium).then(CeIndex::new);
+        let ce_ix = (tier != OptTier::Small).then(CeIndex::new);
+        let cbe_path = dir.join(CBE_FILE);
         let ae_ix = AeBound::index_for(tier);
         // (the two-phase solver's file of the same table: generated by either solver, shared)
         let ae_path = dir.join(format!("{}.prun", ae_ix.name()));
@@ -347,6 +383,18 @@ impl OptTables {
         match &ce_ix {
             None => plan.push(planned(&edges_path, N_EPERM)),
             Some(ix) => plan.push(planned(&ce_path, ix.size())),
+        }
+        if tier == OptTier::Large {
+            // (the index is built only for its size when the file is missing)
+            let bytes = std::fs::metadata(&cbe_path).map_or_else(
+                |_| crate::cbe::CbeIndex::new().size().div_ceil(4) as u64,
+                |m| m.len(),
+            );
+            plan.push(Planned {
+                path: cbe_path.clone(),
+                bytes,
+                working_set: 0,
+            });
         }
         check_plan(&plan)?;
         let cc = load_or_build(&cc_path, cc_size(&cc_ix), verbose, || {
@@ -369,7 +417,28 @@ impl OptTables {
             build_ae(&ae_ix, MoveSet::FACE, verbose)
         })?;
         let ae = AeBound::new(ae_ix, ae_tab);
-        let t = Self::assemble(tier, cc_ix, cc, edges, ce, ae);
+        let cbe = if tier == OptTier::Large {
+            Some(match CbeTable::load(&cbe_path) {
+                Ok(t) => {
+                    if verbose {
+                        eprintln!("loaded {}", cbe_path.display());
+                    }
+                    t
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    if verbose {
+                        eprintln!("generating {} ...", cbe_path.display());
+                    }
+                    let t = CbeTable::build(MoveSet::FACE, verbose);
+                    t.save(&cbe_path)?;
+                    t
+                }
+                Err(e) => return Err(e),
+            })
+        } else {
+            None
+        };
+        let t = Self::assemble(tier, cc_ix, cc, edges, ce, ae, cbe);
         t.check_walks(&[&second, &cc_path, &ae_path])?;
         Ok(t)
     }
@@ -382,6 +451,14 @@ impl OptTables {
             cc_target: self.cc_target,
             edges: self.edges.as_ref()?,
             ae: &self.ae,
+        })
+    }
+
+    /// The lower bounds of the large tier (`None` if the tables are another tier's).
+    pub fn large(&self) -> Option<LargeBounds<'_>> {
+        Some(LargeBounds {
+            m: self.medium()?,
+            cbe: self.cbe.as_ref()?,
         })
     }
 
@@ -429,6 +506,8 @@ impl OptTables {
                 ),
             )
         };
+        // (the joint table's saturating codes cannot be walked: only its size and checksum are
+        // checked, as in the two-phase solver)
         let r = if let Some(b) = self.small() {
             check_walks_of(&b, &positions)
         } else if let Some(b) = self.medium() {
@@ -445,6 +524,7 @@ impl OptTables {
             + self.edges.as_ref().map_or(0, Table2::bytes)
             + self.ce.as_ref().map_or(0, |(_, t)| t.bytes())
             + self.ae.tab.bytes()
+            + self.cbe.as_ref().map_or(0, |t| t.codes.len() * 8)
     }
 }
 
@@ -555,6 +635,43 @@ impl Bounds for MediumBounds<'_> {
             "AE (H_A)",
             "AE of SWAP_AB (H_B)",
         ][k.min(4)]
+    }
+}
+
+/// The large tier: the medium tier's lookups, and the two-phase corner/B-centre/edge-triple
+/// table (`cbe`, distance to `H_A` as a saturating code: at most 6, 7, 8, at least 9) on the
+/// position and on its `SWAP_AB` conjugate, each read for all four A-faces' edge triples.
+pub struct LargeBounds<'a> {
+    m: MediumBounds<'a>,
+    cbe: &'a CbeTable,
+}
+
+impl Bounds for LargeBounds<'_> {
+    const K: usize = MediumBounds::K;
+    #[inline(always)]
+    fn index(&self, k: usize, p: &Pos) -> usize {
+        self.m.index(k, p)
+    }
+    #[inline(always)]
+    fn table(&self, k: usize) -> &Table2 {
+        self.m.table(k)
+    }
+    fn is_target(&self, k: usize, i: usize) -> bool {
+        self.m.is_target(k, i)
+    }
+    fn name(&self, k: usize) -> &'static str {
+        self.m.name(k)
+    }
+    const S: usize = 2;
+    const SAT_MAX: u8 = crate::cbe::CODE_LB[3];
+    #[inline(always)]
+    fn sat_index(&self, s: usize, p: &Pos, out: &mut [usize; 4]) {
+        let x = self.m.ae.fc(p, s == 1);
+        self.cbe.prefetch_all(self.m.ae.f, &x, out);
+    }
+    #[inline(always)]
+    fn sat_bound(&self, _s: usize, idx: &[usize; 4]) -> u8 {
+        self.cbe.bound(idx)
     }
 }
 

@@ -17,7 +17,7 @@
 //! parent's exact distances.
 
 use super::coords::*;
-use super::tables::{exact, Bounds, MAX_K};
+use super::tables::{exact, Bounds, MAX_K, MAX_S};
 use crate::cube::*;
 use crate::notation::{solution_to_physical, Frame, PhysMove};
 use crate::prune::decode;
@@ -57,8 +57,9 @@ pub struct Iteration {
     pub depth: usize,
     /// nodes generated in this iteration
     pub nodes: u64,
-    /// table lookups in this iteration
+    /// table lookups in this iteration: exact tables, and saturating groups (second stage)
     pub lookups: u64,
+    pub sat_lookups: u64,
     pub tasks: usize,
     /// time since the start, at its end
     pub elapsed: f64,
@@ -77,8 +78,10 @@ pub struct Outcome {
     pub stop: Stop,
     /// nodes generated (children of expanded nodes)
     pub nodes: u64,
-    /// table lookups (each a read of one table entry, after computing its index)
+    /// table lookups (each a read of one table entry, after computing its index) of the exact
+    /// tables (first stage) and of the saturating groups (second stage)
     pub lookups: u64,
+    pub sat_lookups: u64,
     pub elapsed: f64,
     pub iterations: Vec<Iteration>,
     /// how many of the 48 symmetries fix the position (1: only the identity)
@@ -163,6 +166,7 @@ fn key(path: &[u8]) -> u32 {
 struct Counter {
     nodes: u64,
     lookups: u64,
+    sat_lookups: u64,
     /// `Shared::stop` as last read
     stop: bool,
 }
@@ -174,6 +178,10 @@ struct Scratch {
     ms: [u8; N_MOVES],
     idx: [[usize; MAX_K]; N_MOVES],
     hs: [[u8; MAX_K]; N_MOVES],
+    /// the children's bounds (the largest of their lookups)
+    mx: [u8; N_MOVES],
+    /// the indices of the saturating groups
+    sat: [[[usize; 4]; MAX_S]; N_MOVES],
     sel: [u8; N_MOVES],
 }
 
@@ -185,6 +193,8 @@ impl Scratch {
             ms: [0; N_MOVES],
             idx: [[0; MAX_K]; N_MOVES],
             hs: [[0; MAX_K]; N_MOVES],
+            mx: [0; N_MOVES],
+            sat: [[[0; 4]; MAX_S]; N_MOVES],
             sel: [0; N_MOVES],
         }
     }
@@ -202,6 +212,7 @@ struct Shared<'a, B: Bounds> {
     stop: AtomicBool,
     nodes: AtomicU64,
     lookups: AtomicU64,
+    sat_lookups: AtomicU64,
     sols: Mutex<Vec<Vec<usize>>>,
     /// symmetric start: the symmetries (other than the identity) that fix the root, if the
     /// task levels are filtered (see [`Shared::dedup`]); empty otherwise
@@ -283,6 +294,25 @@ impl<B: Bounds> Shared<'_, B> {
             }
         }
         out.retain(|c| usize::from(c.h.iter().copied().max().unwrap_or(0)) + g < bound);
+        // the saturating bounds, where they can prune (as in `dfs`)
+        let left = bound - g - 1;
+        if B::S > 0 && left < usize::from(B::SAT_MAX) {
+            ctr.sat_lookups += (out.len() * B::S * 4) as u64;
+            let mut sat = [[[0usize; 4]; MAX_S]; N_MOVES];
+            for (i, c) in out.iter().enumerate() {
+                for s in 0..B::S {
+                    self.b.sat_index(s, &c.p, &mut sat[i % N_MOVES][s % MAX_S]);
+                }
+            }
+            let mut i = 0;
+            out.retain(|_| {
+                let keep = (0..B::S).all(|s| {
+                    usize::from(self.b.sat_bound(s, &sat[i % N_MOVES][s % MAX_S])) <= left
+                });
+                i += 1;
+                keep
+            });
+        }
         out
     }
 
@@ -400,12 +430,35 @@ impl<B: Bounds> Shared<'_, B> {
                 fr.hs[u][k] = v;
                 mx = mx.max(v);
             }
-            let ok = usize::from(mx) <= budget;
-            if ok {
-                *stat += STAT_W[usize::from(mx) & 31];
-            }
+            fr.mx[u] = mx;
             fr.sel[kk % N_MOVES] = i as u8;
-            kk += usize::from(ok);
+            kk += usize::from(usize::from(mx) <= budget);
+        }
+        // The saturating bounds of the children still alive, where they can prune: all their
+        // indices and prefetches first, then the values.
+        if B::S > 0 && budget < usize::from(B::SAT_MAX) {
+            ctr.sat_lookups += (kk * B::S * 4) as u64;
+            for j in 0..kk {
+                let u = usize::from(fr.sel[j % N_MOVES]) % N_MOVES;
+                for s in 0..B::S {
+                    self.b.sat_index(s, &fr.ys[u], &mut fr.sat[u][s % MAX_S]);
+                }
+            }
+            let mut k2 = 0;
+            for j in 0..kk {
+                let i = fr.sel[j % N_MOVES];
+                let u = usize::from(i) % N_MOVES;
+                for s in 0..B::S {
+                    fr.mx[u] = fr.mx[u].max(self.b.sat_bound(s, &fr.sat[u][s % MAX_S]));
+                }
+                fr.sel[k2 % N_MOVES] = i;
+                k2 += usize::from(usize::from(fr.mx[u]) <= budget);
+            }
+            kk = k2;
+        }
+        for j in 0..kk {
+            let u = usize::from(fr.sel[j % N_MOVES]) % N_MOVES;
+            *stat += STAT_W[usize::from(fr.mx[u]) & 31];
         }
         for j in 0..kk {
             let i = usize::from(fr.sel[j % N_MOVES]) % N_MOVES;
@@ -441,6 +494,7 @@ pub fn solve<B: Bounds>(
         stop: Stop::BadTables,
         nodes: 0,
         lookups: 0,
+        sat_lookups: 0,
         elapsed: 0.0,
         iterations: vec![],
         symmetries: 1,
@@ -467,6 +521,7 @@ pub fn solve<B: Bounds>(
         stop: AtomicBool::new(false),
         nodes: AtomicU64::new(0),
         lookups: AtomicU64::new(0),
+        sat_lookups: AtomicU64::new(0),
         sols: Mutex::new(vec![]),
         symmetries: if limits.max_solutions.is_none() && sym_start() {
             root_syms.clone()
@@ -508,6 +563,7 @@ pub fn solve<B: Bounds>(
         }
         let it_start = sh.nodes.load(Ordering::Relaxed);
         let it_lookups = sh.lookups.load(Ordering::Relaxed);
+        let it_sat = sh.sat_lookups.load(Ordering::Relaxed);
         let predicted = prev_nodes.map_or(0, |n| n.saturating_mul(13));
         let inline = threads == 1 || predicted < SERIAL_NODES;
         let want = if inline && threads > 1 {
@@ -520,6 +576,7 @@ pub fn solve<B: Bounds>(
         let mut tasks = sh.tasks(&root, depth, want, &mut ctr);
         sh.nodes.fetch_add(ctr.nodes, Ordering::Relaxed);
         sh.lookups.fetch_add(ctr.lookups, Ordering::Relaxed);
+        sh.sat_lookups.fetch_add(ctr.sat_lookups, Ordering::Relaxed);
         // order by the previous iteration's statistic of the longest known prefix (stable:
         // ties keep the canonical order)
         if !stats.is_empty() {
@@ -547,7 +604,8 @@ pub fn solve<B: Bounds>(
                 let t = &tasks[i];
                 path.clear();
                 path.extend_from_slice(&t.path[..usize::from(t.len)]);
-                let (before, lookups_before) = (ctr.nodes, ctr.lookups);
+                let (before, lookups_before, sat_before) =
+                    (ctr.nodes, ctr.lookups, ctr.sat_lookups);
                 ctr.stop = false;
                 let mut stat = 0f32;
                 sh.dfs(
@@ -564,6 +622,8 @@ pub fn solve<B: Bounds>(
                 sh.nodes.fetch_add(ctr.nodes - before, Ordering::Relaxed);
                 sh.lookups
                     .fetch_add(ctr.lookups - lookups_before, Ordering::Relaxed);
+                sh.sat_lookups
+                    .fetch_add(ctr.sat_lookups - sat_before, Ordering::Relaxed);
             }
         };
         if inline {
@@ -589,18 +649,20 @@ pub fn solve<B: Bounds>(
             .collect();
         let elapsed = start.elapsed().as_secs_f64();
         let it_lookups = sh.lookups.load(Ordering::Relaxed) - it_lookups;
+        let it_sat = sh.sat_lookups.load(Ordering::Relaxed) - it_sat;
         out.iterations.push(Iteration {
             depth,
             nodes: it_nodes,
             lookups: it_lookups,
+            sat_lookups: it_sat,
             tasks: tasks.len(),
             elapsed,
         });
         let n_sols = sh.sols.lock().unwrap_or_else(PoisonError::into_inner).len();
         if verbose {
             eprintln!(
-                "  depth {depth:>2}: {it_nodes:>14} nodes, {it_lookups:>14} lookups, {:>5} tasks, \
-                 {elapsed:>9.3} s{}",
+                "  depth {depth:>2}: {it_nodes:>14} nodes, {it_lookups:>14} + {it_sat} lookups, \
+                 {:>5} tasks, {elapsed:>9.3} s{}",
                 tasks.len(),
                 if n_sols > 0 {
                     format!(", {n_sols} solution(s)")
@@ -630,6 +692,7 @@ pub fn solve<B: Bounds>(
         .collect();
     out.nodes = sh.nodes.load(Ordering::Relaxed);
     out.lookups = sh.lookups.load(Ordering::Relaxed);
+    out.sat_lookups = sh.sat_lookups.load(Ordering::Relaxed);
     out.elapsed = start.elapsed().as_secs_f64();
     out
 }

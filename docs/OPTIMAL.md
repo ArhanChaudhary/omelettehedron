@@ -110,6 +110,7 @@ Tiers (`--tier`):
 |---|---|---|
 | `small` | edges, corners x B-centres, corners x A-centres, A-centres/edge triples on both sides | 195 MB |
 | `medium` | corners x edges, corners x B-centres, corners x A-centres, A-centres/edges (with chirality) on both sides | 3.4 GB |
+| `large` | medium, and the two-phase joint corner/B-centre/edge-triple table on both sides (second stage) | 10.4 GB |
 
 (The corner x edge table subsumes the edge table: every corner x edge path is an edge path.)
 
@@ -274,6 +275,24 @@ AE averages 10.9 (with chirality) against 10.56 for corners x edges, and it meas
 centres, which no other table of the tiers combines with the edges. On the corner 6-flip it
 adds nothing (its edges and centres are solved: AE is 0 at the root on both sides; iterations
 to 16 within 0.4% of v0's nodes), so that proof stays as in v0.
+
+**Joint corner/B-centre/edge-triple table (`neg/optimal-cbe`, not merged).** The two-phase
+CBE table (7.0 GB, distance to `H_A` as a saturating code: at most 6, 7, 8, at least 9), read for
+all four A-faces' triples on the position and on its `SWAP_AB` conjugate, as a second stage: a
+child that passes the exact tables is checked against it when it has fewer than 9 moves left
+(the codes cannot prune otherwise), without parent values. A `large` tier, medium + CBE
+(10.4 GB). Same lengths; on top of medium + AE:
+
+| set | medium + AE | large (+ CBE) | ratio | CBE lookups |
+|---|---|---|---|---|
+| 10 x 15 moves, seed 1717 | 1,162,092 | 1,161,858 | 0.9998 | 1,168 |
+| 10 x 17 moves, seed 1717 | 147,723,722 | 144,410,408 | 0.978 | 35,736 |
+
+With bounds around 11, the tree has almost no nodes with fewer than 9 moves left (the CBE
+lookups are 0.0002 per node), so the joint table, which made the two-phase solver's phase-1 tree
+2x smaller near its leaves, prunes little here: 2% fewer nodes for 7 GB more. The second stage
+itself is tested with a saturating bound made from the brute force's ball
+(`saturating_bounds_keep_optimal_lengths`: same lengths, 12,954 instead of 85,280 nodes).
 
 ## Missing (v0)
 

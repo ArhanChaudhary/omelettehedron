@@ -182,8 +182,8 @@ enum Cmd {
 /// Table options of the optimal solver.
 #[derive(clap::Args, Clone)]
 struct OptTableArgs {
-    /// Table size (required; there is no default): small (~195 MB) or medium (~3.4 GB, fewer
-    /// nodes)
+    /// Table size (required; there is no default): small (~195 MB), medium (~3.4 GB) or large
+    /// (~10.4 GB, fewest nodes)
     #[arg(long, value_enum)]
     tier: OptTier,
     /// Directory for the tables (default: $FTO_TABLES or ./tables)
@@ -462,6 +462,10 @@ macro_rules! opt_bounds {
                 let $b = $t.medium().ok_or_else(missing)?;
                 $body
             }
+            OptTier::Large => {
+                let $b = $t.large().ok_or_else(missing)?;
+                $body
+            }
         }
     }};
 }
@@ -556,6 +560,12 @@ fn run_optimal(cmd: OptCmd) -> Result<(), Error> {
                     "A-centre/edge (to H_A, two-phase table) depth histogram {:?}",
                     t.ae.tab.hist
                 );
+                if let Some(cbe) = &t.cbe {
+                    eprintln!(
+                        "corner/B-centre/edge-triple (to H_A, two-phase table) histogram {:?}",
+                        cbe.hist
+                    );
+                }
                 Ok(())
             })
         }
