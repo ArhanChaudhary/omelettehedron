@@ -144,6 +144,11 @@ enum Cmd {
         /// its target-length passes here. A wrong value can give a wrong answer
         #[arg(long)]
         lower_bound: Option<usize>,
+        /// Keep improving: print each better solution as soon as it is found, with no time
+        /// limit, until the last one is proven optimal (or Ctrl-C). The proof takes longer
+        /// than without it (one thread: about 2.6x), but solutions appear along the way
+        #[arg(long, conflicts_with_all = ["time", "max_length", "max_solutions", "lower_bound"])]
+        improve: bool,
         /// Each given sequence is a solution: solve the position it solves (the sequence
         /// inverted, applied to the solved puzzle) instead of the position it makes
         #[arg(long)]
@@ -832,6 +837,7 @@ fn run(cli: Cli) -> Result<(), Error> {
             random,
             seed,
             lower_bound,
+            improve,
             inverse,
             pattern,
             patterns,
@@ -844,6 +850,8 @@ fn run(cli: Cli) -> Result<(), Error> {
                 bench::limits_with_time(stop.time, stop.max_length, stop.max_solutions)
                     .map_err(|e| format!("--time: {e}"))?;
             limits.lower_bound = lower_bound;
+            limits.improve = improve;
+            let print = if improve { Report::Improvements } else { print };
             if patterns {
                 return solve_pattern_list(&tab, usual.as_deref(), &limits, print, progress);
             }

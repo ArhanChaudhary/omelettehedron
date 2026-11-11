@@ -117,6 +117,10 @@ target/release/omelettehedron solve --tier large "U R' BL F D B' L BR"
 # stop after 2 seconds, printing every improvement as it is found
 target/release/omelettehedron solve --tier large -t 2 -p improvements "R U' L F' BR B' ..."
 
+# keep improving with no time limit: each better solution as it is found, until the last
+# is proven optimal (the proof takes longer than without --improve: about 2.6x on one thread)
+target/release/omelettehedron solve --tier large --improve "R U' L F' BR B' ..."
+
 # stop at the first solution of at most 22 moves
 target/release/omelettehedron solve --tier large -l 22 "..."
 
@@ -496,7 +500,10 @@ reloads once; where a browser refuses, the demo runs on one thread.
   generates the chosen tables, warms up the engine and keeps the tables in IndexedDB (one entry
   per tier) for later visits. If the medium tier cannot be prepared (e.g. not enough memory),
   it goes back to the small one and says so. The page shows each better solution while
-  solving. **Stop** cancels a solve. Without shared memory, it restarts the worker and reloads
+  solving, and the proven lower bound ("shortest possible: at least N moves"). Three modes:
+  best solution in a given time; **keep improving** (no time limit: better and better
+  solutions until the last is proven shortest); and **shortest possible** (the fastest proof,
+  but the first solution it shows is already the shortest). **Stop** cancels a solve. Without shared memory, it restarts the worker and reloads
   the stored tables.
 * **Invert** turns the moves in the box around (reversed, each turned the other way), so a
   solution found elsewhere becomes a scramble of the position it solves; solve that to find
