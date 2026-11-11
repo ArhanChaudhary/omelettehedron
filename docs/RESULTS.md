@@ -112,7 +112,7 @@ slower than large (0.85x nodes/s), so large is the fastest tier. Tables are gene
 and loaded from disk afterwards; all tiers include the 4.7 MB symmetry-reduced corner/B-centre
 table and the in-memory phase-2 table.
 
-## WebAssembly (small tier)
+## WebAssembly (small and medium tiers)
 
 Measured in Bun (JavaScriptCore) on the same machine; see the README's WebAssembly section.
 
@@ -122,5 +122,20 @@ Measured in Bun (JavaScriptCore) on the same machine; see the README's WebAssemb
 | search speed | 58 M nodes/s (1T) | 23 M nodes/s | 74 M nodes/s |
 | random positions with any solution after 5 s | 9 of 10 (1T) | 4 of 10 | 10 of 10 |
 
-The modules are 0.55 MB each. Threads scale poorly in JavaScriptCore because its WebAssembly
-atomic loads are slow under contention.
+The modules are 0.63 MB (one thread) and 0.67 MB (each threads module). Threads scale poorly
+in JavaScriptCore because its WebAssembly atomic loads are slow under contention.
+
+The medium tier (the demo's Faster choice), measured on 2026-11-11 while proofs kept 43 of the
+48 cores busy (lowest priority; for one thread the process CPU time stands in for the time on
+an idle machine):
+
+| | small | medium |
+|---|---|---|
+| generation, wasm, 16 threads (wall time under load) | 257 s | 872 s (files identical to the native ones) |
+| table load, wasm, 1 thread (CPU time) | 0.8 s | 1.6 s |
+| memory of the one-thread module after loading | 358 MiB | 1220 MiB |
+| 10 optimal solves of 16-move scrambles, wasm, 1 thread | 53.2 M nodes, 7.3 s CPU | 5.9 M nodes, 1.6 s CPU |
+| 10 optimal solves of 17-move scrambles, native, 1 thread | 37.2 s CPU (1.1e9 nodes) | 3.3 s CPU (1.0e8 nodes) |
+
+With the medium tier the module needs about 9-11 times fewer nodes; a node costs about twice
+as much in WebAssembly (natively the same), so proofs take about a fifth of the time there.

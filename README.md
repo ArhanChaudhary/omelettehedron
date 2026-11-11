@@ -186,40 +186,56 @@ scripts/compare.py <before> <after>             # markdown comparison of two run
 ## WebAssembly demo
 
 `wasm/` holds a browser demo: the solver as a WebAssembly module, a JavaScript wrapper and a
-static page. It supports the small tier only (wasm32 has a 4 GB address space) and face turns only (no `--moves`).
+static page. It offers the small and medium tiers (the page calls them Standard and Faster; the
+large tier needs 8 GB, and wasm32 has a 4 GB address space) and face turns only (no `--moves`).
 
 ```sh
 rustup target add wasm32-wasip1 wasm32-wasip1-threads
-scripts/build-wasm.sh        # wasm/dist/omelettehedron.wasm and omelettehedron-threads.wasm
+scripts/build-wasm.sh        # wasm/dist/: omelettehedron.wasm, omelettehedron-threads.wasm,
+                             # omelettehedron-threads-medium.wasm
 bun wasm/serve.mjs           # then open http://localhost:8000/
-bun wasm/test.mjs            # headless test in Bun (FTO_TABLES=DIR also compares the tables)
-bun wasm/bench.mjs [--threads N] [--tables DIR] [--count 10] [--seconds 5]
+bun wasm/test.mjs            # headless test in Bun (FTO_TABLES=DIR also compares the tables and
+                             # loads the medium tier; FTO_TEST_MEDIUM_GENERATE=1 generates it)
+bun wasm/bench.mjs [--tier small|medium] [--threads N] [--tables DIR] [--count 10] [--seconds 5]
 ```
 
 The demo is deployed to GitHub Pages (https://omelettehedron.arhan.sh/) by
 `.github/workflows/pages.yml` on every push to the default branch: `scripts/build-pages.sh DIR`
-builds both modules and copies only the public files. Pages cannot send the cross-origin
+builds the three modules and copies only the public files. Pages cannot send the cross-origin
 isolation headers, so the page registers `wasm/coi-sw.js`, a service worker that adds them, and
 reloads once; where a browser refuses, the demo runs on one thread.
 
-* `omelettehedron.wasm` (`wasm32-wasip1`) runs on one thread anywhere.
-  `omelettehedron-threads.wasm` (`wasm32-wasip1-threads`) runs rayon's thread pool on
-  wasi-threads. It needs `SharedArrayBuffer`, so a browser page must be cross-origin isolated
-  (the COOP/COEP headers that `wasm/serve.mjs` sends; GitHub Pages cannot send them). Its
-  memory is fixed at 1 GiB from the start: growing the shared memory while threads run is
-  unsafe in V8 (see `wasm/build.rs`).
+* `omelettehedron.wasm` (`wasm32-wasip1`) runs on one thread anywhere, with either tier; its
+  memory grows as needed. `omelettehedron-threads.wasm` (`wasm32-wasip1-threads`) runs
+  rayon's thread pool on wasi-threads. It needs `SharedArrayBuffer`, so a browser page must be
+  cross-origin isolated (the COOP/COEP headers that `wasm/serve.mjs` sends; GitHub Pages
+  cannot send them). Its memory is fixed from the start: growing the shared memory while
+  threads run is unsafe in V8 (see `wasm/build.rs`). It has 1 GiB, room for the small tier;
+  `omelettehedron-threads-medium.wasm`, the same module built with 2 GiB (feature `medium`),
+  has room for the medium tier. Asked to generate tables that do not fit, a module says so
+  instead of trapping.
+* The medium tier's A-centre/edge index has 4,127,692,800 entries, just below 2^32: every
+  index is a sum of products no larger than itself, so the 32-bit `usize` of wasm32 computes
+  the same indices (checked on the host with checked 32-bit arithmetic, by a fingerprint
+  test that `scripts/check.sh` also runs on wasm32, and by the demo test's node counts). The
+  CLI refuses the large and huge tiers on 32-bit targets.
+* A table file is copied into the module in 16 MiB pieces and used where it lies (its header
+  is removed in place), so loading the medium tier needs no second copy of its 1.03 GB.
 * `wasm/omelettehedron.mjs` provides the WASI functions the module imports and a worker pool
   for its threads. `FtoSolver` generates or loads the tables, solves scrambles optimally or
   with a time limit, makes random-state scrambles and checks solutions on the sticker model.
   A solve can be cancelled from another thread (`cancel`), which moves the module's clock past
   its time limit; this needs shared memory.
 * The page (`wasm/index.html`, run in a worker by `wasm/demo-worker.mjs`) starts with every core
-  when it is cross-origin isolated, else with one thread. It generates the tables, warms up the
-  engine and keeps the tables in IndexedDB for later visits. The page shows each better solution
-  while solving. **Stop** cancels a solve. Without shared memory, it restarts the worker and
-  reloads the stored tables.
-* Tables can also be loaded from the native `gen --tier small` files: the formats are the same,
-  and the module generates byte-identical files.
+  when it is cross-origin isolated, else with one thread. The visitor chooses the tables:
+  Standard (small, 134 MB) or Faster (medium, 1.04 GB); the choice is remembered. The page
+  generates the chosen tables, warms up the engine and keeps the tables in IndexedDB (one entry
+  per tier) for later visits. If the medium tier cannot be prepared (e.g. not enough memory),
+  it goes back to the small one and says so. The page shows each better solution while
+  solving. **Stop** cancels a solve. Without shared memory, it restarts the worker and reloads
+  the stored tables.
+* Tables can also be loaded from the native `gen --tier small` or `gen --tier medium` files:
+  the formats are the same, and the module generates byte-identical files.
 
 Measured in Bun 1.4.4 (JavaScriptCore, Safari's engine) on the 48-core EPYC VM:
 
@@ -230,9 +246,29 @@ Measured in Bun 1.4.4 (JavaScriptCore, Safari's engine) on the 48-core EPYC VM:
 | search speed (10 random positions, 5 s each) | 58 / 399 / 2162 M nodes/s (1/8/48T) | 23 M nodes/s | 36 M nodes/s | 74 M nodes/s |
 | random positions with any solution after 5 s | 9 / 10 / 10 of 10 | 4 | 7 | 10 |
 
-The modules are 0.55 MB each. The single-thread module grows to 352 MiB while generating and
-428 MiB while loading table files. The optimal solves of short scrambles (6-14 moves) take
+The modules are 0.63 MB (one thread) and 0.67 MB (each threads module). The single-thread
+module grows to 352 MiB while generating and 358 MiB while loading table files (428 MiB before
+the files were loaded in place). The optimal solves of short scrambles (6-14 moves) take
 milliseconds, with the same node counts as natively on one thread.
+
+The medium tier was measured on 2026-11-11 while proofs kept 43 of the 48 cores busy; the
+measurements ran at the lowest priority, so their wall times are inflated many times. For one
+thread, the process CPU time stands in for the time on an idle machine.
+
+| | small (Standard) | medium (Faster) |
+|---|---|---|
+| tables | 134 MB | 1.04 GB |
+| generation, native | 27 s (1T), 1.2 s (48T) | 167 s (1T), 6.6 s (48T) |
+| generation, wasm, 16 threads (wall time under load) | 257 s | 872 s (files identical to the native ones) |
+| table load, wasm, 1 thread (CPU time) | 0.8 s | 1.6 s |
+| module memory after loading | 358 MiB (1 thread) | 1220 MiB (1 thread); 2 GiB fixed (threads) |
+| 10 optimal solves of 16-move scrambles, wasm, 1 thread | 53.2 M nodes, 7.3 s CPU | 5.9 M nodes, 1.6 s CPU |
+| 10 optimal solves of 17-move scrambles, native, 1 thread | 37.2 s CPU | 3.3 s CPU |
+
+A medium-tier node costs about twice as much in WebAssembly as a small-tier one (natively they
+cost the same, probably because the native build puts the tables on huge pages), so in the
+browser proofs take about a fifth of the time with the medium tier rather than a tenth. The optimal solves of the
+test scrambles have the native one-thread node counts with either tier.
 
 Threads helped little in JavaScriptCore. Its WebAssembly atomic loads behave like locked
 read-modify-writes. In a micro-benchmark, eight threads reading shared words got 7 M loads/s
