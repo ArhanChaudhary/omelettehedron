@@ -10,8 +10,8 @@
 //!   the reduction, so no second position is carried.
 
 use super::sym::*;
-use crate::coord::{corners, mset, N_CORNER, N_MSET};
 use crate::coord::triple_pieces;
+use crate::coord::{corners, mset, N_CORNER, N_MSET};
 use crate::cube::*;
 use crate::fast::{fast, label_mask, masks, mset_labels, shuffle, FastTables, Fc};
 use std::collections::HashMap;
