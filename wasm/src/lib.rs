@@ -17,11 +17,7 @@
 //! `wasm32-wasip1-threads` runs rayon's pool on wasi-threads (in a browser: a cross-origin
 //! isolated page). In both, the pool is rayon's global one, built once by `fto_init` with the
 //! calling thread as one of its workers. It is never dropped, so its threads never exit: a
-//! thread that exits can race with wasi-libc's thread exit (egg-solver, wasm/src/threads.rs).
-//!
-//! Adapted from egg-solver's wasm/src/lib.rs (same author): the ABI conventions (`fto_alloc`,
-//! `fto_free`, the output buffer, `with_state`, `text_argument`), the reactor initializer
-//! `_initialize` and the threads build's set-up.
+//! thread that exits can race with wasi-libc's thread exit.
 
 #![cfg_attr(
     not(test),
@@ -67,7 +63,7 @@ const NO_LIMIT: Duration = Duration::from_secs(1_000_000);
 /// `crt1-reactor`): the host calls it once, on the main thread, before any other export
 /// (`omelettehedron.mjs` does). In the threads build it first sets up the main thread's
 /// pthread record (without it, wasi-libc's thread list grew from a zeroed record and threads
-/// could hang in their exit; egg-solver). Adapted from egg-solver's wasm/src/lib.rs.
+/// could hang in their exit).
 #[cfg(target_family = "wasm")]
 #[unsafe(no_mangle)]
 pub extern "C" fn _initialize() {
@@ -144,7 +140,6 @@ fn state() -> MutexGuard<'static, State> {
 }
 
 /// Run `f` on the state; its `Ok` text or `Err` message becomes the output. Returns 0 or -1.
-/// (From egg-solver's wasm/src/lib.rs.)
 fn with_state(f: impl FnOnce(&mut State) -> Result<String, String>) -> i32 {
     let mut state = state();
     let (output, status) = match f(&mut state) {
@@ -155,7 +150,7 @@ fn with_state(f: impl FnOnce(&mut State) -> Result<String, String>) -> i32 {
     status
 }
 
-/// A string argument. (From egg-solver's wasm/src/lib.rs.)
+/// A string argument.
 ///
 /// # Safety
 /// If `len` is nonzero, `ptr` addresses one live allocation containing at least
@@ -194,7 +189,7 @@ fn tables(state: &State) -> Result<&Tables<AeSym>, String> {
 }
 
 /// Allocate `len` bytes for the caller (strings passed in); 0 if out of memory. Free with
-/// `fto_free`. (From egg-solver's wasm/src/lib.rs.)
+/// `fto_free`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fto_alloc(len: usize) -> *mut u8 {
     let Ok(layout) = std::alloc::Layout::from_size_align(len.max(1), 1) else {

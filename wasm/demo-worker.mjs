@@ -3,8 +3,6 @@
 // Messages in: { id, cmd, ...args }; out: { id, result } or { id, error }. The module's
 // output lines (progress while generating tables, each better solution while solving) go to
 // the BroadcastChannel named at `init`, from this worker and from the pool's threads.
-//
-// Adapted from egg-solver's wasm/demo-worker.mjs (same author).
 
 import { FtoSolver, wasmFile } from './omelettehedron.mjs';
 

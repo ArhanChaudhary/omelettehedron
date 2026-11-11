@@ -25,9 +25,6 @@
 // while they work; the channel delivers at once), else to the console. `onLine(fd, line)`
 // takes the lines of the calling thread instead (those of the pool's threads still go to the
 // channel or the console).
-//
-// Adapted from egg-solver's wasm/egg-solver.mjs (same author): the WASI shim, the
-// thread-spawn pool and the memory set-up; the cancellation clock is new.
 
 const ERRNO_SUCCESS = 0;
 const ERRNO_AGAIN = 6;
@@ -71,7 +68,6 @@ export function lineSink({ onLine, channel } = {}) {
  * arguments or environment; stdout and stderr go to `sink(fd, line)`, line by line. The
  * monotonic clock runs `CANCEL_JUMP_NS` ahead per cancellation counted in `control` (see
  * `cancel`). (Addresses arrive as signed i32: `>>> 0` makes those from 2 GiB up positive.)
- * Adapted from egg-solver's wasm/egg-solver.mjs.
  */
 export function wasiImports(getMemory, module, { sink, control } = {}) {
   const lines = { 1: '', 2: '' };
@@ -206,7 +202,7 @@ function sleep(ms) {
  * The `thread-spawn` import of wasi-threads: hands the thread to an idle pool worker. The
  * module starts its threads once and never ends them (rayon's global pool), so the pool has
  * room for all of them. It must not wait for a worker: the spawning thread holds wasi-libc's
- * thread list lock. (From egg-solver's wasm/egg-solver.mjs.)
+ * thread list lock.
  */
 export function threadSpawn(control) {
   const slots = (control.length - 4) / 4;
@@ -242,7 +238,7 @@ export function cancel(control) {
   return true;
 }
 
-/** The imported memory's limits (pages), read from the module's import section. (From egg-solver.) */
+/** The imported memory's limits (pages), read from the module's import section. */
 function importedMemoryLimits(bytes) {
   let at = 8;
   const leb = () => {
@@ -295,7 +291,7 @@ function importedMemoryLimits(bytes) {
 
 /**
  * A local file as a `Blob` (Bun: a path, or a `file:` URL), else undefined (browsers, and
- * http(s), data and blob URLs, which are fetched). (From egg-solver.)
+ * http(s), data and blob URLs, which are fetched).
  */
 function localFile(source) {
   if (typeof Bun === 'undefined' || !(typeof source === 'string' || source instanceof URL)) {
@@ -318,7 +314,7 @@ async function readSource(source) {
   return new Uint8Array(await response.arrayBuffer());
 }
 
-/** Start a pool worker (`omelettehedron-thread.mjs`) and wait until it is idle. (From egg-solver.) */
+/** Start a pool worker (`omelettehedron-thread.mjs`) and wait until it is idle. */
 async function startWorker(module, memory, control, slot, channel) {
   const url = new URL('./omelettehedron-thread.mjs', import.meta.url);
   const worker = new Worker(url, { type: 'module' });
@@ -451,7 +447,7 @@ export class FtoSolver {
     return JSON.parse(text);
   }
 
-  /** Pass a string to `f(ptr, len)` in a module buffer. (From egg-solver.) */
+  /** Pass a string to `f(ptr, len)` in a module buffer. */
   withText(text, f) {
     const bytes = new TextEncoder().encode(text);
     const ptr = this.exports.fto_alloc(bytes.length) >>> 0;
@@ -590,10 +586,9 @@ export class FtoSolver {
    * Have the engine compile the search with its optimizing compiler now, so that the first
    * real solve gets it: V8 (Chrome, Node) runs new code with its baseline compiler and
    * switches a function to optimized code only on its next call, so a long first solve would
-   * run slowly to its end (egg-solver measured +45% for a first solve without this; its
-   * docs/reference/USER_GUIDE.md). Solves short scrambles optimally for about `seconds`, then
-   * gives the background compiler time to finish. Not in Bun: JavaScriptCore moves a running
-   * loop to optimized code. (Adapted from egg-solver's `warmUp`.)
+   * run slowly to its end. Solves short scrambles optimally for about `seconds`, then gives
+   * the background compiler time to finish. Not in Bun: JavaScriptCore moves a running loop
+   * to optimized code.
    */
   async warmUp({ seconds = 0.3 } = {}) {
     if (typeof Bun !== 'undefined') return;

@@ -22,8 +22,6 @@
     }
   })();
 </script>
-<!-- Adapted from egg-solver's wasm/index.html (same author): layout, worker protocol,
-     thread fallback and prime normalization. -->
 <style>
   :root { --bg: #fdfdfc; --fg: #1d1d1b; --muted: #6b6b66; --line: #d9d8d3; --accent: #2f5fa7; --ok: #2c7a3f; }
   @media (prefers-color-scheme: dark) {
@@ -433,7 +431,7 @@ const showHistory = () => {
     return tr;
   }));
 };
-// Phone keyboards substitute curly or look-alike apostrophes for the prime (from egg-solver).
+// Phone keyboards substitute curly or look-alike apostrophes for the prime.
 const primes = /[‘’‛′´`ʼʹ]/g;
 const plain = (text) => text.replace(primes, "'").replace(/ /g, ' ');
 

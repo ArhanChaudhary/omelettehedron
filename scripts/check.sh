@@ -26,13 +26,13 @@ awk '
     END { if (bad) { print "runtime assertions found outside test code" > "/dev/stderr"; exit 1 } }
 ' $(find src wasm/src -name '*.rs')
 
-# Backend matrix (as in egg-solver's check.sh): the scalar fallback on this machine, clippy for
+# Backend matrix: the scalar fallback on this machine, clippy for
 # the other targets, the library tests on aarch64 under qemu and on wasm32 under bun's WASI.
 # A missing tool is reported as "not checked", never as passed. FTO_CHECK_FAST=1 skips it.
 if [ "${FTO_CHECK_FAST:-0}" != 1 ]; then
     not_checked=()
     cargo test --lib --features scalar
-    # (WebAssembly is built for WASI, as egg-solver does, also for browsers via a JS WASI
+    # (WebAssembly is built for WASI, also for browsers via a JS WASI
     # shim; wasm32-unknown-unknown would need getrandom's JS backend)
     for t in aarch64-apple-darwin aarch64-unknown-linux-gnu wasm32-wasip1; do
         if rustup target list --installed | grep -qx "$t"; then
@@ -53,7 +53,9 @@ if [ "${FTO_CHECK_FAST:-0}" != 1 ]; then
         out=$(RUSTFLAGS="-C target-feature=+simd128" cargo test --release --lib --target wasm32-wasip1 \
             --no-run --message-format=json 2>/dev/null |
             sed -n 's/.*"executable":"\([^"]*\.wasm\)".*/\1/p' | tail -1)
-        timeout 600 "$bun" scripts/wasi-run.mjs "$out" --test-threads=1
+        # (the timeout catches a hang, not slowness: the single-threaded tests take ~500 s on
+        # a loaded machine, so it allows several times that)
+        timeout 2400 "$bun" scripts/wasi-run.mjs "$out" --test-threads=1
     else
         not_checked+=("wasm32 tests (bun missing)")
     fi

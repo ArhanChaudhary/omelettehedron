@@ -2,8 +2,7 @@
 //! feature is not visible to `cfg(target_feature)`), and all of the module's memory from the
 //! start, so that it never grows.
 //!
-//! Adapted from egg-solver's wasm/build.rs (same author), which found why: memory that grows
-//! while threads run is not safe in V8. A bulk memory operation (`memory.fill`,
+//! The reason: memory that grows while threads run is not safe in V8. A bulk memory operation (`memory.fill`,
 //! `memory.copy`) checks its bounds against the size the thread's instance last saw, which a
 //! grow updates only later, so a `memory.fill` of a block fresh from `malloc` could trap
 //! ("memory access out of bounds"). With the initial memory equal to the maximum, wasi-libc's

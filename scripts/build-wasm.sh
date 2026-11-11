@@ -10,7 +10,6 @@
 # always on (every current browser, Bun and Node have it). The threads builds' fixed memory
 # sizes are set in wasm/build.rs.
 # usage: scripts/build-wasm.sh   (CARGO_TARGET_DIR is honoured)
-# (Adapted from egg-solver's wasm/build.sh, same author.)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 target_dir=${CARGO_TARGET_DIR:-target}

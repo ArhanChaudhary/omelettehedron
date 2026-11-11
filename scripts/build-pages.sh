@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build the browser demo and copy only the public site files to a new directory (the GitHub
-# Pages site, see .github/workflows/pages.yml). Adapted from egg-solver's scripts/build-pages.sh.
+# Pages site, see .github/workflows/pages.yml).
 # usage: scripts/build-pages.sh OUTPUT_DIRECTORY
 set -euo pipefail
 cd "$(dirname "$0")/.."
