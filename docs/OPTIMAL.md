@@ -625,7 +625,9 @@ threads, 19-move set; 0.950, 0.956, 0.956).
 * 1 GiB pages for the 21 GB triple table (the tables sit in 2 MB transparent huge pages; 1 GiB
   pages need a reserved hugetlb pool on the machine).
 * Lanes (several depth-first stacks per worker, so that the misses of different subtrees
-  overlap): not tried; the sibling pipeline covers the first stage only.
+  overlap): tried, slower or neutral (`neg/optimal-lanes`): the first-stage read stall (26% /
+  35% of the samples, medium / large) does not shrink with 2-8 nodes of slack, so it is not
+  plain latency; address translation is the likely remainder (no hardware counters here).
 
 ## Done and next
 
@@ -639,8 +641,9 @@ stage, an A-centre/edge class prefetch pass before every stage, per-node lookup 
 
 Next, by expected value:
 
-1. **The table-read stall** (still the largest single cost, about 27% of the medium tier's
-   samples): lanes, or a deeper pipeline than one sibling.
+1. **The table-read stall** (still the largest single cost, about 26-35% of the samples, all in
+   the first stage): lanes did not hide it; 1 GiB pages for the tables (a reserved hugetlb
+   pool) would test the address-translation explanation.
 2. **A stronger bound for the 10-11 moves-left nodes** beyond the triple table: an
    A-centre/edge table to solved with chirality would prune about as much as the triple table
    (0.34x on the 13-move set) but needs 68.7 GB; added to the triple table, the one without
