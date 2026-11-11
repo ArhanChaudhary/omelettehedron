@@ -62,8 +62,9 @@ pub const PICTURE_FACES: [usize; 8] = [0, 1, 3, 2, 4, 6, 7, 5];
 /// standard colour scheme (that of the Diansheng, Dayan and most other FTOs) held the standard
 /// way, white on U and green on F (the scrambling orientation of FTO competitions): white U,
 /// red R, purple L, green F, blue B, grey BR, orange BL, yellow D. Opposite faces are
-/// white/yellow, green/blue, red/orange and purple/grey. (Lanlan FTOs have red and green
-/// swapped.) Patterns that are read may use any 8 characters.
+/// white/yellow, green/blue, red/orange and purple/grey (checked on a physical puzzle, which
+/// also settles left and right: red is on R). (Lanlan FTOs have red and green swapped.)
+/// Patterns that are read may use any 8 characters.
 pub const DEFAULT_SYMBOLS: [char; 8] = ['W', 'R', 'P', 'G', 'B', 'A', 'O', 'Y'];
 
 /// `a * p + b * q + c * r`: a sticker centroid (scaled by 9, as in [`crate::geometry`]).

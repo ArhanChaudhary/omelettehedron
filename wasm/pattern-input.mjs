@@ -9,7 +9,9 @@ import { stickerTriangles, faceLabels, PICTURE_FACES, SOLVED_LETTERS } from './p
 // The standard colour scheme, held the standard way (white on U, green on F: the scrambling
 // orientation of FTO competitions): the scheme of the Diansheng, Dayan and most other FTOs.
 // Opposite faces are white/yellow, green/blue, red/orange and purple/grey, and red, purple and
-// blue surround white clockwise. (LanLan FTOs have red and green swapped: SCHEMES.)
+// blue surround white clockwise (checked on a physical puzzle: with a corner at the top, the
+// faces around it run white, red, grey, blue anticlockwise from above). (LanLan FTOs have red
+// and green swapped: SCHEMES.)
 const DEFAULTS = {
   W: ['#f4f4f0', 'white'],
   R: ['#d42a2f', 'red'],
