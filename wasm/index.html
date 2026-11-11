@@ -55,7 +55,7 @@
 </head>
 <body>
 <h1>omelettehedron</h1>
-<p class="note">A two-phase solver for the face-turning octahedron (FTO), running in your browser.
+<p class="note">Solve any face-turning octahedron (FTO) scramble right here in your browser.
 Hold the puzzle with a corner pointing at you: front faces U (top), R, F (bottom), L; back faces
 B (top), BR, D (bottom), BL. <code>X</code> turns face X clockwise as seen from outside, <code>X'</code>
 anticlockwise.</p>
@@ -68,8 +68,8 @@ anticlockwise.</p>
 <textarea id="scramble" rows="3" aria-label="Scramble" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Paste a scramble, e.g. U R' BL F D B' L BR, or press Random scramble"></textarea>
 <div class="row">
   <button id="random" disabled>Random scramble</button>
-  <label><input type="radio" name="mode" value="time" checked> best in <input id="seconds" type="number" min="0.1" step="any" value="10" style="width:4rem" aria-label="Time limit in seconds"> s</label>
-  <label><input type="radio" name="mode" value="optimal"> optimal</label>
+  <label><input type="radio" name="mode" value="time" checked> best solution in <input id="seconds" type="number" min="0.1" step="any" value="10" style="width:4rem" aria-label="Time limit in seconds"> seconds</label>
+  <label><input type="radio" name="mode" value="optimal"> shortest possible (can be slow)</label>
   <button id="solve" class="primary" disabled>Solve</button>
   <button id="stop" disabled>Stop</button>
 </div>
@@ -82,25 +82,24 @@ anticlockwise.</p>
 </section>
 
 <details id="settings">
-  <summary>Settings and details</summary>
-  <p class="note">The solver uses the <em>small</em> pruning tables (134 MB), generated here when the
-  page first opens and kept in this browser's storage for later visits. Random positions take
-  about 22–24 moves; proving a solution optimal can take hours for them, but short scrambles are
-  solved optimally at once. A time-limited solve may need several seconds on one thread to find its
-  first solution. Threads need a cross-origin isolated page (see the README); without one the
-  solver uses one thread.</p>
+  <summary>More options and how it works</summary>
+  <p class="note">On your first visit the page prepares its solving data (about 134 MB), which
+  takes a minute or so, and saves it in this browser, so later visits start almost at once.
+  A random scramble gets a solution of about 22–24 moves within seconds. Proving that a solution
+  is the shortest possible can take hours for a random scramble, but short scrambles get their
+  shortest solution right away. Using more of your computer's processor cores makes it faster.</p>
   <div class="row">
-    <label>Threads <input id="threads" type="number" min="1" value="1" style="width:4rem"></label>
-    <button id="apply" disabled>Restart</button>
+    <label>Processor cores to use <input id="threads" type="number" min="1" value="1" style="width:4rem"></label>
+    <button id="apply" disabled>Apply</button>
     <span id="isolation" class="note"></span>
   </div>
   <div class="row"><span id="tables" class="note"></span></div>
   <div class="row">
-    <button id="forget" disabled>Forget the stored tables</button>
-    <label>Load table files <input id="files" type="file" multiple accept=".prun" disabled></label>
+    <button id="forget" disabled>Delete the saved solving data</button>
+    <label>Load data files <input id="files" type="file" multiple accept=".prun" disabled></label>
   </div>
-  <p class="note">Table files: <code>ae-sym288-triples.prun</code> and <code>cb-sym24.prun</code>
-  from the native <code>omelettehedron gen --tier small</code>.</p>
+  <p class="note">For developers: instead of preparing the data here, you can load the two files
+  that the omelettehedron program makes (<code>gen --tier small</code>).</p>
 </details>
 
 <script type="module">
@@ -202,10 +201,10 @@ const prepareTables = async () => {
   const seconds = () => ((performance.now() - t0) / 1000).toFixed(1);
   const files = await cached();
   if (files) {
-    status('Loading the stored tables…');
+    status('Loading the saved solving data…');
     try {
       await call('load', files);
-      $('tables').textContent = `Tables loaded from this browser's storage in ${seconds()} s.`;
+      $('tables').textContent = `Solving data loaded from this browser in ${seconds()} s.`;
       return;
     } catch (e) {
       await forget();
@@ -214,10 +213,10 @@ const prepareTables = async () => {
   $('progress').hidden = false;
   $('progress').value = 0;
   generating = { table: 'tables' };
-  const timer = setInterval(() => status(`Generating the pruning tables (${generating.table})… ${seconds()} s`), 200);
+  const timer = setInterval(() => status(`Preparing the solving data (first visit only)… ${seconds()} s`), 200);
   try {
     const info = await call('generate');
-    $('tables').textContent = `Tables generated in ${info.seconds.toFixed(1)} s with ${plural(threads, 'thread')}.`;
+    $('tables').textContent = `Solving data prepared in ${info.seconds.toFixed(1)} s and saved in this browser.`;
   } finally {
     clearInterval(timer);
     generating = null;
@@ -235,7 +234,7 @@ const start = async (n) => {
   stopWorker('restarted');
   ready = false;
   buttons();
-  status(`Starting with ${plural(n, 'thread')}…`);
+  status('Starting…');
   startWorker();
   try {
     ({ threads, control } = await call('init', { threads: n, channel: channelName }));
@@ -244,7 +243,7 @@ const start = async (n) => {
     stopWorker('restarted');
     startWorker();
     ({ threads, control } = await call('init', { threads: 1, channel: channelName }));
-    status(`${n} threads unavailable (${e.message}); using 1`);
+    status(`Could not use ${n} processor cores (${e.message}); using one.`);
   }
   $('threads').value = threads;
   // (on one thread a random position's first solution can take ~10 s: allow more time)
@@ -252,7 +251,7 @@ const start = async (n) => {
   await prepareTables();
   ready = true;
   buttons();
-  status(`Ready · ${plural(threads, 'thread')}`);
+  status('Ready');
 };
 const run = (label, f) => f().catch((e) => {
   // (a solve stopped by restarting the worker: `start` reports)
@@ -309,20 +308,21 @@ $('solve').onclick = () => run('Solve', async () => {
     + (best ? ` · best so far ${plural(best.length, 'move')}` : '')), 100);
   try {
     const r = await call('solve', { scramble, seconds });
-    const how = r.optimal ? '<span class="ok">optimal</span>'
-      : r.cancelled ? 'stopped, not proven optimal'
-      : optimal ? 'not proven optimal' : `best found in ${seconds} s, not proven optimal`;
+    const how = r.optimal ? '<span class="ok">shortest possible</span>'
+      : r.cancelled ? 'stopped; there may be a shorter solution'
+      : optimal ? 'there may be a shorter solution'
+      : `best found in ${seconds} s; there may be a shorter solution`;
     if (r.solution === null) {
       showSolution('', `No solution found ${r.cancelled ? 'before you stopped' : `in ${seconds} s`}: try a longer time.`);
       $('solution').textContent = '';
     } else {
       showSolution(r.solution, `<strong>${plural(r.length, 'move')}</strong> · ${how}`
-        + (r.verified ? ' · <span class="ok">checked</span> on a sticker model' : ' · <strong>check failed</strong>'));
+        + (r.verified ? ' · <span class="ok">verified</span>'
+          : ' · <strong>verification failed: please report this scramble</strong>'));
     }
-    const rate = r.seconds > 0 ? ` (${(r.nodes / r.seconds / 1e6).toFixed(1)} M/s)` : '';
-    $('stats').textContent = `${r.seconds.toFixed(3)} s · ${(r.nodes / 1e6).toFixed(2)} M nodes${rate} · `
-      + `${plural(r.solutions, 'solution')} reached · ${plural(threads, 'thread')}`;
-    status(`Ready · ${plural(threads, 'thread')}`);
+    $('stats').textContent = `Took ${r.seconds.toFixed(2)} s and searched `
+      + `${(r.nodes / 1e6).toFixed(1)} million positions.`;
+    status('Ready');
   } finally {
     clearInterval(timer);
     solving = false;
@@ -336,7 +336,7 @@ $('stop').onclick = () => {
   if (cancel(control)) return;
   stopWorker('stopped');
   if (best) {
-    showSolution(best.solution, `<strong>${plural(best.length, 'move')}</strong> · stopped, not proven optimal`);
+    showSolution(best.solution, `<strong>${plural(best.length, 'move')}</strong> · stopped; there may be a shorter solution`);
   } else {
     showSolution('', 'Stopped before a solution was found.');
     $('solution').textContent = '';
@@ -346,10 +346,10 @@ $('stop').onclick = () => {
 };
 
 $('random').onclick = () => run('Random scramble', async () => {
-  status('Making a random-state scramble…');
+  status('Making a random scramble…');
   const { scramble } = await call('random');
   $('scramble').value = scramble;
-  status(`Ready · ${plural(threads, 'thread')}`);
+  status('Ready');
 });
 $('seconds').addEventListener('input', () => { $('seconds').dataset.edited = '1'; });
 $('scramble').addEventListener('input', () => {
@@ -364,14 +364,14 @@ $('scramble').addEventListener('input', () => {
 // --- Settings ---
 const cores = crossOriginIsolated ? Math.max(1, navigator.hardwareConcurrency || 1) : 1;
 $('isolation').textContent = crossOriginIsolated
-  ? `cross-origin isolated: up to ${cores} threads`
-  : 'not cross-origin isolated: one thread';
+  ? `This page can use up to ${cores} of your computer's processor cores.`
+  : 'This browser lets the page use only one processor core, so solving is slower.';
 $('threads').max = Math.max(cores, 1);
 $('threads').disabled = !crossOriginIsolated;
 $('apply').onclick = () => run('Restart', () => start(Math.max(1, Math.min(cores, Number($('threads').value) || 1))));
 $('forget').onclick = () => run('Forget', async () => {
   await forget();
-  $('tables').textContent = 'Stored tables removed; they will be generated again on the next visit.';
+  $('tables').textContent = 'Saved solving data deleted; it will be prepared again on your next visit.';
 });
 $('files').onchange = () => run('Load', async () => {
   const files = [...$('files').files];
@@ -380,7 +380,7 @@ $('files').onchange = () => run('Load', async () => {
   if (!ae || !cb) throw new Error('choose both ae-sym288-triples.prun and cb-sym24.prun');
   ready = false;
   buttons();
-  status('Loading the table files…');
+  status('Loading the data files…');
   const t0 = performance.now();
   try {
     await call('load', { ae, cb });
@@ -392,10 +392,10 @@ $('files').onchange = () => run('Load', async () => {
     throw e;
   }
   await keep({ ae, cb }).catch(() => {});
-  $('tables').textContent = `Tables loaded from files in ${((performance.now() - t0) / 1000).toFixed(1)} s.`;
+  $('tables').textContent = `Solving data loaded from files in ${((performance.now() - t0) / 1000).toFixed(1)} s.`;
   ready = true;
   buttons();
-  status(`Ready · ${plural(threads, 'thread')}`);
+  status('Ready');
 });
 
 // The default, with no clicks: every core the page may use, and the tables.
