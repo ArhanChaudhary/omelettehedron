@@ -224,13 +224,16 @@ builds in two interleaved rounds stay under 5 minutes): the two-phase solver's o
 ten 17-move scrambles (1 thread) and ten 19-move scrambles (all threads), its time-limited mode
 on ten random positions for 1 s each (all threads and 1 thread), and the optimal solver on the
 same two optimal sets. Single items vary by up to about 5% between rounds (a comparison that
-left the optimal solver unchanged gave 0.976x and 1.018x on its items), so a change of a few
-percent shows up as a consistent direction over the items and rounds rather than in one number.
-The longer suites below are for occasional runs.
+left the optimal solver unchanged gave 0.976x and 1.018x on its items), as large as most
+per-node gains. So a change that claims less than about 5% runs at least 3 rounds of only the
+items it touches (`--items`, still under 5 minutes) and counts as a gain only if it is better in
+every round of every one of them (the "B better" column); 1-thread node counts repeat exactly
+and decide for changes to the pruning. The longer suites below are for occasional runs.
 
 ```sh
 scripts/bench-quick.sh <label>                  # build this tree, one round of the quick set
 scripts/bench-quick.sh --compare <binA> <binB>  # two builds, interleaved rounds, markdown table
+scripts/bench-quick.sh --rounds 4 --items 2p-t1s-mt,2p-t1s-1t --compare <binA> <binB>  # small gains
 scripts/bench-quick.sh --opt-tier medium,large --rounds 2 <label>   # more tiers and rounds
 target/release/omelettehedron bench --tier large -N 40 -t 5       # 40 seeded random positions, 5 s each
 target/release/omelettehedron bench --tier large -N 20 -t 5 -j 1  # single-threaded
