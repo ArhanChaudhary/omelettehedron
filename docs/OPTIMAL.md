@@ -560,6 +560,13 @@ mixed (medium 1.002x / 1.008x and 0.993x / 0.987x at 1T / 48T; large 1.008x / 0.
 1.029x / 0.959x): the static order is close to the best on average, and the per-node order
 costs about what it saves.
 
+**Task order in the last iteration.** The tasks of an iteration are searched in the order of a
+statistic from the previous one (each surviving child weighs 8^-bound). With the large tier the
+first solution comes relatively later than with medium (0.55x / 0.52x the nodes to the first
+solution on the 15 / 17-move sets, against 0.29x / 0.34x for the full trees), so other weights
+were tried (node counts, one thread, 17-move set): 2^-bound and 4^-bound give 1.025x and
+1.019x the large tier's nodes (medium 1.059x and 1.029x); 8 stays.
+
 **Duplicates.** Canonical move sequences against distinct positions from solved: identical up
 to depth 4, 0.2% duplicates at depth 5, 0.6% at depth 6. A transposition table would cost a
 memory access per node for very little; not pursued.
@@ -604,10 +611,11 @@ Next, by expected value:
 
 1. **The table-read stall** (still the largest single cost, about 27% of the medium tier's
    samples): lanes, or a deeper pipeline than one sibling.
-2. **A stronger bound for the 10-11 moves-left nodes** beyond the triple table, from the round
-   2 estimates: an A-centre/edge table to solved with chirality would prune about as much as
-   the triple table (0.34x on the 13-move set) but needs 68.7 GB; the combinations not yet
-   estimated to the end (triple table with A-centres/edges without chirality, 8.6 GB more).
+2. **A stronger bound for the 10-11 moves-left nodes** beyond the triple table: an
+   A-centre/edge table to solved with chirality would prune about as much as the triple table
+   (0.34x on the 13-move set) but needs 68.7 GB; added to the triple table, the one without
+   chirality (8.6 GB more) would take the 13-move set only from 0.342x to 0.322x (estimated the
+   same way): not worth it.
 3. **A centres table** (A x B colourings to solved, 4.3 GB): only 0.88x nodes when estimated
    on its own; not worth it.
 
