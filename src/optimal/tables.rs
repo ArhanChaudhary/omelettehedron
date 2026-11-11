@@ -18,16 +18,17 @@
 //! distances to a single state, but each is still an exact BFS distance (mod 3) that changes by
 //! at most one per move, so they are decoded like the others.
 
+use super::cbe::{build_cbe, CbeIndex, N_LOOKUPS};
 use super::coords::*;
 use crate::cube::*;
 use crate::fast::{fast, FastTables};
-use crate::preflight::{check_plan, Planned};
+use crate::preflight::{check_plan, MemGuard, Planned};
 use crate::prune::{bfs, Graph, Table2};
 use crate::tables::{ae_targets, build_ae, prefetch_at, AeIndex, AeSym};
 use std::path::{Path, PathBuf};
 
 /// Most lookups per position of any tier (the search's scratch arrays have this many slots).
-pub const MAX_K: usize = 8;
+pub const MAX_K: usize = 11;
 
 /// Table size of the optimal solver (`omelettehedron optimal ... --tier`).
 #[derive(
@@ -40,6 +41,9 @@ pub enum OptTier {
     /// ~3.4 GB: corners x centres, corners x edges (48 symmetries, 2.4 GB) and the two-phase
     /// A-centre/edge table with chirality (1.03 GB); 64-bit targets only
     Medium,
+    /// ~24.4 GB: the medium tier and a corner x B-centre x edge-triple table to solved (21.0
+    /// GB, eight lookups); 64-bit targets only
+    Large,
 }
 
 impl OptTier {
@@ -47,6 +51,7 @@ impl OptTier {
         match self {
             OptTier::Small => "small",
             OptTier::Medium => "medium",
+            OptTier::Large => "large",
         }
     }
 }
@@ -66,7 +71,7 @@ pub trait Bounds: Sync {
     /// The order in which the search reads the lookups (the first `K` entries: a permutation of
     /// `0..K`); a child is dropped at the first value that exceeds its moves left, so the most
     /// selective lookups go first (measured with `FTO_OPT_PRUNE_STATS=1`).
-    const ORDER: &'static [usize] = &[0, 1, 2, 3, 4, 5, 6, 7];
+    const ORDER: &'static [usize] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 }
 
 /// Moves between entries of the corner x B-centre table.
@@ -217,8 +222,10 @@ pub struct OptTables {
     cc_target: usize,
     /// the edge permutation (small tier)
     pub edges: Option<Table2>,
-    /// corners x edge permutation (medium tier)
+    /// corners x edge permutation (medium and large tiers)
     pub ce: Option<(CeIndex, Table2)>,
+    /// corners x B-centres x edge triple, and the indices of the solved state (large tier)
+    pub cbe: Option<(CbeIndex, Table2, Vec<usize>)>,
     /// the two-phase A-centre/edge table (every tier)
     pub ae: AeBound,
 }
@@ -227,12 +234,13 @@ pub struct OptTables {
 const CC_FILE: &str = "opt-cc-sym24.prun";
 const EDGES_FILE: &str = "opt-edges.prun";
 const CE_FILE: &str = "opt-ce-sym48.prun";
+const CBE_FILE: &str = "opt-cbe-sym6.prun";
 
 fn load_or_build(
     path: &Path,
     n: usize,
     verbose: bool,
-    build: impl FnOnce() -> Table2,
+    build: impl FnOnce() -> std::io::Result<Table2>,
 ) -> std::io::Result<Table2> {
     match Table2::load(path, n) {
         Ok(t) => {
@@ -252,7 +260,7 @@ fn load_or_build(
             if verbose {
                 eprintln!("generating {} ...", path.display());
             }
-            let t = build();
+            let t = build()?;
             t.save(path)?;
             Ok(t)
         }
@@ -281,16 +289,24 @@ impl OptTables {
         let cc = build_cc(&cc_ix, verbose);
         let (edges, ce) = match tier {
             OptTier::Small => (Some(build_edges(verbose)), None),
-            OptTier::Medium => {
+            OptTier::Medium | OptTier::Large => {
                 let ix = CeIndex::new();
                 let t = build_ce(&ix, verbose);
                 (None, Some((ix, t)))
             }
         };
+        let cbe = match tier {
+            OptTier::Large => {
+                let ix = CbeIndex::new();
+                let t = build_cbe_guarded(&ix, verbose)?;
+                Some((ix, t))
+            }
+            _ => None,
+        };
         let ae_ix = AeBound::index_for(tier);
         let ae_tab = build_ae(&ae_ix, MoveSet::FACE, verbose);
         let ae = AeBound::new(ae_ix, ae_tab);
-        Ok(Self::assemble(tier, cc_ix, cc, edges, ce, ae))
+        Ok(Self::assemble(tier, cc_ix, cc, edges, ce, cbe, ae))
     }
 
     fn assemble(
@@ -299,6 +315,7 @@ impl OptTables {
         cc: Table2,
         edges: Option<Table2>,
         ce: Option<(CeIndex, Table2)>,
+        cbe: Option<(CbeIndex, Table2)>,
         ae: AeBound,
     ) -> OptTables {
         let cc_target = cc_ix.targets().first().copied().unwrap_or(0);
@@ -309,6 +326,10 @@ impl OptTables {
             cc_target,
             edges,
             ce,
+            cbe: cbe.map(|(ix, t)| {
+                let targets = ix.targets();
+                (ix, t, targets)
+            }),
             ae,
         }
     }
@@ -331,7 +352,9 @@ impl OptTables {
         let cc_path = dir.join(CC_FILE);
         let edges_path = dir.join(EDGES_FILE);
         let ce_path = dir.join(CE_FILE);
-        let ce_ix = (tier == OptTier::Medium).then(CeIndex::new);
+        let cbe_path = dir.join(CBE_FILE);
+        let ce_ix = (tier != OptTier::Small).then(CeIndex::new);
+        let cbe_ix = (tier == OptTier::Large).then(CbeIndex::new);
         let ae_ix = AeBound::index_for(tier);
         // (the two-phase solver's file of the same table: generated by either solver, shared)
         let ae_path = dir.join(format!("{}.prun", ae_ix.name()));
@@ -352,29 +375,41 @@ impl OptTables {
             None => plan.push(planned(&edges_path, N_EPERM)),
             Some(ix) => plan.push(planned(&ce_path, ix.size())),
         }
+        if let Some(ix) = &cbe_ix {
+            plan.push(planned(&cbe_path, ix.size()));
+        }
         check_plan(&plan)?;
         let cc = load_or_build(&cc_path, cc_size(&cc_ix), verbose, || {
-            build_cc(&cc_ix, verbose)
+            Ok(build_cc(&cc_ix, verbose))
         })?;
         let (edges, ce, second) = match ce_ix {
             None => (
                 Some(load_or_build(&edges_path, N_EPERM, verbose, || {
-                    build_edges(verbose)
+                    Ok(build_edges(verbose))
                 })?),
                 None,
                 edges_path,
             ),
             Some(ix) => {
-                let t = load_or_build(&ce_path, ix.size(), verbose, || build_ce(&ix, verbose))?;
+                let t = load_or_build(&ce_path, ix.size(), verbose, || Ok(build_ce(&ix, verbose)))?;
                 (None, Some((ix, t)), ce_path)
             }
         };
+        let cbe = match cbe_ix {
+            None => None,
+            Some(ix) => {
+                let t = load_or_build(&cbe_path, ix.size(), verbose, || {
+                    build_cbe_guarded(&ix, verbose)
+                })?;
+                Some((ix, t))
+            }
+        };
         let ae_tab = load_or_build(&ae_path, ae_ix.size(), verbose, || {
-            build_ae(&ae_ix, MoveSet::FACE, verbose)
+            Ok(build_ae(&ae_ix, MoveSet::FACE, verbose))
         })?;
         let ae = AeBound::new(ae_ix, ae_tab);
-        let t = Self::assemble(tier, cc_ix, cc, edges, ce, ae);
-        t.check_walks(&[&second, &cc_path, &ae_path])?;
+        let t = Self::assemble(tier, cc_ix, cc, edges, ce, cbe, ae);
+        t.check_walks(&[&second, &cc_path, &ae_path, &cbe_path])?;
         Ok(t)
     }
 
@@ -389,7 +424,19 @@ impl OptTables {
         })
     }
 
-    /// The lower bounds of the medium tier (`None` if the tables are another tier's).
+    /// The lower bounds of the large tier (`None` if the tables are another tier's).
+    pub fn large(&self) -> Option<LargeBounds<'_>> {
+        let (cbe_ix, cbe, cbe_targets) = self.cbe.as_ref()?;
+        Some(LargeBounds {
+            m: self.medium()?,
+            cbe_ix,
+            cbe,
+            cbe_targets,
+        })
+    }
+
+    /// The lower bounds of the medium tier (`None` if the tables are another tier's; the
+    /// large tier's tables include them).
     pub fn medium(&self) -> Option<MediumBounds<'_>> {
         let (ce_ix, ce) = self.ce.as_ref()?;
         Some(MediumBounds {
@@ -415,15 +462,10 @@ impl OptTables {
         use rand::SeedableRng;
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0x0071_ab1e);
         let positions: Vec<Pos> = (0..8).map(|_| Pos::of(&Cube::random(&mut rng))).collect();
-        // (lookup 0 is the tier's own table, 1 and 2 share the corner x centre table, 3 and 4
-        // the A-centre/edge table)
-        let bad = |k: usize| -> std::io::Error {
-            let file = paths[match k {
-                0 => 0,
-                1 | 2 => 1,
-                _ => 2,
-            }
-            .min(paths.len().saturating_sub(1))];
+        // (the file of a failing lookup: 0 the tier's own table, 1 the corner x centre table, 2
+        // the A-centre/edge table, 3 the large tier's triple table)
+        let bad = |f: usize| -> std::io::Error {
+            let file = paths[f.min(paths.len().saturating_sub(1))];
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
@@ -433,13 +475,34 @@ impl OptTables {
                 ),
             )
         };
-        let r = if let Some(b) = self.small() {
-            check_walks_of(&b, &positions)
-        } else if let Some(b) = self.medium() {
-            check_walks_of(&b, &positions)
-        } else {
-            Err(0)
+        // small and medium: lookup 0 the tier's own table, 1 and 2 the corner x centre table,
+        // 3 and 4 the A-centre/edge table
+        let medium_file = |k: usize| match k {
+            0 => 0,
+            1 | 2 => 1,
+            _ => 2,
         };
+        // large: lookup 0 corners x edges, 1 and 2 the A-centre/edge table, 3.. the triples
+        let large_file = |k: usize| match k {
+            0 => 0,
+            1 | 2 => 2,
+            _ => 3,
+        };
+        let r = match self.tier {
+            OptTier::Small => self
+                .small()
+                .map(|b| check_walks_of(&b, &positions).map_err(medium_file)),
+            OptTier::Medium => self
+                .medium()
+                .map(|b| check_walks_of(&b, &positions).map_err(medium_file)),
+            // (the medium lookups too, for the corner x centre file)
+            OptTier::Large => self.medium().zip(self.large()).map(|(m, l)| {
+                check_walks_of(&m, &positions)
+                    .map_err(medium_file)
+                    .and_then(|()| check_walks_of(&l, &positions).map_err(large_file))
+            }),
+        }
+        .unwrap_or(Err(0));
         r.map_err(bad)
     }
 
@@ -448,8 +511,16 @@ impl OptTables {
         self.cc.bytes()
             + self.edges.as_ref().map_or(0, Table2::bytes)
             + self.ce.as_ref().map_or(0, |(_, t)| t.bytes())
+            + self.cbe.as_ref().map_or(0, |(_, t, _)| t.bytes())
             + self.ae.tab.bytes()
     }
+}
+
+/// The corner x B-centre x edge-triple table, stopped cleanly (an error, nothing written) if
+/// the free memory falls below the floor while it is generated ([`MemGuard`]).
+fn build_cbe_guarded(ix: &CbeIndex, verbose: bool) -> std::io::Result<Table2> {
+    let guard = MemGuard::start();
+    build_cbe(ix, verbose, guard.flag()).ok_or_else(|| MemGuard::error(CBE_FILE))
 }
 
 /// `Err(k)` if a walk down lookup `k` from one of `ps` does not reach the solved entry.
@@ -570,6 +641,75 @@ impl Bounds for MediumBounds<'_> {
     }
 }
 
+/// The large tier: corners x edges, the A-centre/edge table on the position and on its
+/// `SWAP_AB` conjugate (the medium tier's lookups 0, 3 and 4), then the corner x B-centre x
+/// edge-triple table on the four A-triples and, through `SWAP_AB`, the four B-triples. The
+/// medium tier's corner x centre lookups are left out: an A-triple lookup projects onto the
+/// corners and B-centres and more, so it is never below the corner x B-centre value (and a
+/// B-triple lookup never below the corner x A-centre value); the bound is the same without
+/// them (on the 17-move set they prune no child that the others keep).
+pub struct LargeBounds<'a> {
+    m: MediumBounds<'a>,
+    cbe_ix: &'a CbeIndex,
+    cbe: &'a Table2,
+    cbe_targets: &'a [usize],
+}
+
+/// The medium tier's lookups that the large tier keeps, as its lookups 0, 1, 2.
+const LARGE_FROM_MEDIUM: [usize; 3] = [0, 3, 4];
+/// The large tier's first corner x B-centre x edge-triple lookup.
+const LARGE_CBE: usize = LARGE_FROM_MEDIUM.len();
+
+impl Bounds for LargeBounds<'_> {
+    const K: usize = LARGE_CBE + N_LOOKUPS;
+    /// AE, the B-triple 3 lookup, the AE twin, then the other triples, corners x edges last:
+    /// greedy by the children each prunes among those the earlier ones keep (17-move set, seed
+    /// 1717: alone AE prunes 65%, its twin 58%, the triple lookups 48-59%, corners x edges 48%;
+    /// 7.8% survive). 2.36 lookups per node on the 17-move set (2.53 on the 15-move set)
+    /// instead of 11; the triple lookups 1.08 of them. (The triples differ because of the fixed
+    /// front corner.)
+    const ORDER: &'static [usize] = &[1, 10, 2, 7, 5, 8, 9, 6, 4, 3, 0];
+    #[inline(always)]
+    fn index(&self, k: usize, p: &Pos) -> usize {
+        if k < LARGE_CBE {
+            self.m.index(LARGE_FROM_MEDIUM[k], p)
+        } else {
+            self.cbe_ix.index(k - LARGE_CBE, p)
+        }
+    }
+    #[inline(always)]
+    fn table(&self, k: usize) -> &Table2 {
+        if k < LARGE_CBE {
+            self.m.table(LARGE_FROM_MEDIUM[k])
+        } else {
+            self.cbe
+        }
+    }
+    fn is_target(&self, k: usize, i: usize) -> bool {
+        if k < LARGE_CBE {
+            self.m.is_target(LARGE_FROM_MEDIUM[k], i)
+        } else {
+            self.cbe_targets.contains(&i)
+        }
+    }
+    fn name(&self, k: usize) -> &'static str {
+        if k < LARGE_CBE {
+            self.m.name(LARGE_FROM_MEDIUM[k])
+        } else {
+            [
+                "CBE A-triple 0",
+                "CBE A-triple 1",
+                "CBE A-triple 2",
+                "CBE A-triple 3",
+                "CBE B-triple 0",
+                "CBE B-triple 1",
+                "CBE B-triple 2",
+                "CBE B-triple 3",
+            ][(k - LARGE_CBE).min(7)]
+        }
+    }
+}
+
 /// Exact distance of lookup `k` of `p` (its table walked down to the solved entry: at each step a
 /// neighbour one closer, which the mod-3 value identifies). `None` if the table is not a
 /// distance table (no neighbour is one step closer, or no target within its largest distance).
@@ -625,6 +765,7 @@ mod tests {
         }
         check::<SmallBounds>();
         check::<MediumBounds>();
+        check::<LargeBounds>();
     }
 
     /// The unreduced corner x B-centre graph, for checking the reduced table.
