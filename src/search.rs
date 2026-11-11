@@ -156,8 +156,6 @@ struct Shared<'a, I: AeIndex, const N: usize> {
         &'a std::sync::Arc<crate::cbe::LazyCbs>,
         &'a crate::cbe::CbeTable,
     )>,
-    /// (tuning) issue the first distance-to-solved lookups in `stage2`
-    cbs_early: bool,
 }
 
 /// A node of the top levels of the search tree (see [`Shared::tasks`]).
@@ -787,8 +785,12 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                     prefetch_at(&t.cb.tab.data, cbi[o][i] >> 5);
                 }
             }
-            // (tuning) the first distance-to-solved lookups issued here
-            if B && k > 0 && self.cbs_early && lim < usize::from(crate::cbe::CBS_MIN) {
+            // The first distance-to-solved lookups (triple `CBS_FIRST` of both sides, read in
+            // `finish`) are issued here for the children that passed their AE stage, so that
+            // their latency overlaps the CB and joint-table stages (opt/tosolved-order: 0.987x /
+            // 0.986x time at 1T / 48T against reading all eight in `finish`; issued in `finish`
+            // too, the two waves took 1.007x / 1.008x).
+            if B && k > 0 && lim < usize::from(crate::cbe::CBS_MIN) {
                 if let Some((lazy, cbe)) = self.cbs {
                     if let Some(cbs) = lazy.loaded() {
                         for &i in &sel[..k] {
@@ -1089,8 +1091,10 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             if let (Some((lazy, cbe)), true) = (self.cbs, lim < usize::from(crate::cbe::CBS_MIN)) {
                 if let Some(cbs) = lazy.loaded() {
                     // First the strongest lookup on each side (triple `CBS_FIRST`: the two cut
-                    // 72% of the checked children, against 96% for all eight), then the other
-                    // three triples of both sides for the children still alive.
+                    // 72% of the checked children, against 96% for all eight; usually issued in
+                    // `stage2`), then the other three triples of both sides for the children
+                    // still alive (17-move set: 27.8% of the checked children, table reads
+                    // 0.459x).
                     if !*cs_done {
                         for &i in &sel[..n] {
                             let u = usize::from(i) % N;
@@ -1541,7 +1545,6 @@ fn solve_n<I: AeIndex, const N: usize>(
             }
             _ => None,
         },
-        cbs_early: env_usize("FTO_CBS_EARLY", 0) == 1,
     };
     let lo = (0..2)
         .map(|s| sh.root.h_ae[s].max(sh.root.h_cb[s]) as usize)
