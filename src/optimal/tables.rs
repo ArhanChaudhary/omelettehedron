@@ -67,16 +67,18 @@ pub trait Bounds: Sync {
     /// `0..K`); a child is dropped at the first value that exceeds its moves left, so the most
     /// selective lookups go first (measured with `FTO_OPT_PRUNE_STATS=1`).
     const ORDER: &'static [usize] = &[0, 1, 2, 3, 4, 5, 6, 7];
+    /// The move set (the metric of the tables, and the moves the search uses).
+    fn moves(&self) -> MoveSet;
 }
 
-/// Moves between entries of the corner x B-centre table.
-struct CcGraph<'a> {
+/// Moves between entries of the corner x B-centre table (`N` moves: 16, or 24 with slices).
+struct CcGraph<'a, const N: usize> {
     ix: &'a CcIndex,
     mt: &'static OptMoves,
 }
 
-impl Graph for CcGraph<'_> {
-    const MOVES: usize = N_MOVES;
+impl<const N: usize> Graph for CcGraph<'_, N> {
+    const MOVES: usize = N;
     type Node = (u16, [u8; 16]);
     type Cache = ();
     fn node(&self, i: usize, (): &mut ()) -> (u16, [u8; 16]) {
@@ -93,12 +95,12 @@ impl Graph for CcGraph<'_> {
 }
 
 /// Moves between edge permutations.
-struct EdgeGraph {
+struct EdgeGraph<const N: usize> {
     mt: &'static OptMoves,
 }
 
-impl Graph for EdgeGraph {
-    const MOVES: usize = N_MOVES;
+impl<const N: usize> Graph for EdgeGraph<N> {
+    const MOVES: usize = N;
     type Node = [u8; 16];
     type Cache = ();
     fn node(&self, i: usize, (): &mut ()) -> [u8; 16] {
@@ -110,34 +112,61 @@ impl Graph for EdgeGraph {
     }
 }
 
-/// The corner x centre table (distance to solved of the corners and the B-centres).
-pub fn build_cc(ix: &CcIndex, verbose: bool) -> Table2 {
-    let g = CcGraph {
-        ix,
-        mt: opt_moves(),
-    };
-    bfs(&g, cc_size(ix), &ix.targets(), "opt-cc", verbose)
+/// The table's name in messages: `name`, with `-slice` for the metric with slices.
+fn table_name(name: &str, moves: MoveSet) -> String {
+    format!("{name}{}", moves.table_suffix())
 }
 
-/// The edge permutation table.
-pub fn build_edges(verbose: bool) -> Table2 {
-    bfs(
-        &EdgeGraph { mt: opt_moves() },
-        N_EPERM,
-        &[0],
-        "opt-edges",
-        verbose,
-    )
+/// The corner x centre table (distance to solved of the corners and the B-centres) in the
+/// metric of `moves`. (The symmetry reduction holds with slices: every symmetry maps slices to
+/// slices.)
+pub fn build_cc(ix: &CcIndex, moves: MoveSet, verbose: bool) -> Table2 {
+    let (mt, n) = (opt_moves(), cc_size(ix));
+    let name = table_name("opt-cc", moves);
+    if moves.slice {
+        bfs(
+            &CcGraph::<MAX_MOVES> { ix, mt },
+            n,
+            &ix.targets(),
+            &name,
+            verbose,
+        )
+    } else {
+        bfs(
+            &CcGraph::<N_MOVES> { ix, mt },
+            n,
+            &ix.targets(),
+            &name,
+            verbose,
+        )
+    }
+}
+
+/// The edge permutation table in the metric of `moves`.
+pub fn build_edges(moves: MoveSet, verbose: bool) -> Table2 {
+    let mt = opt_moves();
+    let name = table_name("opt-edges", moves);
+    if moves.slice {
+        bfs(
+            &EdgeGraph::<MAX_MOVES> { mt },
+            N_EPERM,
+            &[0],
+            &name,
+            verbose,
+        )
+    } else {
+        bfs(&EdgeGraph::<N_MOVES> { mt }, N_EPERM, &[0], &name, verbose)
+    }
 }
 
 /// Moves between entries of the corner x edge table.
-struct CeGraph<'a> {
+struct CeGraph<'a, const N: usize> {
     ix: &'a CeIndex,
     mt: &'static OptMoves,
 }
 
-impl Graph for CeGraph<'_> {
-    const MOVES: usize = N_MOVES;
+impl<const N: usize> Graph for CeGraph<'_, N> {
+    const MOVES: usize = N;
     type Node = (u16, [u8; 16]);
     type Cache = ();
     fn node(&self, i: usize, (): &mut ()) -> (u16, [u8; 16]) {
@@ -153,13 +182,27 @@ impl Graph for CeGraph<'_> {
     }
 }
 
-/// The corner x edge table.
-pub fn build_ce(ix: &CeIndex, verbose: bool) -> Table2 {
-    let g = CeGraph {
-        ix,
-        mt: opt_moves(),
-    };
-    bfs(&g, ix.size(), &[ix.target()], "opt-ce", verbose)
+/// The corner x edge table in the metric of `moves`.
+pub fn build_ce(ix: &CeIndex, moves: MoveSet, verbose: bool) -> Table2 {
+    let mt = opt_moves();
+    let name = table_name("opt-ce", moves);
+    if moves.slice {
+        bfs(
+            &CeGraph::<MAX_MOVES> { ix, mt },
+            ix.size(),
+            &[ix.target()],
+            &name,
+            verbose,
+        )
+    } else {
+        bfs(
+            &CeGraph::<N_MOVES> { ix, mt },
+            ix.size(),
+            &[ix.target()],
+            &name,
+            verbose,
+        )
+    }
 }
 
 /// The two-phase solver's A-centre/edge table (distance to `H_A`) and its index, read-only:
@@ -221,12 +264,16 @@ pub struct OptTables {
     pub ce: Option<(CeIndex, Table2)>,
     /// the two-phase A-centre/edge table (every tier)
     pub ae: AeBound,
+    /// the move set: every table holds distances in its metric (with slices, the tables have
+    /// their own files, `*-slice.prun`)
+    pub moves: MoveSet,
 }
 
-/// File names of the tables (all start with `opt-`, apart from the two-phase solver's).
-const CC_FILE: &str = "opt-cc-sym24.prun";
-const EDGES_FILE: &str = "opt-edges.prun";
-const CE_FILE: &str = "opt-ce-sym48.prun";
+/// File names of the tables (all start with `opt-`, apart from the two-phase solver's), before
+/// the move set's suffix and `.prun`.
+const CC_FILE: &str = "opt-cc-sym24";
+const EDGES_FILE: &str = "opt-edges";
+const CE_FILE: &str = "opt-ce-sym48";
 
 fn load_or_build(
     path: &Path,
@@ -266,31 +313,31 @@ fn too_large(tier: OptTier) -> bool {
 }
 
 impl OptTables {
-    /// Build the tables of a tier in memory, without touching the disk.
+    /// Build the tables of a tier in the metric of `moves` in memory, without touching the disk.
     ///
     /// # Errors
     ///
     /// If the tier needs 64-bit indices on a 32-bit target.
-    pub fn generate(tier: OptTier, verbose: bool) -> std::io::Result<OptTables> {
+    pub fn generate(tier: OptTier, moves: MoveSet, verbose: bool) -> std::io::Result<OptTables> {
         if too_large(tier) {
             return Err(std::io::Error::other(
                 "only --tier small is supported on 32-bit targets",
             ));
         }
         let cc_ix = CcIndex::new();
-        let cc = build_cc(&cc_ix, verbose);
+        let cc = build_cc(&cc_ix, moves, verbose);
         let (edges, ce) = match tier {
-            OptTier::Small => (Some(build_edges(verbose)), None),
+            OptTier::Small => (Some(build_edges(moves, verbose)), None),
             OptTier::Medium => {
                 let ix = CeIndex::new();
-                let t = build_ce(&ix, verbose);
+                let t = build_ce(&ix, moves, verbose);
                 (None, Some((ix, t)))
             }
         };
         let ae_ix = AeBound::index_for(tier);
-        let ae_tab = build_ae(&ae_ix, MoveSet::FACE, verbose);
+        let ae_tab = build_ae(&ae_ix, moves, verbose);
         let ae = AeBound::new(ae_ix, ae_tab);
-        Ok(Self::assemble(tier, cc_ix, cc, edges, ce, ae))
+        Ok(Self::assemble(tier, cc_ix, cc, edges, ce, ae, moves))
     }
 
     fn assemble(
@@ -300,6 +347,7 @@ impl OptTables {
         edges: Option<Table2>,
         ce: Option<(CeIndex, Table2)>,
         ae: AeBound,
+        moves: MoveSet,
     ) -> OptTables {
         let cc_target = cc_ix.targets().first().copied().unwrap_or(0);
         OptTables {
@@ -310,31 +358,39 @@ impl OptTables {
             edges,
             ce,
             ae,
+            moves,
         }
     }
 
-    /// Load the tables of a tier from `dir`, generating (and saving) the missing ones. All
-    /// tables are checked against the free disk space and memory before any is generated.
+    /// Load the tables of a tier in the metric of `moves` from `dir`, generating (and saving)
+    /// the missing ones. All tables are checked against the free disk space and memory before
+    /// any is generated.
     ///
     /// # Errors
     ///
     /// If a table file cannot be read or written, holds a table of the wrong format, size,
     /// checksum or layout, or the tables do not fit (see [`crate::preflight`]), or the tier
     /// needs 64-bit indices on a 32-bit target.
-    pub fn load(dir: &Path, tier: OptTier, verbose: bool) -> std::io::Result<OptTables> {
+    pub fn load(
+        dir: &Path,
+        tier: OptTier,
+        moves: MoveSet,
+        verbose: bool,
+    ) -> std::io::Result<OptTables> {
         if too_large(tier) {
             return Err(std::io::Error::other(
                 "only --tier small is supported on 32-bit targets",
             ));
         }
         let cc_ix = CcIndex::new();
-        let cc_path = dir.join(CC_FILE);
-        let edges_path = dir.join(EDGES_FILE);
-        let ce_path = dir.join(CE_FILE);
+        let sfx = moves.table_suffix();
+        let cc_path = dir.join(format!("{CC_FILE}{sfx}.prun"));
+        let edges_path = dir.join(format!("{EDGES_FILE}{sfx}.prun"));
+        let ce_path = dir.join(format!("{CE_FILE}{sfx}.prun"));
         let ce_ix = (tier == OptTier::Medium).then(CeIndex::new);
         let ae_ix = AeBound::index_for(tier);
         // (the two-phase solver's file of the same table: generated by either solver, shared)
-        let ae_path = dir.join(format!("{}.prun", ae_ix.name()));
+        let ae_path = dir.join(format!("{}{sfx}.prun", ae_ix.name()));
         let planned = |path: &PathBuf, entries: usize| {
             let bytes =
                 std::fs::metadata(path).map_or_else(|_| entries.div_ceil(4) as u64, |m| m.len());
@@ -354,26 +410,28 @@ impl OptTables {
         }
         check_plan(&plan)?;
         let cc = load_or_build(&cc_path, cc_size(&cc_ix), verbose, || {
-            build_cc(&cc_ix, verbose)
+            build_cc(&cc_ix, moves, verbose)
         })?;
         let (edges, ce, second) = match ce_ix {
             None => (
                 Some(load_or_build(&edges_path, N_EPERM, verbose, || {
-                    build_edges(verbose)
+                    build_edges(moves, verbose)
                 })?),
                 None,
                 edges_path,
             ),
             Some(ix) => {
-                let t = load_or_build(&ce_path, ix.size(), verbose, || build_ce(&ix, verbose))?;
+                let t = load_or_build(&ce_path, ix.size(), verbose, || {
+                    build_ce(&ix, moves, verbose)
+                })?;
                 (None, Some((ix, t)), ce_path)
             }
         };
         let ae_tab = load_or_build(&ae_path, ae_ix.size(), verbose, || {
-            build_ae(&ae_ix, MoveSet::FACE, verbose)
+            build_ae(&ae_ix, moves, verbose)
         })?;
         let ae = AeBound::new(ae_ix, ae_tab);
-        let t = Self::assemble(tier, cc_ix, cc, edges, ce, ae);
+        let t = Self::assemble(tier, cc_ix, cc, edges, ce, ae, moves);
         t.check_walks(&[&second, &cc_path, &ae_path])?;
         Ok(t)
     }
@@ -386,6 +444,7 @@ impl OptTables {
             cc_target: self.cc_target,
             edges: self.edges.as_ref()?,
             ae: &self.ae,
+            moves: self.moves,
         })
     }
 
@@ -400,6 +459,7 @@ impl OptTables {
             ce,
             ce_target: ce_ix.target(),
             ae: &self.ae,
+            moves: self.moves,
         })
     }
 
@@ -472,10 +532,14 @@ pub struct SmallBounds<'a> {
     cc_target: usize,
     edges: &'a Table2,
     ae: &'a AeBound,
+    moves: MoveSet,
 }
 
 impl Bounds for SmallBounds<'_> {
     const K: usize = 5;
+    fn moves(&self) -> MoveSet {
+        self.moves
+    }
     /// AE, its `SWAP_AB` twin, the corner x centre table (cache-resident), the edge table: on
     /// the 15-move set (seed 1717) AE alone prunes 78% of the children, the twin 76%, the edge
     /// and corner x centre tables 16-18%; 1.46 lookups per node instead of 5.00.
@@ -526,10 +590,14 @@ pub struct MediumBounds<'a> {
     ce: &'a Table2,
     ce_target: usize,
     ae: &'a AeBound,
+    moves: MoveSet,
 }
 
 impl Bounds for MediumBounds<'_> {
     const K: usize = 5;
+    fn moves(&self) -> MoveSet {
+        self.moves
+    }
     /// AE, its `SWAP_AB` twin, corners x edges, the corner x centre table: on the 15-move set
     /// (seed 1717) AE alone prunes 74% of the children, the twin 72%, corners x edges 61%, the
     /// corner x centre lookups 1.4% each; 1.52 lookups per node instead of 5.00.
@@ -588,13 +656,14 @@ pub fn walk<B: Bounds>(b: &B, k: usize, p: &Pos) -> Option<u8> {
             return None;
         }
         let want = (tab.get(i) + 2) % 3;
-        let zs: [Pos; N_MOVES] = std::array::from_fn(|m| mt.apply(&y, m));
-        let mut is = [0usize; N_MOVES];
-        for m in 0..N_MOVES {
+        let n = b.moves().n_moves();
+        let zs: [Pos; MAX_MOVES] = std::array::from_fn(|m| mt.apply(&y, m));
+        let mut is = [0usize; MAX_MOVES];
+        for m in 0..n {
             is[m] = b.index(k, &zs[m]);
             prefetch_at(&tab.data, is[m] >> 5);
         }
-        let m = (0..N_MOVES).find(|&m| tab.get(is[m]) == want)?;
+        let m = (0..n).find(|&m| tab.get(is[m]) == want)?;
         y = zs[m];
         d += 1;
     }
@@ -654,7 +723,7 @@ mod tests {
     fn reduced_cc_matches_unreduced() {
         let mt = opt_moves();
         let ix = CcIndex::new();
-        let red = build_cc(&ix, false);
+        let red = build_cc(&ix, MoveSet::FACE, false);
         let s = Pos::solved();
         let raw = bfs(
             &RawCc(mt),

@@ -14,7 +14,7 @@ use std::time::Duration;
 
 fn tables() -> &'static OptTables {
     static T: OnceLock<OptTables> = OnceLock::new();
-    T.get_or_init(|| OptTables::generate(OptTier::Small, false).unwrap())
+    T.get_or_init(|| OptTables::generate(OptTier::Small, MoveSet::FACE, false).unwrap())
 }
 
 fn pool(threads: usize) -> &'static rayon::ThreadPool {
@@ -56,17 +56,22 @@ fn check_solution(scr: &[PhysMove], sol: &[PhysMove]) {
 /// independent of the solver's tables and search (as in tests/solver.rs).
 struct Mitm {
     ball: HashMap<Cube, u8>,
+    moves: MoveSet,
 }
 const R: usize = 5;
 impl Mitm {
     fn new() -> Mitm {
+        Self::with(MoveSet::FACE)
+    }
+    /// The brute force in the metric of `moves`.
+    fn with(moves: MoveSet) -> Mitm {
         let mut ball = HashMap::new();
         ball.insert(Cube::solved(), 0u8);
         let mut fr = vec![Cube::solved()];
         for d in 1..=R as u8 {
             let mut nf = vec![];
             for c in &fr {
-                for m in 0..N_MOVES {
+                for m in 0..moves.n_moves() {
                     let n = c.apply(m);
                     ball.entry(n).or_insert_with(|| {
                         nf.push(n);
@@ -76,7 +81,7 @@ impl Mitm {
             }
             fr = nf;
         }
-        Mitm { ball }
+        Mitm { ball, moves }
     }
     fn distance(&self, c: &Cube) -> Option<usize> {
         let mut best = None::<usize>;
@@ -92,8 +97,8 @@ impl Mitm {
                     }
                     continue;
                 }
-                for m in 0..N_MOVES {
-                    if allowed_after(false, last, m) {
+                for m in 0..self.moves.n_moves() {
+                    if self.moves.allowed_after(last, m) {
                         stack.push((x.apply(m), g + 1, m));
                     }
                 }
@@ -380,7 +385,7 @@ fn edge_table_matches_independent_bfs() {
 #[ignore = "needs the medium tier's tables (2.4 GB; `omelettehedron optimal gen --tier medium`)"]
 fn medium_tier_matches_brute_force() {
     let dir = omelettehedron::tables::table_dir(None);
-    let t = OptTables::load(&dir, OptTier::Medium, false).unwrap();
+    let t = OptTables::load(&dir, OptTier::Medium, MoveSet::FACE, false).unwrap();
     let b = t.medium().unwrap();
     let small = tables().small().unwrap();
     let mt = opt_moves();
@@ -473,4 +478,179 @@ fn symmetric_start_keeps_optimal_lengths() {
         symmetric.len()
     );
     assert!(filtered_nodes < full_nodes);
+}
+
+const SLICE: MoveSet = MoveSet {
+    wide: false,
+    slice: true,
+};
+
+/// The small tier in the metric with slice turns (built in memory once).
+fn slice_tables() -> &'static OptTables {
+    static T: OnceLock<OptTables> = OnceLock::new();
+    T.get_or_init(|| OptTables::generate(OptTier::Small, SLICE, false).unwrap())
+}
+
+fn slice_mitm() -> &'static Mitm {
+    static M: OnceLock<Mitm> = OnceLock::new();
+    M.get_or_init(|| Mitm::with(SLICE))
+}
+
+/// Random moves of every layer kind (face, wide and slice turns).
+fn random_layer_scramble(rng: &mut impl Rng, n: usize) -> Vec<PhysMove> {
+    (0..n)
+        .map(|_| PhysMove {
+            face: rng.gen_range(0..8),
+            layer: [Layer::Face, Layer::Wide, Layer::Slice][rng.gen_range(0..3)],
+            cw: rng.gen(),
+        })
+        .collect()
+}
+
+/// With slice turns (`--moves slice`): the brute force's lengths in the slice metric, on 1 and 8
+/// threads, for scrambles of face, wide and slice turns; the solutions use face and slice turns
+/// only, solve on the sticker model, use slices where they help, and are never longer than in
+/// the face metric.
+#[test]
+fn optimal_matches_brute_force_with_slices() {
+    let b = slice_tables().small().unwrap();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(111);
+    let (mut slices_used, mut shorter, mut checked) = (0, 0, 0);
+    for len in [0usize, 1, 2, 3, 5, 7, 8, 9, 10] {
+        for k in 0..5 {
+            let scr = if k % 2 == 0 {
+                random_scramble(&mut rng, len)
+            } else {
+                random_layer_scramble(&mut rng, len)
+            };
+            let (c, fr) = scramble_to_cube(&scr);
+            let Some(truth) = slice_mitm().distance(&c) else {
+                continue;
+            };
+            for threads in [1, 8] {
+                let o = pool(threads).install(|| solve(&b, c, fr, &Limits::default(), false));
+                assert_eq!(o.length, Some(truth), "scramble {}", format_moves(&scr));
+                let sol = &o.solutions[0];
+                check_solution(&scr, sol);
+                assert!(sol.iter().all(|m| m.layer != Layer::Wide));
+                slices_used += sol.iter().filter(|m| m.layer == Layer::Slice).count();
+            }
+            if k % 2 == 0 {
+                let face = solve_on(8, c, fr, &Limits::default());
+                assert!(truth <= face.length.unwrap());
+                shorter += usize::from(truth < face.length.unwrap());
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked >= 40 && slices_used > 0 && shorter > 0);
+}
+
+/// The slice-metric tables are consistent: decoded child values (by every move, slices too)
+/// equal walked exact values, and values change by at most one per move.
+#[test]
+fn slice_tables_are_consistent() {
+    let b = slice_tables().small().unwrap();
+    let mt = opt_moves();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(112);
+    for i in 0..60 {
+        let c = if i % 2 == 0 {
+            Cube::random(&mut rng)
+        } else {
+            Cube::solved().apply_seq(
+                &(0..rng.gen_range(1..8))
+                    .map(|_| rng.gen_range(0..MAX_MOVES))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let p = Pos::of(&c);
+        let h = exact(&b, &p).unwrap();
+        if i % 2 == 1 {
+            if let Some(d) = slice_mitm().distance(&c) {
+                assert!(h.iter().all(|&x| usize::from(x) <= d));
+            }
+        }
+        for m in 0..MAX_MOVES {
+            let q = mt.apply(&p, m);
+            let hq = exact(&b, &q).unwrap();
+            for k in 0..SmallBounds::K {
+                assert!(h[k].abs_diff(hq[k]) <= 1, "lookup {k}, move {m}");
+                assert_eq!(decode(h[k], b.table(k).get(b.index(k, &q))), hq[k]);
+            }
+        }
+    }
+}
+
+/// Symmetric start with slices: symmetric positions (fixed by some symmetry, within 4 moves of
+/// the slice metric) get the brute force's lengths, filtered and unfiltered (`-n`).
+#[test]
+fn symmetric_start_with_slices() {
+    use omelettehedron::optimal::sym::{sym48, N_SYM};
+    let s48 = sym48();
+    let b = slice_tables().small().unwrap();
+    let mut seen: HashSet<Cube> = HashSet::from([Cube::solved()]);
+    let mut front = vec![(Cube::solved(), vec![])];
+    let mut symmetric: Vec<(Cube, Vec<usize>)> = vec![];
+    for d in 1..=4 {
+        let mut next = vec![];
+        for (c, path) in &front {
+            for m in 0..MAX_MOVES {
+                let y = c.apply(m);
+                if seen.insert(y) {
+                    let mut p: Vec<usize> = path.clone();
+                    p.push(m);
+                    if d >= 3 && (1..N_SYM).any(|k| s48.conj_by_maps(&y, k) == y) {
+                        symmetric.push((y, p.clone()));
+                    }
+                    next.push((y, p));
+                }
+            }
+        }
+        front = next;
+    }
+    assert!(symmetric.len() >= 10, "{}", symmetric.len());
+    for (c, path) in symmetric.iter().take(40) {
+        let scr = solution_to_physical(Frame::identity(), path, false);
+        let (c2, fr) = scramble_to_cube(&scr);
+        assert_eq!(c2, *c);
+        let truth = slice_mitm().distance(c).unwrap();
+        let o = pool(1).install(|| solve(&b, *c, fr, &Limits::default(), false));
+        assert!(o.symmetries > 1);
+        assert_eq!(o.length, Some(truth), "{}", format_moves(&scr));
+        check_solution(&scr, &o.solutions[0]);
+        let full = pool(1).install(|| {
+            solve(
+                &b,
+                *c,
+                fr,
+                &Limits {
+                    max_solutions: Some(1_000_000),
+                    ..Limits::default()
+                },
+                false,
+            )
+        });
+        assert_eq!(full.length, Some(truth));
+    }
+}
+
+/// With slices, the two-phase solver's optimal mode (exact in the slice metric too) gives the
+/// same lengths on medium scrambles of face, wide and slice turns.
+#[test]
+fn slice_optimal_matches_two_phase_optimal_mode() {
+    use omelettehedron::search as tp;
+    use omelettehedron::tables::{AeSym, Tables};
+    let two_phase = Tables::generate(AeSym::new(false), SLICE, false);
+    let b = slice_tables().small().unwrap();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(113);
+    for len in [10usize, 11, 12, 12] {
+        let scr = random_layer_scramble(&mut rng, len);
+        let (c, fr) = scramble_to_cube(&scr);
+        let want = pool(8)
+            .install(|| tp::solve(&two_phase, c, fr, &tp::Limits::default(), tp::Report::Quiet));
+        assert!(want.optimal);
+        let o = pool(8).install(|| solve(&b, c, fr, &Limits::default(), false));
+        assert_eq!(o.length, want.length, "scramble {}", format_moves(&scr));
+        check_solution(&scr, &o.solutions[0]);
+    }
 }

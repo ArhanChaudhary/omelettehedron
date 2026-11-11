@@ -68,13 +68,16 @@ impl Pos {
     }
 }
 
-/// Move tables of the 16 face-metric moves.
+/// Move tables of the internal moves: the 16 face-metric moves and the 8 slice turns
+/// (`N_MOVES..MAX_MOVES`, see [`crate::cube::MoveSet`]).
 pub struct OptMoves {
-    /// gather shuffles: `new[p] = old[src[p]]` (lanes 12..16 select zero)
-    shuf_e: [[u8; 16]; N_MOVES],
-    shuf_a: [[u8; 16]; N_MOVES],
-    shuf_b: [[u8; 16]; N_MOVES],
-    /// corner id after each move, padded to 1024 ids so that `& 1023` replaces bounds checks
+    /// gather shuffles: `new[p] = old[src[p]]` (lanes 12..16 select zero), padded to 32 moves
+    /// so that `& 31` replaces bounds checks
+    shuf_e: [[u8; 16]; 32],
+    shuf_a: [[u8; 16]; 32],
+    shuf_b: [[u8; 16]; 32],
+    /// corner id after each face-metric move (slices move no corner), padded to 1024 ids so
+    /// that `& 1023` replaces bounds checks
     corner: Box<[[u16; N_MOVES]; 1024]>,
 }
 
@@ -98,46 +101,52 @@ impl OptMoves {
             };
             corner[id] = std::array::from_fn(|m| cs.id(&cube.apply(m)));
         }
+        // (moves 24..32 are padding: the identity)
+        let id: [u8; 12] = std::array::from_fn(|p| p as u8);
+        let src = |m: usize, f: fn(&Cube) -> [u8; 12]| -> [u8; 16] {
+            gather(&if m < MAX_MOVES { f(&d.moves[m]) } else { id })
+        };
         OptMoves {
-            shuf_e: std::array::from_fn(|m| gather(&d.moves[m].ep)),
-            shuf_a: std::array::from_fn(|m| gather(&d.moves[m].xa)),
-            shuf_b: std::array::from_fn(|m| gather(&d.moves[m].xb)),
+            shuf_e: std::array::from_fn(|m| src(m, |c| c.ep)),
+            shuf_a: std::array::from_fn(|m| src(m, |c| c.xa)),
+            shuf_b: std::array::from_fn(|m| src(m, |c| c.xb)),
             corner,
         }
     }
 
-    /// Apply move `m` (`m < N_MOVES`).
+    /// Apply move `m` (`m < MAX_MOVES`).
     #[inline(always)]
     pub fn apply(&self, p: &Pos, m: usize) -> Pos {
-        let m = m & 15;
+        let m = m & 31;
         Pos {
             ep: shuffle(&p.ep, &self.shuf_e[m]),
             xa: shuffle(&p.xa, &self.shuf_a[m]),
             xb: shuffle(&p.xb, &self.shuf_b[m]),
-            c: self.corner[p.c as usize & 1023][m],
+            c: self.corner(p.c, m),
         }
     }
 
     /// Apply move `m` to the edge permutation only.
     #[inline(always)]
     pub fn apply_ep(&self, ep: &[u8; 16], m: usize) -> [u8; 16] {
-        shuffle(ep, &self.shuf_e[m & 15])
+        shuffle(ep, &self.shuf_e[m & 31])
     }
 
-    /// Corner id after move `m`.
+    /// Corner id after move `m` (a slice moves no corner).
     #[inline(always)]
     pub fn corner(&self, c: u16, m: usize) -> u16 {
-        self.corner[c as usize & 1023][m & 15]
+        let moved = self.corner[c as usize & 1023][m & 15];
+        if m < N_MOVES {
+            moved
+        } else {
+            c
+        }
     }
 
     /// Apply move `m` to the corners and B-centres only.
     #[inline(always)]
     pub fn apply_cb(&self, c: u16, xb: &[u8; 16], m: usize) -> (u16, [u8; 16]) {
-        let m = m & 15;
-        (
-            self.corner[c as usize & 1023][m],
-            shuffle(xb, &self.shuf_b[m]),
-        )
+        (self.corner(c, m), shuffle(xb, &self.shuf_b[m & 31]))
     }
 }
 
@@ -625,7 +634,8 @@ mod tests {
             let c = Cube::random(&mut rng);
             let p = Pos::of(&c);
             assert_eq!(p.to_cube(), c);
-            for m in 0..N_MOVES {
+            // (the slices too)
+            for m in 0..MAX_MOVES {
                 assert_eq!(mt.apply(&p, m), Pos::of(&c.apply(m)));
             }
         }

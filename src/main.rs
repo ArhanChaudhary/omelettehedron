@@ -226,6 +226,20 @@ struct OptTableArgs {
     /// Generate missing tables even if the disk or memory check says they do not fit
     #[arg(long)]
     force: bool,
+    /// Move families allowed in solutions besides face turns, comma-separated, as for the
+    /// two-phase solver: slice (middle-layer turns; own tables, `*-slice.prun`), wide (output
+    /// only: the same search, wide turns of the back faces printed instead of front-face turns)
+    #[arg(long, value_enum, value_delimiter = ',')]
+    moves: Vec<Family>,
+}
+
+impl OptTableArgs {
+    fn move_set(&self) -> MoveSet {
+        MoveSet {
+            wide: self.moves.contains(&Family::Wide),
+            slice: self.moves.contains(&Family::Slice),
+        }
+    }
 }
 
 /// Stopping rules of the optimal solver (without any: the first optimal solution).
@@ -538,7 +552,7 @@ fn read_positions(
 fn load_opt(tab: &OptTableArgs) -> Result<OptTables, Error> {
     let dir = table_dir(tab.tables.as_deref());
     omelettehedron::preflight::set_force(tab.force);
-    OptTables::load(&dir, tab.tier, tab.verbose).map_err(|e| table_error(&dir, &e))
+    OptTables::load(&dir, tab.tier, tab.move_set(), tab.verbose).map_err(|e| table_error(&dir, &e))
 }
 
 /// Evaluate `$body` with `$b` bound to the lower bounds of the tables' tier.
@@ -633,8 +647,9 @@ fn run_optimal(cmd: OptCmd) -> Result<(), Error> {
             p.install(|| {
                 let t = load_opt(&tab)?;
                 eprintln!(
-                    "optimal solver, tier {}: {:.1} MB of tables",
+                    "optimal solver, tier {}, moves {}: {:.1} MB of tables",
                     t.tier.name(),
+                    t.moves.name(),
                     t.bytes() as f64 / 1e6
                 );
                 eprintln!("corners x centres depth histogram {:?}", t.cc.hist);
