@@ -79,6 +79,12 @@ pub struct Outcome {
     pub nodes: u64,
     /// table lookups (each a read of one table entry, after computing its index)
     pub lookups: u64,
+    /// children whose lookups were read, by the set of lookups (bit k: lookup k) whose value
+    /// exceeds the moves left after the child: with early exits in a given order, a child
+    /// costs the lookups up to the first one of its set (all `K` if the set is empty)
+    pub prune_masks: Vec<u64>,
+    /// children generated, by the moves left after them
+    pub children_by_left: Vec<u64>,
     pub elapsed: f64,
     pub iterations: Vec<Iteration>,
     /// how many of the 48 symmetries fix the position (1: only the identity)
@@ -163,8 +169,47 @@ fn key(path: &[u8]) -> u32 {
 struct Counter {
     nodes: u64,
     lookups: u64,
+    /// pruning statistics (see [`Outcome::prune_masks`])
+    stats: PruneStats,
     /// `Shared::stop` as last read
     stop: bool,
+}
+
+/// Which lookups prune the children, for choosing a lookup order (see
+/// [`Outcome::prune_masks`] and [`Outcome::children_by_left`]).
+#[derive(Clone, Debug, Default)]
+struct PruneStats {
+    /// children by the set of lookups whose value exceeds the moves left (bit k: lookup k)
+    masks: Vec<u64>,
+    /// children by the moves left after them
+    left: Vec<u64>,
+}
+
+impl PruneStats {
+    #[inline(always)]
+    fn mask(&mut self, m: usize) {
+        if self.masks.len() <= m {
+            self.masks.resize(1 << MAX_K, 0);
+        }
+        self.masks[m] += 1;
+    }
+    #[inline(always)]
+    fn left(&mut self, left: usize, n: usize) {
+        if self.left.len() <= left {
+            self.left.resize(left + 1, 0);
+        }
+        self.left[left] += n as u64;
+    }
+    fn add(&mut self, o: &PruneStats) {
+        for (v, w) in [(&mut self.masks, &o.masks), (&mut self.left, &o.left)] {
+            if v.len() < w.len() {
+                v.resize(w.len(), 0);
+            }
+            for (a, b) in v.iter_mut().zip(w) {
+                *a += b;
+            }
+        }
+    }
 }
 
 /// Scratch arrays of one node's children (one frame per depth, reused).
@@ -202,6 +247,7 @@ struct Shared<'a, B: Bounds> {
     stop: AtomicBool,
     nodes: AtomicU64,
     lookups: AtomicU64,
+    stats: Mutex<PruneStats>,
     sols: Mutex<Vec<Vec<usize>>>,
     /// symmetric start: the symmetries (other than the identity) that fix the root, if the
     /// task levels are filtered (see [`Shared::dedup`]); empty otherwise
@@ -270,6 +316,7 @@ impl<B: Bounds> Shared<'_, B> {
         }
         ctr.nodes += out.len() as u64;
         ctr.lookups += (out.len() * B::K) as u64;
+        ctr.stats.left(bound - g - 1, out.len());
         let mut idx = [[0usize; MAX_K]; N_MOVES];
         for (i, c) in out.iter().enumerate() {
             for k in 0..B::K {
@@ -278,9 +325,12 @@ impl<B: Bounds> Shared<'_, B> {
             }
         }
         for (i, c) in out.iter_mut().enumerate() {
+            let mut mask = 0;
             for k in 0..B::K {
                 c.h[k] = decode(t.h[k], self.b.table(k).get(idx[i][k]));
+                mask |= usize::from(usize::from(c.h[k]) + g >= bound) << k;
             }
+            ctr.stats.mask(mask);
         }
         out.retain(|c| usize::from(c.h.iter().copied().max().unwrap_or(0)) + g < bound);
         out
@@ -370,6 +420,7 @@ impl<B: Bounds> Shared<'_, B> {
             n += 1;
         }
         self.count(ctr, n);
+        ctr.stats.left(budget, n);
         if budget == 0 {
             // The children are leaves: every table is 0 exactly at the solved state, so only a
             // solved child can pass; it is recognised without lookups.
@@ -395,11 +446,14 @@ impl<B: Bounds> Shared<'_, B> {
         for i in 0..n {
             let u = i % N_MOVES;
             let mut mx = 0;
+            let mut mask = 0;
             for k in 0..B::K {
                 let v = decode(h[k], self.b.table(k).get(fr.idx[u][k]));
                 fr.hs[u][k] = v;
                 mx = mx.max(v);
+                mask |= usize::from(usize::from(v) > budget) << k;
             }
+            ctr.stats.mask(mask);
             let ok = usize::from(mx) <= budget;
             if ok {
                 *stat += STAT_W[usize::from(mx) & 31];
@@ -441,6 +495,8 @@ pub fn solve<B: Bounds>(
         stop: Stop::BadTables,
         nodes: 0,
         lookups: 0,
+        prune_masks: vec![],
+        children_by_left: vec![],
         elapsed: 0.0,
         iterations: vec![],
         symmetries: 1,
@@ -467,6 +523,7 @@ pub fn solve<B: Bounds>(
         stop: AtomicBool::new(false),
         nodes: AtomicU64::new(0),
         lookups: AtomicU64::new(0),
+        stats: Mutex::new(PruneStats::default()),
         sols: Mutex::new(vec![]),
         symmetries: if limits.max_solutions.is_none() && sym_start() {
             root_syms.clone()
@@ -520,6 +577,10 @@ pub fn solve<B: Bounds>(
         let mut tasks = sh.tasks(&root, depth, want, &mut ctr);
         sh.nodes.fetch_add(ctr.nodes, Ordering::Relaxed);
         sh.lookups.fetch_add(ctr.lookups, Ordering::Relaxed);
+        sh.stats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .add(&ctr.stats);
         // order by the previous iteration's statistic of the longest known prefix (stable:
         // ties keep the canonical order)
         if !stats.is_empty() {
@@ -565,6 +626,10 @@ pub fn solve<B: Bounds>(
                 sh.lookups
                     .fetch_add(ctr.lookups - lookups_before, Ordering::Relaxed);
             }
+            sh.stats
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .add(&ctr.stats);
         };
         if inline {
             worker();
@@ -630,6 +695,13 @@ pub fn solve<B: Bounds>(
         .collect();
     out.nodes = sh.nodes.load(Ordering::Relaxed);
     out.lookups = sh.lookups.load(Ordering::Relaxed);
+    let stats = sh
+        .stats
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner);
+    out.prune_masks = stats.masks;
+    out.prune_masks.truncate(1 << B::K);
+    out.children_by_left = stats.left;
     out.elapsed = start.elapsed().as_secs_f64();
     out
 }

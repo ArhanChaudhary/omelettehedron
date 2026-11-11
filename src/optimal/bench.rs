@@ -17,6 +17,10 @@ pub struct PositionResult {
     pub nodes: u64,
     /// table lookups
     pub lookups: u64,
+    /// children by the set of lookups that prune them, and by moves left (see
+    /// `search::Outcome`)
+    pub prune_masks: Vec<u64>,
+    pub children_by_left: Vec<u64>,
     pub elapsed: f64,
     /// nodes of each iteration (depth, nodes)
     pub iterations: Vec<(usize, u64)>,
@@ -68,6 +72,8 @@ pub fn run<B: Bounds>(
             stop: o.stop,
             nodes: o.nodes,
             lookups: o.lookups,
+            prune_masks: o.prune_masks.clone(),
+            children_by_left: o.children_by_left.clone(),
             elapsed: o.elapsed,
             iterations: o.iterations.iter().map(|it| (it.depth, it.nodes)).collect(),
         };
