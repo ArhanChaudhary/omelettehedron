@@ -12,6 +12,8 @@
 #   --bin PATH          (single run) use this binary instead of building the tree
 #   --tier T            two-phase tier (default large; "none" skips the two-phase solver)
 #   --opt-tier T[,T]    optimal solver tier(s) (default large; "none" skips it)
+#   --items I[,I]       only these items (names as in the table, e.g. 2p-t1s-mt,2p-t1s-1t), so
+#                       that the 5 minutes go to more rounds of the items a change touches
 # Results: bench-results/quick/<label>/<item>-r<round>.json (with --compare, the directory is
 # bench-results/quick/compare-<time>/ and the files start with A- and B-), and a markdown table.
 #
@@ -23,6 +25,12 @@
 #   two-phase, time limit 1 s: 10 random positions (seed 2026) on all threads, 10 (seed 7) on
 #     1 thread (mean length after 1 s, first solution, nodes/s);
 #   optimal solver: the same 17-move set on 1 thread and 19-move set on all threads.
+# Noise: a single item varies by up to about 5% between rounds (items a change did not touch
+# came out at 0.976x and 1.018x), which is as large as most per-node gains. So a change that
+# claims less than about 5% needs at least 3 rounds of the items it touches (--items keeps
+# that under 5 minutes) and B better in every round of every one of them ("B better" column);
+# a mixed result is a loss or a tie, not a win. 1-thread node counts repeat exactly and decide
+# for changes to the pruning.
 # Every run is capped at 150 s. The runs hold the bench lock (/tmp/cube-bench.lock)
 # exclusively; building takes it shared, so builds elsewhere wait for the timing and not
 # the other way round.
@@ -35,6 +43,7 @@ tier=large
 opt_tiers=large
 compare=()
 label=""
+only=""
 while [ $# -gt 0 ]; do
     case $1 in
         --rounds) rounds=$2; shift 2 ;;
@@ -42,6 +51,7 @@ while [ $# -gt 0 ]; do
         --tier) tier=$2; shift 2 ;;
         --opt-tier) opt_tiers=$2; shift 2 ;;
         --compare) compare=("$2" "$3"); shift 3 ;;
+        --items) only=$2; shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
         -*) echo "unknown option $1" >&2; exit 2 ;;
         *) label=$1; shift ;;
@@ -94,6 +104,14 @@ if [ "$opt_tiers" != none ]; then
         cmd[opt-$t-17-1t]="optimal bench --tier $t -N 10 --scramble-len 17 --seed 1717 -j 1"
         cmd[opt-$t-19-mt]="optimal bench --tier $t -N 10 --scramble-len 19 --seed 1919"
     done
+fi
+if [ -n "$only" ]; then
+    keep=()
+    for item in ${only//,/ }; do
+        [ -n "${cmd[$item]:-}" ] || { echo "unknown item $item (items: ${items[*]})" >&2; exit 2; }
+        keep+=("$item")
+    done
+    items=("${keep[@]}")
 fi
 
 n=${#bins[@]}
@@ -160,28 +178,32 @@ if single:
     sys.exit(0)
 
 a, b = names
-print(f"| item | {a} (round 1) | {b} (round 1) | {b} / {a} (medians) | per round | nodes |")
-print("|---|---|---|---|---|---|")
+print(f"| item | {a} (round 1) | {b} (round 1) | {b} / {a} (medians) | per round | {b} better | nodes |")
+print("|---|---|---|---|---|---|---|")
 for item in items:
     runs = [(load(a, item, r), load(b, item, r)) for r in range(1, rounds + 1)]
     runs = [(x, y) for x, y in runs if x and y]
     if not runs:
-        print(f"| {item} | - | - | - | - | - |")
+        print(f"| {item} | - | - | - | - | - | - |")
         continue
     ma = [metrics(item, x) for x, _ in runs]
     mb = [metrics(item, y) for _, y in runs]
     ta, tb = med(m[0] for m in ma), med(m[0] for m in mb)
     kind = "nodes/s" if "-t1s-" in item else "time"
     ratio = ta / tb if kind == "nodes/s" else tb / ta
-    per = ", ".join(f"{(x[0] / y[0]) if kind == 'nodes/s' else (y[0] / x[0]):.3f}" for x, y in zip(ma, mb))
+    rs = [(x[0] / y[0]) if kind == "nodes/s" else (y[0] / x[0]) for x, y in zip(ma, mb)]
+    per = ", ".join(f"{q:.3f}" for q in rs)
+    # per-round ratios: B / A time (lower is better) or B / A nodes/s (higher is better)
+    better = f"{sum((q > 1) if kind == 'nodes/s' else (q < 1) for q in rs)}/{len(rs)}"
     if ma[0][1] is None:
         nodes = "-"
     elif "-1t" in item:
         nodes = "same" if all(x[1] == y[1] for x, y in zip(ma, mb)) else f"{mb[0][1] / ma[0][1]:.4f}x"
     else:
         nodes = f"{med(m[1] for m in mb) / med(m[1] for m in ma):.4f}x"
-    print(f"| {item} | {ma[0][2]} | {mb[0][2]} | {kind} {ratio:.3f}x | {per} | {nodes} |")
+    print(f"| {item} | {ma[0][2]} | {mb[0][2]} | {kind} {ratio:.3f}x | {per} | {better} | {nodes} |")
 print(f"\n(the ratio is of the medians over {rounds} rounds: time for optimal sets, nodes/s for "
       "time-limited ones; nodes on 1 thread must be the same for a change that keeps the search; "
-      "single items vary by a few percent between rounds)")
+      "single items vary by up to about 5% between rounds, so a gain under 5% counts only with "
+      f"{b} better in every round of every item it touches, over at least 3 rounds)")
 PY
