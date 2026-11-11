@@ -25,7 +25,7 @@
 //
 //   bun wasm/test.mjs        (exit status 0 if all passed)
 
-import { cancel, parseImprovement, TIERS } from './omelettehedron.mjs';
+import { cancel, invertMoves, parseImprovement, TIERS } from './omelettehedron.mjs';
 
 const threads = Number(process.env.FTO_TEST_THREADS ?? 4);
 const failures = [];
@@ -203,6 +203,15 @@ const moves = random.scramble.split(' ');
 check(moves.length === random.length && random.length >= 15 && random.length <= 40,
   `single build: random scramble ${JSON.stringify(random)}`);
 check(!(await st.call('isSolved', { moves: random.scramble })).solved, 'single build: random scramble is solved');
+// The page's Invert button: a sequence followed by its inverse leaves the puzzle solved, for
+// every suffix and layer of the notation (and a solution inverted is a scramble it solves).
+for (const seq of [random.scramble, "U R' BL2 F2' D3 B1 L1' BR", "Uw Rs' BLv F2 Dw2' Us3 BRv'", 'F’ U']) {
+  const inv = invertMoves(seq);
+  check((await st.call('isSolved', { moves: `${seq} ${inv}` })).solved,
+    `single build: ${seq} followed by its inverse ${inv} is not solved`);
+  check(invertMoves(inv).split(' ').length === inv.split(' ').length, `single build: inverse of ${inv}`);
+}
+check(invertMoves("U R' BL") === "BL' R U'", `single build: invertMoves gave ${invertMoves("U R' BL")}`);
 console.log(`single build: random-state scramble (${random.length} moves): ${random.scramble}`);
 let bad = false;
 try {
