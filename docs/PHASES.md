@@ -215,8 +215,9 @@ optimisation.
     0.76x nodes for exact distances and for 2-bit codes of distances 9–12. Reading those codes
     with 11 moves left too (about 4x as many lookups, for 0.95x of the nodes) was slower
     (0.900x / 0.933x time at 1T / 48T, against 0.843x / 0.874x), so only "at least 11" is kept.
-    Measured: 1T nodes 0.743x (17-move set), time 0.784x (1T, 17-move set) and 0.841x (48T,
-    19-move set); random positions 0.82–0.90x, edge_hard 0.85x, corner 6-flip see
+    Measured: 1T nodes 0.743x / 0.771x (17 / 19-move sets), time 0.788x (1T, 17-move set) and
+    0.853x (48T, 19-move set) with the table read on first use; random positions 0.82–0.90x,
+    edge_hard 0.85x, corner 6-flip see
     [RESULTS.md](RESULTS.md). The table is read when the first search reaches an iteration
     that can use it, on a background thread while the search goes on without it, so time-limited
     solves and short proofs never read it. `FTO_NO_CBS=1` turns it off.

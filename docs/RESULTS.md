@@ -57,14 +57,16 @@ alone under the bench lock, two interleaved rounds (random positions: one run ea
 | | main | with the bound | ratio |
 |---|---|---|---|
 | 10 x 17-move scrambles, 1 thread (time per position) | 0.297 s | 0.233 s | 0.784x (nodes 0.743x) |
+| the same, table read on first use (its reading inside the first solves) | 0.301 s | 0.237 s | 0.788x (nodes 0.777x) |
 | 10 x 19-move scrambles, 48 threads | 0.833 s | 0.701 s | 0.841x (nodes 0.806x) |
+| the same, table read on first use | 0.838 s | 0.715 s | 0.853x (nodes 0.812x) |
 | random position, seed 1 (21) | 71.5 s | 64.2 s | 0.897x |
 | random position, seed 2 (21) | 69.4 s | 58.2 s | 0.838x |
 | random position, seed 3 (20) | 5.90 s | 4.83 s | 0.819x |
 | time-limited search, nodes/s (48 / 1 threads) | | | 0.992x / 1.001x (unchanged: not used) |
 
-All proven lengths are identical. (These main times are above the table above, measured on an
-earlier main and a quieter day.)
+The other rows read the table with the other tables. All proven lengths are identical. (These
+main times are above the table above, measured on an earlier main and a quieter day.)
 
 ## Move sets (`--moves`)
 
@@ -130,7 +132,7 @@ building the move and symmetry tables; `bench` leaves it out of its per-position
 |---|---|---|
 | small | 0.41 s | 0.13 s |
 | large | 1.38 s | 0.26 s |
-| large with the distance-to-solved table (`opt/tosolved`; same session: 1.71 / 0.27 s without) | 2.13 s | 0.34 s |
+| large with the distance-to-solved table (`opt/tosolved`), read at start-up / read on first use (main in the same sessions: 1.71 / 0.27 s, 1.72 / 0.28 s) | 2.13 / 1.72 s | 0.34 / 0.28 s |
 
 ## Tables
 
