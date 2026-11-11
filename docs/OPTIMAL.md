@@ -385,7 +385,8 @@ branch in the corner move 1.083x / 1.059x (1T / 48T), one 64-byte row of 32 move
 1.012x / 1.024x, the two blocks without `apply_n` 1.025x / 1.024x. With main's round 3 merged
 in (main 7b93c60, three rounds): 1 thread 1.007x (0.966, 1.003, 1.024), 48 threads 1.001x
 (1.010, 0.995, 0.996): at parity. (The earlier 1T residue came with identical `dfs` machine
-code, so it was code placement, which every merge shifts.)
+code, so it was code placement, which every merge shifts.) Stacked on `optimal/r3-aepre`:
+1.015x (1.017, 1.001, 1.018) / 1.004x (1.000, 1.010, 1.004) against it.
 
 ## Optimisation round 2: a bound for the nodes with 9 to 11 moves left
 
