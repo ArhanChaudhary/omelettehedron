@@ -42,6 +42,12 @@ pub struct Limits {
     /// instead of from the bound it has proven itself. A wrong (too high) value can give a
     /// non-optimal answer reported as optimal. For resuming long proofs.
     pub lower_bound: Option<usize>,
+    /// Search as under a time limit (each better solution as soon as it is found, no
+    /// target-length passes) even without one; without a stopping rule the search still ends
+    /// when its best is proven optimal. Proofs take longer than in optimal mode (one thread,
+    /// small tier, 10 x 17 moves: 6.2 s against 2.4 s per position), but solutions appear
+    /// along the way. (The same as `Watch::improve`.)
+    pub improve: bool,
 }
 
 impl Limits {
@@ -1614,7 +1620,7 @@ fn solve_n<I: AeIndex, const N: usize>(
     // path can end in a slice, which is in neither class, so no side finds it earlier.
     let class_b_argument = !t.moves.slice;
     // (`Watch::improve`: as under a time limit, without one)
-    let target_gap = if limits.is_optimal() && !full_proof() && !watch.improve {
+    let target_gap = if limits.is_optimal() && !full_proof() && !watch.improve && !limits.improve {
         env_usize("FTO_TARGET_GAP", 2)
     } else {
         0

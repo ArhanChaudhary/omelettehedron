@@ -9,6 +9,7 @@ use rayon::prelude::*;
 use std::alloc::{alloc, dealloc, Layout};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
+use std::sync::atomic::AtomicU64;
 
 const HUGE: usize = 2 << 20;
 
@@ -196,6 +197,21 @@ impl<T: Copy> HugeBuf<T> {
         let mut b = Self::zeroed(s.len());
         b.copy_from_slice(s);
         b
+    }
+}
+
+impl HugeBuf<u64> {
+    /// The words as atomics, for threads that write them concurrently (table generation).
+    ///
+    /// It takes `&mut self`, so that no `&[u64]` of the words exists while the atomics do, and
+    /// the slice is made from the buffer's own pointer: a pointer taken through `&[u64]`
+    /// (`Deref`) grants reads only, and writing through atomics made from it is undefined
+    /// behaviour (found by Miri under Stacked Borrows in the table generator).
+    pub fn as_atomic(&mut self) -> &[AtomicU64] {
+        // SAFETY: AtomicU64 has the size and alignment of u64; ptr is valid and writable for
+        // len elements; the exclusive borrow of self keeps every other view of the words away
+        // while the returned slice lives
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr().cast::<AtomicU64>(), self.len) }
     }
 }
 
