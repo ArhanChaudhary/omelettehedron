@@ -36,6 +36,8 @@ position; see the last table of this section for the full suites).
 | optimal solver, 10 x 19 moves, 48 threads (per position) | 4.12 s (medium, main 3deb77e) | medium 2.37 s, large 0.98 s | 0.58x / 0.24x | the same |
 | optimal solver, large tier, start of round 3 (main 4c96995) -> now: 17 / 19-move sets | 0.758 / 1.528 s | 0.482 / 0.982 s | 0.64x / 0.64x | round 3, `optimal/large-noce` |
 | optimal solver, random position seed 1 (21), large, 48 threads | 91.7 s (main 4c96995) | 66.4 s | 0.72x | the same |
+| optimal solver, random positions seeds 2 (21) / 3 (20), large, 48 threads | | 143.4 s (9.16e10 nodes) / 73.3 s (measured later, main 47ca15d) | | (the two-phase solver under `-t 1200`: 48.6 / 4.0 s) |
+| optimal solver, edge_hard (21), large, 48 threads | 344.7 s (main 5106ccf) | 226.5 s (main 47ca15d) | 0.66x | round 3, `optimal/large-noce` (the two-phase solver: 56.4 s) |
 | optimal solver, corner 6-flip (20), 48 threads | 232 s (medium, v0, beside other work) | large 0.34 s, medium 21.6 s | | the large tier; round 3 |
 | optimal solver, the four 23-move positions of `bench/hard.tsv` | (two-phase solver: 11.1 h) | 44.5 min (large, measured earlier today, not rerun) | 0.067x | |
 
