@@ -211,6 +211,22 @@ try {
   bad = /unknown move/.test(e.message);
 }
 check(bad, 'single build: a bad scramble was accepted');
+// Patterns: a scramble's pattern solved as a pattern (the same optimal length), with the
+// scramble from the usual hold making the pattern again; and a pattern with a wrong sticker.
+for (const [scramble, length] of cases.slice(0, 3)) {
+  const { pattern } = await st.call('pattern', { scramble });
+  const r = await st.call('solvePattern', { pattern, usual: 'WRGPBOYA' });
+  check(r.verified && r.optimal && (length === null || r.length === length),
+    `single build: pattern of ${scramble}: ${JSON.stringify(r)}`);
+  check(r.scramble?.exact, `single build: no exact scramble from the usual hold: ${JSON.stringify(r.scramble)}`);
+  const again = await st.call('pattern', { scramble: r.scramble?.usual ?? '' });
+  check(again.pattern === pattern, `single build: ${r.scramble?.usual} makes ${again.pattern}, not ${pattern}`);
+  console.log(`single build: pattern of ${scramble}: ${r.solution} (${r.length}), scramble ${r.scramble?.usual}`);
+}
+const solvedPattern = (await st.call('pattern', { scramble: '' })).pattern;
+const wrong = await st.call('solvePattern', { pattern: solvedPattern.replace('W', 'R') });
+check(wrong.error?.kind === 'counts' && wrong.error.counts.length === 2,
+  `single build: a wrong sticker gave ${JSON.stringify(wrong)}`);
 await cancelled(st, init1.control, 'single build');
 
 // The threads build for the small tables has no room for the medium ones: an error, no trap.

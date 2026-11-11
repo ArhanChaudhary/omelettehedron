@@ -634,3 +634,31 @@ fn lower_bound_keeps_the_optimum() {
         }
     }
 }
+
+#[test]
+fn patterns_are_solved_as_entered() {
+    // a scramble's pattern, in other letters: the solution of the position read from it solves
+    // the pattern, is as short as the scramble's own optimal solution, and gives back a
+    // scramble that makes the pattern from the usual hold
+    use omelettehedron::pattern;
+    let t = tables();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(21);
+    let usual = pattern::PICTURE_FACES.map(|f| pattern::DEFAULT_SYMBOLS[f]);
+    for _ in 0..6 {
+        let scr = random_scramble(&mut rng, 12);
+        let p = pattern::of_moves(&scr);
+        let letters: Vec<char> = "kmnpqrst".chars().collect();
+        let q = p.map(|c| letters[usual.iter().position(|&u| u == c).unwrap()]);
+        let c = pattern::position(&q).unwrap();
+        let o = solve(t, c, Frame::identity(), &Limits::default(), Report::Quiet);
+        let sol = o.solution.unwrap();
+        assert!(pattern::solves(&q, &sol), "{}", format_moves(&sol));
+        let (sc, fr) = scramble_to_cube(&scr);
+        let o2 = solve(t, sc, fr, &Limits::default(), Report::Quiet);
+        assert_eq!(o.length, o2.length, "{}", format_moves(&scr));
+        let s = pattern::scramble(&p, &sol, Some(&usual)).unwrap();
+        let (text, exact) = s.from_usual_text().unwrap();
+        assert!(exact);
+        assert_eq!(pattern::of_moves(&parse_moves(&text).unwrap()), p, "{text}");
+    }
+}
