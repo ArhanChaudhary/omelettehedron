@@ -239,6 +239,8 @@ struct Scratch<const N: usize> {
     /// sides, if `stage2` issued them (`cs_done`; see `finish`)
     cs: [[usize; N]; 2],
     cs_done: bool,
+    /// the indices of the other three triples on both sides (wave 2, see `finish`)
+    cw: [[[usize; 3]; N]; 2],
     /// the children still alive after each stage (indices into the arrays above). Stages
     /// compact this list without branching on the prune decision, instead of copying
     /// positions (neutral when added: -1.5% nodes/s at 1T, within noise).
@@ -269,6 +271,7 @@ impl<const N: usize> Scratch<N> {
             ci: [[[0; 4]; N]; 2],
             cs: [[0; N]; 2],
             cs_done: false,
+            cw: [[[0; 3]; N]; 2],
             sel: [0; N],
             n: 0,
             k: 0,
@@ -888,6 +891,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             ci,
             cs,
             cs_done,
+            cw,
             sel,
             n: _,
             k,
@@ -899,7 +903,40 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         let (mut k, h_ae, h_cb, min_ha, cbe_done) = (*k, *h_ae, *h_cb, *min_ha, *cbe_done);
         let mut n = 0;
         let mut b_done = false;
+        // whether the second distance-to-solved wave was issued here (see below)
+        let mut w2 = false;
         if budget >= AE_FIRST {
+            // With the first distance-to-solved wave issued in `stage2`, read it before the
+            // other stages and issue the second for the children it keeps, so that its latency
+            // overlaps the CB and class-B stages (read at the end, see below).
+            if B && *cs_done {
+                if let Some((lazy, cbe)) = self.cbs {
+                    if let Some(cbs) = lazy.loaded() {
+                        let mut k2 = 0;
+                        for j in 0..k {
+                            let i = sel[j];
+                            let u = usize::from(i) % N;
+                            let ok = !(cbs.far(cs[0][u]) || cbs.far(cs[1][u]));
+                            if !ok {
+                                live[u] = 0;
+                            }
+                            sel[k2 % N] = i;
+                            k2 += usize::from(ok);
+                        }
+                        k = k2;
+                        for &i in &sel[..k] {
+                            let u = usize::from(i) % N;
+                            for s in 0..2 {
+                                let em = masks(&ys[s][u].e);
+                                for (j, t) in CBS_REST.into_iter().enumerate() {
+                                    cw[s][u][j] = cbs.prefetch_one(&cbe.ix, f, &ys[s][u], &em, t);
+                                }
+                            }
+                        }
+                        w2 = true;
+                    }
+                }
+            }
             if cbe_done {
                 if let Some(cbe) = &t.cbe {
                     let mut k2 = 0;
@@ -1089,7 +1126,21 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         if B && n > 0 && budget > 0 {
             let lim = ctr.prune_len.saturating_sub(g + 2);
             if let (Some((lazy, cbe)), true) = (self.cbs, lim < usize::from(crate::cbe::CBS_MIN)) {
-                if let Some(cbs) = lazy.loaded() {
+                if let (Some(cbs), true) = (lazy.loaded(), w2) {
+                    let mut k = 0;
+                    for j in 0..n {
+                        let i = sel[j];
+                        let u = usize::from(i) % N;
+                        let far = |s: usize| cw[s][u].iter().any(|&x| cbs.far(x));
+                        let ok = !(far(0) || far(1));
+                        if !ok {
+                            live[u] = 0;
+                        }
+                        sel[k % N] = i;
+                        k += usize::from(ok);
+                    }
+                    n = k;
+                } else if let Some(cbs) = lazy.loaded() {
                     // First the strongest lookup on each side (triple `CBS_FIRST`: the two cut
                     // 72% of the checked children, against 96% for all eight; usually issued in
                     // `stage2`), then the other three triples of both sides for the children
