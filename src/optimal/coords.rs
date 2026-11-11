@@ -11,9 +11,9 @@
 
 use super::sym::*;
 use crate::coord::{corners, mset, N_CORNER, N_MSET};
-use crate::coord::{parity3, triple_pieces};
+use crate::coord::triple_pieces;
 use crate::cube::*;
-use crate::fast::{fast, masks, mset_labels, shuffle, FastTables, Fc};
+use crate::fast::{fast, label_mask, masks, mset_labels, shuffle, FastTables, Fc};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -527,16 +527,15 @@ impl FcMaps {
 
     /// Chirality bits of an edge permutation (bit t: the parity of the positions of A-triple
     /// t's pieces, as `coord::edge_chirality`).
+    /// (Each piece's position as a one-bit mask from a SIMD compare: comparing the masks
+    /// compares the positions, with no inverse permutation in memory; it was 4-5% of the
+    /// search's samples as a scatter loop.)
     #[inline(always)]
     fn ebits(&self, ep: &[u8; 16]) -> u8 {
-        let mut pos = [0u8; 16];
-        for p in 0..12 {
-            pos[usize::from(ep[p] & 15)] = p as u8;
-        }
         let mut bits = 0;
         for t in 0..4 {
-            let [a, b, c] = self.tp[t];
-            bits |= parity3(pos[a as usize], pos[b as usize], pos[c as usize]) << t;
+            let [a, b, c] = self.tp[t].map(|e| label_mask(ep, e));
+            bits |= u8::from((a > b) ^ (a > c) ^ (b > c)) << t;
         }
         bits
     }
