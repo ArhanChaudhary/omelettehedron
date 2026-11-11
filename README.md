@@ -129,9 +129,12 @@ target/release/omelettehedron solve --tier large -t 1 < scrambles.txt
 # a position given as the algorithm that solves it: solve that algorithm's inverse
 target/release/omelettehedron solve --tier large --inverse "U F BL B' U B' BL BR' ..."
 
-# resume a long optimal proof: an earlier run (FTO_DEBUG=1) logged "pass 20 complete: no solution
+# show what the search is doing while it runs (stderr; see "Progress" below)
+target/release/omelettehedron solve --tier large --progress "U R' BL F D B' L BR"
+
+# resume a long optimal proof: an earlier run (--progress) printed "pass 20 done: no solution
 # of at most 20 moves", so no solution is shorter than 21 (a wrong bound can give a wrong answer)
-FTO_DEBUG=1 target/release/omelettehedron solve --tier large --lower-bound 21 "..."
+target/release/omelettehedron solve --tier large --progress --lower-bound 21 "..."
 
 # optimal solution with slice turns allowed (generates the slice tables on first use)
 target/release/omelettehedron solve --tier large --moves slice "U R' BL F D B' L BR"
@@ -174,6 +177,44 @@ target/release/omelettehedron info "U R' BL F D B' L BR"
   for a position in one, the exact count of turns of its four faces is given.
 * The lower bound (face turns) is the largest distance to solved of the corners, the centres of
   each half and the edges' places, each taken alone (small tables built in memory).
+
+### Progress
+
+`--progress` (for `solve`, `optimal solve` and `combined`) prints what the search is doing to
+stderr while it runs: each iteration as it ends (its depth, nodes, nodes per second, the best
+length so far and the lower bound proven so far), each target-length pass that ends ("no
+solution of at most T moves"), and, during a long iteration, a line every second with the
+nodes so far and how many of its tasks have started. `--progress=5` prints that line every 5
+seconds, `--progress=0` never. The search does no extra work for it: on 48 threads it is as
+fast as without, and short solves on one thread (24 ms each) take about 0.4 ms longer, the
+time to print their 50 or so lines ([docs/RESULTS.md](docs/RESULTS.md#progress-and-both-solvers-at-once)).
+Without `--progress` the output is unchanged.
+
+```text
+$ omelettehedron solve --tier large --progress --random 1 --seed 3
+    0.000 s  depth 11 done in 0.000 s: 4.520e2 nodes (2.174e6 nodes/s, 1 task); best -, lower bound 13
+    0.000 s  target-length passes from 13 (best -)
+    ...
+    0.700 s  pass 18 done: no solution of at most 18 moves (6.564e8 nodes in all)
+    ...
+    1.718 s  pass 19, depth 17 done in 0.861 s: 9.392e8 nodes (1.091e9 nodes/s, 2688 tasks); best -, lower bound 19
+    2.719 s  pass 19, depth 18: 1.152e9 nodes so far in 1.0 s (1.151e9 nodes/s), 592/2688 tasks started
+    3.719 s  pass 19, depth 18: 2.413e9 nodes so far in 2.0 s (1.206e9 nodes/s), 1241/2688 tasks started
+    4.719 s  pass 19, depth 18: 3.697e9 nodes so far in 3.0 s (1.232e9 nodes/s), 1956/2688 tasks started
+    5.667 s  pass 19, depth 18 done in 3.949 s: 4.957e9 nodes (1.255e9 nodes/s, 2688 tasks); best -, lower bound 20
+    5.667 s  pass 19 done: no solution of at most 19 moves (6.681e9 nodes in all)
+    ...
+    6.246 s  best 20 moves
+    6.249 s  pass 20, depth 17 stopped in 0.432 s: 4.539e8 nodes (1.050e9 nodes/s, 2688 tasks); best 20, lower bound 20
+D R' BR BL' B BR' L' U' D B' BR D F' R F' BL U R D R
+length 20 in 6.249s, 1 solutions, 7.272e9 nodes, optimal
+```
+
+For the two-phase solver, the depth is that of phase 1 (phase 2 is looked up at its end): a
+completed depth D proves that no solution has at most D + 1 moves, and pass T looks only for
+solutions of at most T moves (see [docs/PHASES.md](docs/PHASES.md#4-search)). For the optimal
+solver, depth D is the solution length searched, and a completed depth proves that no solution
+has at most D moves.
 
 ### Patterns
 
@@ -337,6 +378,73 @@ Stopping rules: none (first optimal solution), `-n N` (up to N optimal solutions
 that some of the octahedron's 48 symmetries fix (like most of `bench/hard.tsv`) are searched
 with a symmetric start (only one of each set of equivalent first moves is searched), which
 divides their node counts by about the number of symmetries.
+
+## Both solvers at once
+
+`omelettehedron combined` runs the two-phase solver and the optimal solver on the same position
+at the same time, each on half of the threads. The two-phase solver finds short solutions fast:
+upper bounds on the optimal length. The optimal solver proves lower bounds: no solution has
+fewer moves. Each new bound is printed as soon as it is found, with the time and the solver that
+found it. Both solvers stop when the bounds meet; the best solution is then optimal, proven
+exactly as either solver proves it alone. With `-t`, they stop at the time limit, and the output
+gives the best solution and the bounds.
+
+```text
+$ omelettehedron combined --tier large --opt-tier large --random 1 --seed 3
+    0.000 s  lower 12  optimal
+    0.000 s  lower 13  optimal
+    0.001 s  lower 14  optimal
+    0.002 s  lower 15  optimal
+    0.003 s  lower 16  optimal
+    0.014 s  upper 23  two-phase  D' U B L' R' U BR' D BR BL' L' U L' B BL L R' D L' D B D L
+    0.014 s  lower 17  optimal
+    0.084 s  upper 22  two-phase  L U' B' D BL U BR D U BL' L' F R BL U B' U' BR' U' BL BR F
+    0.109 s  lower 18  optimal
+    0.115 s  upper 21  two-phase  BR BL BR R L U' L U' R D F D' R B L B F BL F' U F'
+    1.076 s  upper 20  two-phase  D R' BR BL' B BR' L' U' D B' BR D F' R F' BL U R D R
+    1.095 s  lower 19  optimal
+    8.207 s  lower 20  two-phase
+D R' BR BL' B BR' L' U' D B' BR D F' R F' BL U R D R
+20 moves, optimal (solution: two-phase at 1.076 s; lower bound: two-phase at 8.207 s); 8.208 s
+```
+
+The two solvers help each other. The optimal solver stops as soon as the two-phase solver's
+best length is proven, so it never runs the depth of that length, its longest. With
+`--two-phase passes`, the two-phase solver's target-length passes start from the largest lower
+bound either solver has proven.
+
+* `--tier` and `--opt-tier` choose the two solvers' tables; without them, each solver takes
+  the largest tier whose tables are all there, as `solve` does. Both large tiers need about
+  34 GB (two-phase huge and optimal large about 55 GB); the memory is checked before anything
+  is loaded.
+* `-j` sets the threads in all; `--two-phase-threads` and `--optimal-threads` set each
+  solver's share.
+* `--two-phase improve` (the default) makes the two-phase solver search as under a time
+  limit: each better solution as soon as it can. `--two-phase passes` uses its optimal mode.
+  Both prove optimality about as fast (below), but the passes find no solution until they
+  reach the optimal length: on edge_hard, `passes` found its first solution after 123 s,
+  `improve` a 21-move (optimal) one after 0.5 s. Under a time limit, `passes` may end with
+  no solution at all.
+* `--progress` shows both solvers' progress, each line marked with the solver.
+
+Each solver gets half of the threads, so a combined solve takes about twice as long as the
+faster solver alone. But it is never as slow as the slower one, and which one is faster
+depends on the position: the corner 6-flip takes 0.63 s combined against 117 s for the
+two-phase solver, and a random position 8.5 s against 74 s for the optimal solver. Seconds on
+48 threads (combined: 24 + 24), each the solvers' own time; see
+[docs/RESULTS.md](docs/RESULTS.md#progress-and-both-solvers-at-once):
+
+| position | optimal | two-phase alone | optimal solver alone | combined (`improve`) | combined (`passes`) |
+|---|---|---|---|---|---|
+| 17-move scramble | 15 | 0.002 | 0.002 | 0.002 | 0.002 |
+| 18-move scramble | 18 | 0.109 | 0.521 | 0.274 | 0.222 |
+| 19-move scramble | 19 | 1.564 | 2.970 | 1.397 | 1.348 |
+| random position (seed 3) | 20 | 4.655 | 73.6 | 8.47 | 9.11 |
+| edge_hard | 21 | 62.8 * | 344.7 * | 112.8 | 123.3 |
+| corner 6-flip | 20 | 117.2 * | 0.337 | 0.632 | 0.698 |
+
+\* earlier measurements ([docs/RESULTS.md](docs/RESULTS.md)), not rerun.
+
 
 ## WebAssembly demo
 

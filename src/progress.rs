@@ -134,6 +134,11 @@ pub fn with_heartbeat<R>(
     })
 }
 
+/// `n` tasks, e.g. `1 task`, `2688 tasks`.
+pub fn tasks(n: usize) -> String {
+    format!("{n} task{}", if n == 1 { "" } else { "s" })
+}
+
 /// `nodes` in `secs` seconds as a rate, e.g. `2.13e9 nodes/s` (`-` for no time).
 pub fn rate(nodes: u64, secs: f64) -> String {
     if secs > 0.0 {

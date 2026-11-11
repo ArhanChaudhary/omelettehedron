@@ -20,7 +20,7 @@ use super::coords::*;
 use super::tables::{exact, Bounds, MAX_K};
 use crate::cube::*;
 use crate::notation::{solution_to_physical, Frame, PhysMove};
-use crate::progress::{rate, with_heartbeat, Bound, Watch};
+use crate::progress::{self, rate, with_heartbeat, Bound, Watch};
 use crate::prune::decode;
 use crate::tables::prefetch_at;
 use std::collections::HashMap;
@@ -908,7 +908,7 @@ fn solve_n<B: Bounds, const N: usize>(
         if let Some(p) = watch.progress {
             let dt = elapsed - it_t0;
             p.line(format_args!(
-                "depth {depth} {} in {dt:.3} s: {}; {:.3e} nodes ({}, {} tasks)",
+                "depth {depth} {} in {dt:.3} s: {}; {:.3e} nodes ({}, {})",
                 if stopped { "stopped" } else { "done" },
                 if n_sols > 0 {
                     format!("{n_sols} solution(s) of {depth} moves")
@@ -919,7 +919,7 @@ fn solve_n<B: Bounds, const N: usize>(
                 },
                 it_nodes as f64,
                 rate(it_nodes, dt),
-                tasks.len()
+                progress::tasks(tasks.len())
             ));
         }
         if n_sols > 0 {

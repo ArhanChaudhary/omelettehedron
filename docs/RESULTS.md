@@ -83,6 +83,73 @@ positions, and edge_hard (67.9 s) and the corner 6-flip (624 s) under `-t 1800`,
 without it. Without `-t` (optimal mode) edge_hard takes 62.8 s and the 6-flip 117 s. Since
 `opt/tl-cbs` time-limited runs use it too; see [Under a time limit](#under-a-time-limit-opttl-cbs).
 
+## Progress and both solvers at once
+
+Measured on 2026-11-11 (`feat/progress-combined`, 48-core EPYC, large tiers, under the bench
+lock).
+
+### `--progress`
+
+Without `--progress`, against main bbb1c7d (`scripts/bench-quick.sh --compare`, 2 interleaved
+rounds; one core was busy with another session's job, the same for both builds):
+
+| item | B / A (medians) | per round | B better | nodes (1 thread) |
+|---|---|---|---|---|
+| two-phase, optimal mode, 10 x 17 moves, 1 thread | time 1.002x | 1.009, 0.996 | 1/2 | same |
+| two-phase, optimal mode, 10 x 19 moves, 48 threads | time 0.967x | 0.996, 0.940 | 2/2 | |
+| two-phase, 1 s, 10 random positions, 48 threads | nodes/s 1.010x | 1.007, 1.014 | 2/2 | |
+| two-phase, 1 s, 10 random positions, 1 thread | nodes/s 1.026x | 1.009, 1.043 | 2/2 | |
+| optimal solver, 10 x 17 moves, 1 thread | time 1.007x | 0.995, 1.018 | 1/2 | same |
+| optimal solver, 10 x 19 moves, 48 threads | time 0.986x | 0.971, 1.001 | 1/2 | |
+
+With `--progress` against without (the solvers' own times, 3 interleaved rounds; on / off per
+round):
+
+| set | before the fix below | with it |
+|---|---|---|
+| two-phase, 15 scrambles of 14-19 moves, 48 threads | 1.034, 1.012, 0.999 | 1.000, 1.004, 0.991 |
+| two-phase, random position seed 3 (20), 48 threads | 1.001, 0.984, 0.987 | 0.991, 1.001, 0.981 |
+| two-phase, 12 scrambles of 14-17 moves, 1 thread (24 ms each) | 1.034, 1.055, 1.048 | 1.025, 1.017, 1.010 |
+| optimal solver, the 15 scrambles, 48 threads | 1.000, 1.049, 0.984 | 1.009, 1.005, 0.986 |
+
+The heartbeat thread was first started for every iteration, and a solve has many short ones;
+now an iteration that follows one shorter than 1/64 of the heartbeat interval gets none. What
+remains on the short one-thread solves (about 0.4 ms per solve) is printing their 50 or so
+lines. One-thread node counts are identical with and without progress lines (test
+`progress_does_not_change_the_search`).
+
+### `combined`
+
+Seconds on 48 threads in all (combined: 24 for each solver), each run the solvers' own time
+(tables loaded before), one run each. The 17- to 19-move scrambles are seeded random face-turn
+sequences; the random position is `--random 1 --seed 3`. The edge_hard runs shared the machine
+with one busy core of another session.
+
+| position | optimal | two-phase alone (optimal mode) | optimal solver alone | combined, `improve` | combined, `passes` |
+|---|---|---|---|---|---|
+| `BL BR U F' R' D R' F' B' U BR' L BR U F BR' D'` | 15 | 0.002 | 0.002 | 0.002 | 0.002 |
+| `U' B' U L BL' F' BL L' F' BR L B' L B' U' L F' BL'` | 18 | 0.109 | 0.521 | 0.274 (solution 0.272, lower bound 0.116) | 0.222 |
+| `L' F L B' BL B' BR' U BL' B F' BR' D' F L D' F BR' L` | 19 | 1.564 | 2.970 | 1.397 | 1.348 |
+| random position seed 3 | 20 | 4.655 | 73.6 | 8.47 (solution 1.04) | 9.11 (solution 9.11) |
+| edge_hard | 21 | 62.8 (above) | 344.7 (hard positions) | 112.8 (solution 0.54) | 123.3 (solution 123.3) |
+| corner 6-flip | 20 | 117.2 (above) | 0.337 | 0.632 | 0.698 |
+
+Each solver has half of the threads, so the combined solve takes about twice the time of the
+faster solver alone (1.8x on the random position and edge_hard, 1.9x on the 6-flip), but is
+far faster than the slower one; on the 19-move scramble it beat both. The optimal solver's
+help shows where the two-phase solver finds the optimum early: the optimal solver then needs
+only the depths below it (on the random position, alone, its depth 19 ended after about 6 s
+of its 74 s). `improve` and `passes` prove optimality about equally fast, and `improve` has the
+optimal solution almost at once, while `passes` finds a first solution only when it reaches
+the optimal length, so `improve` is the default.
+
+Correctness: 12 seeded scrambles of 14-17 moves (optimal 12-17) give the same length with the
+two-phase solver, the optimal solver and both combined modes (`improve` 24 + 24 threads,
+`passes` 8 + 8); edge_hard and the corner 6-flip give 21 and 20, as each solver alone. The
+tests (`tests/combined.rs`, small tiers) compare the combined lengths with both solvers' on
+scrambles of up to 15 moves with even and uneven thread splits, check the bounds under time
+limits, and solve with a lower bound given from outside, also raised during the search.
+
 ## Two-phase solving (time limit)
 
 Mean best length, 40 random positions (48 threads) / 20 (1 thread):

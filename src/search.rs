@@ -13,7 +13,7 @@ use crate::cube::*;
 use crate::fast::*;
 use crate::geometry::{transpose, Mat, IDENTITY};
 use crate::notation::*;
-use crate::progress::{rate, with_heartbeat, Bound, Watch};
+use crate::progress::{rate, tasks, with_heartbeat, Bound, Watch};
 use crate::prune::decode;
 use crate::tables::*;
 use rayon::prelude::*;
@@ -1893,11 +1893,12 @@ fn solve_n<I: AeIndex, const N: usize>(
             let n = prev_nodes.unwrap_or(0);
             let dt = start.elapsed().as_secs_f64() - it_t0;
             p.line(format_args!(
-                "{pass_name}depth {depth} {} in {dt:.3} s: {:.3e} nodes ({}, {n_tasks} tasks); \
-                 best {}, lower bound {lb_now}",
+                "{pass_name}depth {depth} {} in {dt:.3} s: {:.3e} nodes ({}, {}); best {}, \
+                 lower bound {lb_now}",
                 if complete { "done" } else { "stopped" },
                 n as f64,
                 rate(n, dt),
+                tasks(n_tasks),
                 length_text(sh.best_len.load(Ordering::Relaxed)),
             ));
         }
