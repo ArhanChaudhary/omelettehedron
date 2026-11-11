@@ -591,7 +591,7 @@ impl<'g, G: Graph> Bfs<'g, G> {
             t0,
             stop: None,
         };
-        let tab = s.tab();
+        let tab = s.raw.as_atomic();
         let nt = targets
             .iter()
             .filter(|&&t| set_if_empty(tab, t, code))
@@ -599,12 +599,6 @@ impl<'g, G: Graph> Bfs<'g, G> {
         s.hist.push(nt);
         s.done = nt;
         s
-    }
-
-    fn tab(&self) -> &[AtomicU64] {
-        // SAFETY: AtomicU64 has the same size and alignment as u64, and while the returned
-        // slice borrows `self`, the words are only accessed through it
-        unsafe { std::slice::from_raw_parts(self.raw.as_ptr().cast::<AtomicU64>(), self.raw.len()) }
     }
 
     /// Give up when `flag` is set (by another thread, e.g. a memory guard): the level running
@@ -630,11 +624,11 @@ impl<'g, G: Graph> Bfs<'g, G> {
     /// hold `cur` too (mod-3 distances): a forward step expands them for nothing, a backward
     /// step cannot meet them.
     pub fn level(&mut self, cur: u8, next: u8) -> u64 {
-        let tab = self.tab();
         let (g, n) = (self.g, self.n);
         let frontier = self.hist.last().copied().unwrap_or(0);
         let fwd = frontier.saturating_mul(G::MOVES as u64)
             < self.unvisited().saturating_mul(FORWARD_RATIO);
+        let tab = self.raw.as_atomic();
         let stop = self.stop;
         let newc: u64 = (0..n.div_ceil(CH))
             .into_par_iter()
@@ -678,7 +672,7 @@ impl<'g, G: Graph> Bfs<'g, G> {
     /// last level), and a BFS restricted to the entries it does not reach (meant to be few)
     /// counts the rest.
     pub fn count_rest(&mut self, cur: u8) {
-        let tab = self.tab();
+        let tab = self.raw.as_atomic();
         let (g, n) = (self.g, self.n);
         let (cnt, mut rest) = (0..n.div_ceil(CH))
             .into_par_iter()
