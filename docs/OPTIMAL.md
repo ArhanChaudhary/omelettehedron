@@ -275,6 +275,16 @@ centres, which no other table of the tiers combines with the edges. On the corne
 adds nothing (its edges and centres are solved: AE is 0 at the root on both sides; iterations
 to 16 within 0.4% of v0's nodes), so that proof stays as in v0.
 
+**Joint corner/B-centre/edge-triple table (`neg/optimal-cbe`, not merged).** The two-phase
+CBE table (7.0 GB, distance to `H_A` as a saturating code: at most 6, 7, 8, at least 9) for all
+four A-faces' triples, on the position and on its `SWAP_AB` conjugate, as a second stage (a
+child that passes the exact tables is checked against it when it has fewer than 9 moves left),
+in a `large` tier of 10.4 GB. Same lengths; on top of medium + AE: 1,162,092 -> 1,161,858 nodes
+on the 15-move set (0.9998x), 147,723,722 -> 144,410,408 on the 17-move set (0.978x), with
+0.0002 CBE lookups per node. With bounds around 11 hardly any node has fewer than 9 moves left,
+so the table, which halved the two-phase solver's phase-1 tree near its leaves, prunes little
+here: 2% fewer nodes for 7 GB more.
+
 ## Missing (v0)
 
 * Timings: the machine was busy with long two-phase proofs, so only node counts are measured.

@@ -27,6 +27,7 @@ scrambles / 1 thread, 17-move scrambles).
 | <a id="ref-neg-bcbe"></a>`neg/bcbe` | 2026-11-10 | Joint corner/B-centre/edge-triple table also on the class-B side: neutral (optimal 1.02x / 1.00x) |
 | <a id="ref-neg-childorder2"></a>`neg/childorder2` | 2026-11-10 | Children visited in order of their smallest exact bound: neutral (optimal 1.01x / 1.00x; 48T first solution 1.04x) |
 | <a id="ref-neg-probe"></a>`neg/probe` | 2026-11-10 | Greedy depth-first probe (20000 nodes, children by bound) for a quick first solution before the iterations: it practically never finds a phase-1 path, and only delays the iterations (48T first solution 1.26x, positions solved after 0.01 s 31 -> 26) |
+| <a id="ref-neg-optimal-cbe"></a>`neg/optimal-cbe` | 2026-11-11 | Optimal solver: the two-phase joint corner/B-centre/edge-triple table on both sides as a saturating second stage (`large` tier, +7 GB): 0.978x nodes on the 17-move set (0.9998x on the 15-move set) on top of medium + A-centre/edge bound; hardly any node has fewer than 9 moves left, where its codes can prune (0.0002 lookups per node). Not worth 7 GB |
 
 ## Archived experiments
 
