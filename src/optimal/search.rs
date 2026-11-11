@@ -363,9 +363,10 @@ impl<B: Bounds> Shared<'_, B> {
             ev.sel[i % N_MOVES] = i as u8;
             ev.mx[i % N_MOVES] = 0;
         }
-        for &k in B::ORDER.iter().take(B::K) {
+        let order = &B::ORDER[..B::K.min(B::ORDER.len())];
+        // the first stage's indices, all prefetched before any is read
+        if let Some(&k) = order.first() {
             let k = k % MAX_K;
-            ctr.lookups += alive as u64;
             let tab = self.b.table(k);
             for j in 0..alive {
                 let u = usize::from(ev.sel[j % N_MOVES]) % N_MOVES;
@@ -373,6 +374,15 @@ impl<B: Bounds> Shared<'_, B> {
                 ev.idx[u][k] = ix;
                 prefetch_at(&tab.data, ix >> 5);
             }
+        }
+        for (s, &k) in order.iter().enumerate() {
+            let k = k % MAX_K;
+            ctr.lookups += alive as u64;
+            let tab = self.b.table(k);
+            // A child that passes this stage gets its index for the next stage at once, and
+            // its entry prefetched: the miss overlaps this stage's remaining reads and index
+            // computations, not only the next stage's.
+            let nk = order.get(s + 1).map(|&x| x % MAX_K);
             let mut next = 0;
             for j in 0..alive {
                 let i = ev.sel[j % N_MOVES];
@@ -381,7 +391,13 @@ impl<B: Bounds> Shared<'_, B> {
                 ev.hs[u][k] = v;
                 ev.mx[u] = ev.mx[u].max(v);
                 ev.sel[next % N_MOVES] = i;
-                next += usize::from(self.prune_stats || usize::from(v) <= budget);
+                let keep = self.prune_stats || usize::from(v) <= budget;
+                if let (true, Some(nk)) = (keep, nk) {
+                    let ix = self.b.index(nk, &ev.ys[u]);
+                    ev.idx[u][nk] = ix;
+                    prefetch_at(&self.b.table(nk).data, ix >> 5);
+                }
+                next += usize::from(keep);
             }
             alive = next;
         }
