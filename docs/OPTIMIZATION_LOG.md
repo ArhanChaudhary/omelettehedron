@@ -18,8 +18,8 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | Cache-resident coordinates (label vectors, pshufb, mask ranks) | `opt/fastcoord` | +35% / +42% nodes/s; 1T first solution 0.71x | yes |
 | Shallow parallel task splitting | `opt/split` | 48T first solution 0.50x (51 -> 25 ms) | yes |
 | Joint corner x B-centre x edge-triple table (large tier) | `opt/cbe` | 2.05x fewer nodes; first solution 0.75x / 0.65x | yes |
-| Class-B bound against the best solution (from egg's two-sided bounds) | `opt/classb` | optimal mode 0.29x (48T) / 0.67x (1T) time | yes |
-| Task ordering by previous-iteration statistics (egg's job order) | `opt/order` | 5 s mean length -0.225 (48T); optimal 1T 0.69x | yes |
+| Class-B bound against the best solution | `opt/classb` | optimal mode 0.29x (48T) / 0.67x (1T) time | yes |
+| Task ordering by previous-iteration statistics | `opt/order` | 5 s mean length -0.225 (48T); optimal 1T 0.69x | yes |
 | Staged child evaluation (earlier AE prefetch, AE from 6 left, CBE before CB) | `opt/stages` | +10% / +14% nodes/s; optimal 0.89x / 0.88x | yes |
 | Memoized split tree, per-node statistics, adaptive task count | `opt/split2` | 48T first solution 0.51x (17.8 -> 9.1 ms) | yes |
 | Class-B lookups issued with the CB/CBE stages | `opt/bpath` | +6% / +4% nodes/s; optimal 0.95x | yes |
@@ -28,7 +28,7 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | Direct distance-to-solved bound (edges 12!/2 + corners), from a competing solver | `neg/direct` | no node pruned that the existing bounds keep; optimal 1.10x / 1.12x time | no |
 | Joint table also on the class-B side | `neg/bcbe` | neutral (optimal 1.02x / 1.00x) | no |
 | Children visited in order of smallest bound | `neg/childorder2` | neutral (optimal 1.01x / 1.00x; 48T first solution 1.04x) | no |
-| Lane-interleaved search (egg's lanes) | `neg/lanes` | slower (search is compute-bound) | no |
+| Lane-interleaved search (several search stacks per thread) | `neg/lanes` | slower (search is compute-bound) | no |
 | Sibling pruning in the AE stage | `neg/sibling` | slower (exposes a second DRAM latency) | no |
 | Optimality proven one iteration early, and at once on a solution of length depth + 1 | `opt/finalvar2` | random positions 419 -> 92 s, 481 -> 95 s, 39 -> 7.6 s (48T); optimal 0.61x / 0.78x | yes |
 | Cross-check of the early proof (`FTO_FULL_PROOF`, `scripts/check-optimal.sh`) | `test/proofcheck` | all proven lengths agree on ten 19-move scrambles and a random position | yes |
@@ -37,7 +37,7 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | Sibling pipeline in the search (expand / stage2 / finish) | `opt/micro3` | 1.34x nodes/s (48T and 1T); optimal 0.74x / 0.77x; first solution 0.88x / 0.79x | yes |
 | Target-length passes in optimal mode (default with one thread) | `opt/target2` | optimal 1T 0.39x, 48T 0.98x | yes |
 | Optional 1 GiB pages for large tables (`FTO_HUGE1G=1`) | `opt/huge1g` | A-centre/edge table on a 1 GiB page: optimal 0.96x / 0.97x, nodes/s 1.01x / 1.03x (opt-in) | yes |
-| Faster table generation (egg-solver's techniques) | `opt/gen` | large tier 121 -> 30 s and peak 14.9 -> 8.1 GB; medium 16.0 -> 6.6 s (48T); tables byte-identical | yes |
+| Faster table generation (direction-switching BFS, prefetched writes) | `opt/gen` | large tier 121 -> 30 s and peak 14.9 -> 8.1 GB; medium 16.0 -> 6.6 s (48T); tables byte-identical | yes |
 | Start-up move and symmetry tables from label masks (6-bit compress/expand tables, `MaskPerm`) | `opt/startup` | start-up (2-move solve) 1T 2.66 -> 1.38 s large, 1.69 -> 0.41 s small; 48T 0.29 -> 0.26 s; WebAssembly table load (1 thread, Bun) 2.08 -> 0.54 s; search unchanged (nodes/s 1.01x / 1.01x, optimal 1.00x / 0.99x) | yes |
 | CB symmetry index held in `FastTables` (no `OnceLock` read per child) | `opt/cbref` | WebAssembly 8 threads (Bun) 33.1 -> 36.7 M nodes/s (1.11x), 5 of 6 positions solved within 5 s instead of 4; native nodes/s 1.00x (48T) / 1.02x (1T) | yes |
 | Both variants in one traversal (a node alive in both is evaluated once) | `opt/merged` | optimal 0.69x / 0.77x time (slices 0.85x / 0.67x; random positions 0.83x / 0.94x / 0.94x); time-limited nodes/s 0.93x / 0.94x, best after 5 s +0.09 at 48T | yes |

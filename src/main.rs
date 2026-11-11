@@ -32,6 +32,8 @@ use omelettehedron::cube::{Cube, MoveSet};
 use omelettehedron::notation::{
     format_moves, invert_moves, parse_moves, scramble_to_cube, solves_pure, Frame,
 };
+use omelettehedron::optimal::search::{solve as opt_solve, Limits as OptLimits, Stop};
+use omelettehedron::optimal::tables::{OptTables, OptTier};
 use omelettehedron::search::{solve, Limits, Report};
 use omelettehedron::tables::{table_dir, AeIndex, AeRelabel, AeSym, Tables, Tier};
 use std::io::BufRead;
@@ -44,7 +46,7 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 #[command(
     name = "omelettehedron",
     version,
-    about = "Two-phase solver for the face-turning octahedron (FTO)"
+    about = "Two-phase and optimal solvers for the face-turning octahedron (FTO)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -168,6 +170,111 @@ enum Cmd {
         json: Option<PathBuf>,
         #[command(flatten)]
         tab: TableArgs,
+    },
+    /// The optimal solver: single-phase IDA* straight to the solved state, with its own tables
+    /// (`opt-*.prun`); separate from the two-phase solver of `solve`, `gen` and `bench`
+    Optimal {
+        #[command(subcommand)]
+        cmd: OptCmd,
+    },
+}
+
+/// Table options of the optimal solver.
+#[derive(clap::Args, Clone)]
+struct OptTableArgs {
+    /// Table size (required; there is no default): small (~65 MB) or medium (~1.7 GB, fewer
+    /// nodes)
+    #[arg(long, value_enum)]
+    tier: OptTier,
+    /// Directory for the tables (default: $FTO_TABLES or ./tables)
+    #[allow(clippy::doc_markdown)] // shown verbatim by --help
+    #[arg(long)]
+    tables: Option<PathBuf>,
+    /// Number of worker threads (default: all cores)
+    #[arg(short = 'j', long)]
+    threads: Option<usize>,
+    /// Print progress to stderr (the bounds of the start position and every iteration)
+    #[arg(short, long)]
+    verbose: bool,
+    /// Generate missing tables even if the disk or memory check says they do not fit
+    #[arg(long)]
+    force: bool,
+}
+
+/// Stopping rules of the optimal solver (without any: the first optimal solution).
+#[derive(clap::Args, Clone)]
+struct OptStopArgs {
+    /// Print up to this many solutions of the optimal length (all of them if fewer)
+    #[arg(short = 'n', long)]
+    max_solutions: Option<u64>,
+    /// Stop after this many seconds and report the lower bound proven so far
+    #[arg(short = 't', long)]
+    time: Option<f64>,
+    /// Give up if the optimum is longer than this many moves
+    #[arg(short = 'l', long)]
+    max_length: Option<usize>,
+}
+
+impl OptStopArgs {
+    fn limits(&self) -> Result<OptLimits, Error> {
+        Ok(OptLimits {
+            max_solutions: self.max_solutions,
+            time: self
+                .time
+                .map(std::time::Duration::try_from_secs_f64)
+                .transpose()
+                .map_err(|e| format!("--time: {e}"))?,
+            max_length: self.max_length,
+        })
+    }
+}
+
+#[derive(Subcommand)]
+enum OptCmd {
+    /// Solve scrambles given as arguments, or one per line on stdin, optimally
+    Solve {
+        /// Scramble in FTO notation (as for the two-phase `solve`)
+        scramble: Vec<String>,
+        #[command(flatten)]
+        stop: OptStopArgs,
+        /// Solve this many seeded random positions instead of reading scrambles
+        #[arg(long)]
+        random: Option<usize>,
+        /// Seed of the random positions (`--random`)
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Each given sequence is a solution: solve the position it solves (the sequence
+        /// inverted, applied to the solved puzzle) instead of the position it makes
+        #[arg(long)]
+        inverse: bool,
+        #[command(flatten)]
+        tab: OptTableArgs,
+    },
+    /// Generate (or verify) the tables of a tier
+    Gen {
+        #[command(flatten)]
+        tab: OptTableArgs,
+    },
+    /// Benchmark: solve seeded positions optimally; prints each position's optimal length,
+    /// nodes and time, then a summary
+    Bench {
+        /// number of positions
+        #[arg(short = 'N', long, default_value_t = 10)]
+        scrambles: usize,
+        /// Seed of the scrambles or random positions
+        #[arg(long, default_value_t = 2026)]
+        seed: u64,
+        /// seeded random-move scrambles of this many face turns (the two-phase `bench
+        /// --scramble-len` sets); without it, random positions (slow)
+        #[arg(long)]
+        scramble_len: Option<usize>,
+        #[command(flatten)]
+        stop: OptStopArgs,
+        /// write the full results as JSON to this file
+        #[arg(long)]
+        json: Option<PathBuf>,
+        #[command(flatten)]
+        tab: OptTableArgs,
     },
 }
 
@@ -294,6 +401,192 @@ macro_rules! dispatch {
             }
         }
     }};
+}
+
+/// The positions to solve: `--random` positions, or the given scrambles (or stdin), inverted
+/// with `--inverse`.
+fn read_positions(
+    scramble: &[String],
+    random: Option<usize>,
+    seed: u64,
+    inverse: bool,
+) -> Result<Vec<(Cube, Frame, String)>, Error> {
+    if let Some(n) = random {
+        return Ok(bench::random_positions(n, seed)
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| {
+                (
+                    c,
+                    Frame::identity(),
+                    format!("random position {i} (seed {seed})"),
+                )
+            })
+            .collect());
+    }
+    let mut v = vec![];
+    for s in read_scrambles(scramble) {
+        let m = parse_moves(&s)?;
+        if inverse {
+            let m = invert_moves(&m);
+            let (c, f) = scramble_to_cube(&m);
+            v.push((c, f, format_moves(&m)));
+        } else {
+            let (c, f) = scramble_to_cube(&m);
+            v.push((c, f, s));
+        }
+    }
+    if v.is_empty() {
+        return Err("no scramble given".into());
+    }
+    Ok(v)
+}
+
+/// Load (generating if needed) the optimal solver's tables.
+fn load_opt(tab: &OptTableArgs) -> Result<OptTables, Error> {
+    let dir = table_dir(tab.tables.as_deref());
+    omelettehedron::preflight::set_force(tab.force);
+    OptTables::load(&dir, tab.tier, tab.verbose).map_err(|e| table_error(&dir, &e))
+}
+
+/// Evaluate `$body` with `$b` bound to the lower bounds of the tables' tier.
+macro_rules! opt_bounds {
+    ($t:expr, |$b:ident| $body:expr) => {{
+        let missing = || -> Error { "the loaded tables are not the tier's".into() };
+        match $t.tier {
+            OptTier::Small => {
+                let $b = $t.small().ok_or_else(missing)?;
+                $body
+            }
+            OptTier::Medium => {
+                let $b = $t.medium().ok_or_else(missing)?;
+                $body
+            }
+        }
+    }};
+}
+
+fn run_optimal(cmd: OptCmd) -> Result<(), Error> {
+    match cmd {
+        OptCmd::Solve {
+            scramble,
+            stop,
+            random,
+            seed,
+            inverse,
+            tab,
+        } => {
+            let limits = stop.limits()?;
+            let positions = read_positions(&scramble, random, seed, inverse)?;
+            let p = pool(tab.threads)?;
+            p.install(|| {
+                let t = load_opt(&tab)?;
+                opt_bounds!(t, |b| {
+                    for (cube, frame, label) in &positions {
+                        if positions.len() > 1 || tab.verbose {
+                            println!("# {label}");
+                        }
+                        let o = opt_solve(&b, *cube, *frame, &limits, tab.verbose);
+                        for s in &o.solutions {
+                            println!("{}", format_moves(s));
+                        }
+                        match o.stop {
+                            Stop::Solved => {}
+                            Stop::Time => println!(
+                                "no solution found (time limit): none has fewer than {} moves",
+                                o.lower_bound
+                            ),
+                            Stop::MaxLength => println!(
+                                "no solution of at most {} moves",
+                                o.lower_bound.saturating_sub(1)
+                            ),
+                            Stop::BadTables => {
+                                return Err("the tables are not distance tables for this \
+                                            position (delete them to regenerate)"
+                                    .into());
+                            }
+                        }
+                        if tab.verbose {
+                            eprintln!(
+                                "optimal solver: {} in {:.3}s, {} solution(s), {} nodes",
+                                o.length.map_or_else(
+                                    || format!("no solution, lower bound {}", o.lower_bound),
+                                    |l| format!("length {l} (optimal)")
+                                ),
+                                o.elapsed,
+                                o.solutions.len(),
+                                o.nodes
+                            );
+                            if let (Ok(scr), Some(sol)) = (parse_moves(label), o.solutions.first())
+                            {
+                                eprintln!(
+                                    "pure FTO (every centre unique): {}",
+                                    if solves_pure(&scr, sol) {
+                                        "also solved"
+                                    } else {
+                                        "not solved (centres of a colour exchanged)"
+                                    }
+                                );
+                            }
+                        }
+                    }
+                    Ok(())
+                })
+            })
+        }
+        OptCmd::Gen { tab } => {
+            let p = pool(tab.threads)?;
+            let mut tab = tab;
+            tab.verbose = true;
+            p.install(|| {
+                let t = load_opt(&tab)?;
+                eprintln!(
+                    "optimal solver, tier {}: {:.1} MB of tables",
+                    t.tier.name(),
+                    t.bytes() as f64 / 1e6
+                );
+                eprintln!("corners x centres depth histogram {:?}", t.cc.hist);
+                if let Some(e) = &t.edges {
+                    eprintln!("edge permutation depth histogram {:?}", e.hist);
+                }
+                if let Some((_, ce)) = &t.ce {
+                    eprintln!("corners x edges depth histogram {:?}", ce.hist);
+                }
+                Ok(())
+            })
+        }
+        OptCmd::Bench {
+            scrambles,
+            seed,
+            scramble_len,
+            stop,
+            json,
+            tab,
+        } => {
+            let limits = stop.limits()?;
+            let p = pool(tab.threads)?;
+            p.install(|| {
+                let t = load_opt(&tab)?;
+                opt_bounds!(t, |b| {
+                    let s = omelettehedron::optimal::bench::run(
+                        &b,
+                        t.tier.name(),
+                        scrambles,
+                        seed,
+                        scramble_len,
+                        &limits,
+                        tab.verbose,
+                    );
+                    omelettehedron::optimal::bench::print_summary(&s);
+                    if let Some(path) = &json {
+                        std::fs::write(path, serde_json::to_string_pretty(&s)?)
+                            .map_err(|e| format!("writing {}: {e}", path.display()))?;
+                    }
+                    Ok(())
+                })
+            })
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -424,5 +717,6 @@ fn run(cli: Cli) -> Result<(), Error> {
                 Ok(())
             })
         }
+        Cmd::Optimal { cmd } => run_optimal(cmd),
     }
 }
