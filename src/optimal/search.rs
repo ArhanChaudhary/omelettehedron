@@ -57,6 +57,8 @@ pub struct Iteration {
     pub depth: usize,
     /// nodes generated in this iteration
     pub nodes: u64,
+    /// table lookups in this iteration
+    pub lookups: u64,
     pub tasks: usize,
     /// time since the start, at its end
     pub elapsed: f64,
@@ -75,6 +77,8 @@ pub struct Outcome {
     pub stop: Stop,
     /// nodes generated (children of expanded nodes)
     pub nodes: u64,
+    /// table lookups (each a read of one table entry, after computing its index)
+    pub lookups: u64,
     pub elapsed: f64,
     pub iterations: Vec<Iteration>,
     /// how many of the 48 symmetries fix the position (1: only the identity)
@@ -158,6 +162,7 @@ fn key(path: &[u8]) -> u32 {
 #[derive(Default)]
 struct Counter {
     nodes: u64,
+    lookups: u64,
     /// `Shared::stop` as last read
     stop: bool,
 }
@@ -196,6 +201,7 @@ struct Shared<'a, B: Bounds> {
     start: Instant,
     stop: AtomicBool,
     nodes: AtomicU64,
+    lookups: AtomicU64,
     sols: Mutex<Vec<Vec<usize>>>,
     /// symmetric start: the symmetries (other than the identity) that fix the root, if the
     /// task levels are filtered (see [`Shared::dedup`]); empty otherwise
@@ -263,6 +269,7 @@ impl<B: Bounds> Shared<'_, B> {
             out.push(c);
         }
         ctr.nodes += out.len() as u64;
+        ctr.lookups += (out.len() * B::K) as u64;
         let mut idx = [[0usize; MAX_K]; N_MOVES];
         for (i, c) in out.iter().enumerate() {
             for k in 0..B::K {
@@ -376,6 +383,7 @@ impl<B: Bounds> Shared<'_, B> {
             return;
         }
         // all indices and prefetches first, then the values
+        ctr.lookups += (n * B::K) as u64;
         for i in 0..n {
             for k in 0..B::K {
                 let ix = self.b.index(k, &fr.ys[i % N_MOVES]);
@@ -432,6 +440,7 @@ pub fn solve<B: Bounds>(
         lower_bound: 0,
         stop: Stop::BadTables,
         nodes: 0,
+        lookups: 0,
         elapsed: 0.0,
         iterations: vec![],
         symmetries: 1,
@@ -457,6 +466,7 @@ pub fn solve<B: Bounds>(
         start,
         stop: AtomicBool::new(false),
         nodes: AtomicU64::new(0),
+        lookups: AtomicU64::new(0),
         sols: Mutex::new(vec![]),
         symmetries: if limits.max_solutions.is_none() && sym_start() {
             root_syms.clone()
@@ -497,6 +507,7 @@ pub fn solve<B: Bounds>(
             break Stop::MaxLength;
         }
         let it_start = sh.nodes.load(Ordering::Relaxed);
+        let it_lookups = sh.lookups.load(Ordering::Relaxed);
         let predicted = prev_nodes.map_or(0, |n| n.saturating_mul(13));
         let inline = threads == 1 || predicted < SERIAL_NODES;
         let want = if inline && threads > 1 {
@@ -508,6 +519,7 @@ pub fn solve<B: Bounds>(
         let mut ctr = Counter::default();
         let mut tasks = sh.tasks(&root, depth, want, &mut ctr);
         sh.nodes.fetch_add(ctr.nodes, Ordering::Relaxed);
+        sh.lookups.fetch_add(ctr.lookups, Ordering::Relaxed);
         // order by the previous iteration's statistic of the longest known prefix (stable:
         // ties keep the canonical order)
         if !stats.is_empty() {
@@ -535,7 +547,7 @@ pub fn solve<B: Bounds>(
                 let t = &tasks[i];
                 path.clear();
                 path.extend_from_slice(&t.path[..usize::from(t.len)]);
-                let before = ctr.nodes;
+                let (before, lookups_before) = (ctr.nodes, ctr.lookups);
                 ctr.stop = false;
                 let mut stat = 0f32;
                 sh.dfs(
@@ -550,6 +562,8 @@ pub fn solve<B: Bounds>(
                 );
                 task_stats[i].store(u64::from(stat.to_bits()), Ordering::Relaxed);
                 sh.nodes.fetch_add(ctr.nodes - before, Ordering::Relaxed);
+                sh.lookups
+                    .fetch_add(ctr.lookups - lookups_before, Ordering::Relaxed);
             }
         };
         if inline {
@@ -574,16 +588,19 @@ pub fn solve<B: Bounds>(
             })
             .collect();
         let elapsed = start.elapsed().as_secs_f64();
+        let it_lookups = sh.lookups.load(Ordering::Relaxed) - it_lookups;
         out.iterations.push(Iteration {
             depth,
             nodes: it_nodes,
+            lookups: it_lookups,
             tasks: tasks.len(),
             elapsed,
         });
         let n_sols = sh.sols.lock().unwrap_or_else(PoisonError::into_inner).len();
         if verbose {
             eprintln!(
-                "  depth {depth:>2}: {it_nodes:>14} nodes, {:>5} tasks, {elapsed:>9.3} s{}",
+                "  depth {depth:>2}: {it_nodes:>14} nodes, {it_lookups:>14} lookups, {:>5} tasks, \
+                 {elapsed:>9.3} s{}",
                 tasks.len(),
                 if n_sols > 0 {
                     format!(", {n_sols} solution(s)")
@@ -612,6 +629,7 @@ pub fn solve<B: Bounds>(
         .map(|s| solution_to_physical(frame, s, false))
         .collect();
     out.nodes = sh.nodes.load(Ordering::Relaxed);
+    out.lookups = sh.lookups.load(Ordering::Relaxed);
     out.elapsed = start.elapsed().as_secs_f64();
     out
 }

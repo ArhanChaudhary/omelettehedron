@@ -9,26 +9,36 @@
 //!
 //! Tables of a tier are listed by [`Bounds`]: a tier is `K` lookups, each an index function
 //! of the position and a table. New tiers (stronger tables) add an implementation.
+//!
+//! Besides its own tables (distances to solved), every tier also reads the two-phase solver's
+//! A-centre/edge table ([`AeBound`]), through that solver's public index, on the position and
+//! on its `SWAP_AB` conjugate: it holds distances to `H_A`, the positions solvable with the
+//! class-A faces, and solved is in `H_A` (and in `H_B`, which the conjugate's distance to
+//! `H_A` measures), so these are lower bounds on the distance to solved as well. They are not
+//! distances to a single state, but each is still an exact BFS distance (mod 3) that changes by
+//! at most one per move, so they are decoded like the others.
 
 use super::coords::*;
 use crate::cube::*;
+use crate::fast::{fast, FastTables};
 use crate::preflight::{check_plan, Planned};
 use crate::prune::{bfs, Graph, Table2};
-use crate::tables::prefetch_at;
+use crate::tables::{ae_targets, build_ae, prefetch_at, AeIndex, AeSym};
 use std::path::{Path, PathBuf};
 
 /// Most lookups per position of any tier (the search's scratch arrays have this many slots).
-pub const MAX_K: usize = 4;
+pub const MAX_K: usize = 8;
 
 /// Table size of the optimal solver (`omelettehedron optimal ... --tier`).
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Serialize, serde::Deserialize,
 )]
 pub enum OptTier {
-    /// ~65 MB: corners x centres (one 4.7 MB table for both centre orbits) and the edge
-    /// permutation (60 MB)
+    /// ~195 MB: corners x centres (one 4.7 MB table for both centre orbits), the edge
+    /// permutation (60 MB) and the two-phase A-centre/edge-triple table (129 MB)
     Small,
-    /// ~1.7 GB: corners x centres and corners x edges (48 symmetries; 64-bit targets only)
+    /// ~3.4 GB: corners x centres, corners x edges (48 symmetries, 2.4 GB) and the two-phase
+    /// A-centre/edge table with chirality (1.03 GB); 64-bit targets only
     Medium,
 }
 
@@ -148,6 +158,52 @@ pub fn build_ce(ix: &CeIndex, verbose: bool) -> Table2 {
     bfs(&g, ix.size(), &[ix.target()], "opt-ce", verbose)
 }
 
+/// The two-phase solver's A-centre/edge table (distance to `H_A`) and its index, read-only:
+/// the triples-only table for the small tier, the one with edge chirality for the medium tier
+/// (the two-phase small and medium tiers' files, shared with that solver).
+pub struct AeBound {
+    pub ix: AeSym,
+    pub tab: Table2,
+    /// the indices of `H_A` (the solved class and its equivalents)
+    targets: Vec<usize>,
+    /// the two-phase coordinates of a position and of its conjugate
+    maps: FcMaps,
+    f: &'static FastTables,
+}
+
+impl AeBound {
+    /// The index for a tier: with edge chirality from the medium tier on.
+    fn index_for(tier: OptTier) -> AeSym {
+        AeSym::new(tier != OptTier::Small)
+    }
+
+    fn new(ix: AeSym, tab: Table2) -> AeBound {
+        AeBound {
+            targets: ae_targets(&ix),
+            ix,
+            tab,
+            maps: FcMaps::new(),
+            f: fast(),
+        }
+    }
+
+    /// Index of the position (`swap == false`: distance to `H_A`) or of its `SWAP_AB`
+    /// conjugate (`swap == true`: the position's distance to `H_B`).
+    #[inline(always)]
+    pub fn index(&self, p: &Pos, swap: bool) -> usize {
+        let x = if swap {
+            self.maps.fc_swap(p)
+        } else {
+            self.maps.fc(p)
+        };
+        self.ix.index_fast(self.f, &x, self.f.a_rank(&x))
+    }
+
+    fn is_target(&self, i: usize) -> bool {
+        self.targets.contains(&i)
+    }
+}
+
 /// All tables of a tier.
 pub struct OptTables {
     pub tier: OptTier,
@@ -159,6 +215,8 @@ pub struct OptTables {
     pub edges: Option<Table2>,
     /// corners x edge permutation (medium tier)
     pub ce: Option<(CeIndex, Table2)>,
+    /// the two-phase A-centre/edge table (every tier)
+    pub ae: AeBound,
 }
 
 /// File names of the tables (all start with `opt-`, apart from the two-phase solver's).
@@ -225,7 +283,10 @@ impl OptTables {
                 (None, Some((ix, t)))
             }
         };
-        Ok(Self::assemble(tier, cc_ix, cc, edges, ce))
+        let ae_ix = AeBound::index_for(tier);
+        let ae_tab = build_ae(&ae_ix, MoveSet::FACE, verbose);
+        let ae = AeBound::new(ae_ix, ae_tab);
+        Ok(Self::assemble(tier, cc_ix, cc, edges, ce, ae))
     }
 
     fn assemble(
@@ -234,6 +295,7 @@ impl OptTables {
         cc: Table2,
         edges: Option<Table2>,
         ce: Option<(CeIndex, Table2)>,
+        ae: AeBound,
     ) -> OptTables {
         let cc_target = cc_ix.targets().first().copied().unwrap_or(0);
         OptTables {
@@ -243,6 +305,7 @@ impl OptTables {
             cc_target,
             edges,
             ce,
+            ae,
         }
     }
 
@@ -265,6 +328,9 @@ impl OptTables {
         let edges_path = dir.join(EDGES_FILE);
         let ce_path = dir.join(CE_FILE);
         let ce_ix = (tier == OptTier::Medium).then(CeIndex::new);
+        let ae_ix = AeBound::index_for(tier);
+        // (the two-phase solver's file of the same table: generated by either solver, shared)
+        let ae_path = dir.join(format!("{}.prun", ae_ix.name()));
         let planned = |path: &PathBuf, entries: usize| {
             let bytes =
                 std::fs::metadata(path).map_or_else(|_| entries.div_ceil(4) as u64, |m| m.len());
@@ -274,7 +340,10 @@ impl OptTables {
                 working_set: 0,
             }
         };
-        let mut plan = vec![planned(&cc_path, cc_size(&cc_ix))];
+        let mut plan = vec![
+            planned(&cc_path, cc_size(&cc_ix)),
+            planned(&ae_path, ae_ix.size()),
+        ];
         match &ce_ix {
             None => plan.push(planned(&edges_path, N_EPERM)),
             Some(ix) => plan.push(planned(&ce_path, ix.size())),
@@ -296,8 +365,12 @@ impl OptTables {
                 (None, Some((ix, t)), ce_path)
             }
         };
-        let t = Self::assemble(tier, cc_ix, cc, edges, ce);
-        t.check_walks(&[&cc_path, &second])?;
+        let ae_tab = load_or_build(&ae_path, ae_ix.size(), verbose, || {
+            build_ae(&ae_ix, MoveSet::FACE, verbose)
+        })?;
+        let ae = AeBound::new(ae_ix, ae_tab);
+        let t = Self::assemble(tier, cc_ix, cc, edges, ce, ae);
+        t.check_walks(&[&second, &cc_path, &ae_path])?;
         Ok(t)
     }
 
@@ -308,6 +381,7 @@ impl OptTables {
             cc: &self.cc,
             cc_target: self.cc_target,
             edges: self.edges.as_ref()?,
+            ae: &self.ae,
         })
     }
 
@@ -321,6 +395,7 @@ impl OptTables {
             ce_ix,
             ce,
             ce_target: ce_ix.target(),
+            ae: &self.ae,
         })
     }
 
@@ -330,20 +405,27 @@ impl OptTables {
     ///
     /// # Errors
     ///
-    /// If a walk does not reach the solved entry (`paths`: the corner x centre file and the
-    /// tier's other file, for the message).
+    /// If a walk does not reach the solved entry (`paths`: the tier's own file, the corner x
+    /// centre file and the A-centre/edge file, for the message).
     fn check_walks(&self, paths: &[&Path]) -> std::io::Result<()> {
         use rand::SeedableRng;
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0x0071_ab1e);
         let positions: Vec<Pos> = (0..8).map(|_| Pos::of(&Cube::random(&mut rng))).collect();
-        // (lookup 0 is the tier's own table, 1 and 2 share the corner x centre table)
+        // (lookup 0 is the tier's own table, 1 and 2 share the corner x centre table, 3 and 4
+        // the A-centre/edge table)
         let bad = |k: usize| -> std::io::Error {
+            let file = paths[match k {
+                0 => 0,
+                1 | 2 => 1,
+                _ => 2,
+            }
+            .min(paths.len().saturating_sub(1))];
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
                     "{}: not a distance table for this version's layout (made by a different \
                      version?); delete it to regenerate",
-                    paths[usize::from(k == 0)].display()
+                    file.display()
                 ),
             )
         };
@@ -362,6 +444,7 @@ impl OptTables {
         self.cc.bytes()
             + self.edges.as_ref().map_or(0, Table2::bytes)
             + self.ce.as_ref().map_or(0, |(_, t)| t.bytes())
+            + self.ae.tab.bytes()
     }
 }
 
@@ -377,45 +460,56 @@ fn check_walks_of<B: Bounds>(b: &B, ps: &[Pos]) -> Result<(), usize> {
     Ok(())
 }
 
-/// The small tier: edges, corners x B-centres, corners x A-centres.
+/// The small tier: edges, corners x B-centres, corners x A-centres, and the A-centre/edge
+/// table on the position and on its `SWAP_AB` conjugate.
 pub struct SmallBounds<'a> {
     cc_ix: &'a CcIndex,
     cc: &'a Table2,
     cc_target: usize,
     edges: &'a Table2,
+    ae: &'a AeBound,
 }
 
 impl Bounds for SmallBounds<'_> {
-    const K: usize = 3;
+    const K: usize = 5;
     #[inline(always)]
     fn index(&self, k: usize, p: &Pos) -> usize {
         match k {
             0 => eperm_rank(&p.ep) as usize,
             1 => self.cc_ix.index_b(p.c, &p.xb),
-            _ => self.cc_ix.index_a(p.c, &p.xa),
+            2 => self.cc_ix.index_a(p.c, &p.xa),
+            3 => self.ae.index(p, false),
+            _ => self.ae.index(p, true),
         }
     }
     #[inline(always)]
     fn table(&self, k: usize) -> &Table2 {
-        if k == 0 {
-            self.edges
-        } else {
-            self.cc
+        match k {
+            0 => self.edges,
+            1 | 2 => self.cc,
+            _ => &self.ae.tab,
         }
     }
     fn is_target(&self, k: usize, i: usize) -> bool {
-        if k == 0 {
-            i == 0
-        } else {
-            i == self.cc_target
+        match k {
+            0 => i == 0,
+            1 | 2 => i == self.cc_target,
+            _ => self.ae.is_target(i),
         }
     }
     fn name(&self, k: usize) -> &'static str {
-        ["edges", "corners+B", "corners+A"][k.min(2)]
+        [
+            "edges",
+            "corners+B",
+            "corners+A",
+            "AE (H_A)",
+            "AE of SWAP_AB (H_B)",
+        ][k.min(4)]
     }
 }
 
-/// The medium tier: corners x edges, corners x B-centres, corners x A-centres.
+/// The medium tier: corners x edges, corners x B-centres, corners x A-centres, and the
+/// A-centre/edge table on the position and on its `SWAP_AB` conjugate.
 pub struct MediumBounds<'a> {
     cc_ix: &'a CcIndex,
     cc: &'a Table2,
@@ -423,35 +517,44 @@ pub struct MediumBounds<'a> {
     ce_ix: &'a CeIndex,
     ce: &'a Table2,
     ce_target: usize,
+    ae: &'a AeBound,
 }
 
 impl Bounds for MediumBounds<'_> {
-    const K: usize = 3;
+    const K: usize = 5;
     #[inline(always)]
     fn index(&self, k: usize, p: &Pos) -> usize {
         match k {
             0 => self.ce_ix.index(p.c, &p.ep),
             1 => self.cc_ix.index_b(p.c, &p.xb),
-            _ => self.cc_ix.index_a(p.c, &p.xa),
+            2 => self.cc_ix.index_a(p.c, &p.xa),
+            3 => self.ae.index(p, false),
+            _ => self.ae.index(p, true),
         }
     }
     #[inline(always)]
     fn table(&self, k: usize) -> &Table2 {
-        if k == 0 {
-            self.ce
-        } else {
-            self.cc
+        match k {
+            0 => self.ce,
+            1 | 2 => self.cc,
+            _ => &self.ae.tab,
         }
     }
     fn is_target(&self, k: usize, i: usize) -> bool {
-        if k == 0 {
-            i == self.ce_target
-        } else {
-            i == self.cc_target
+        match k {
+            0 => i == self.ce_target,
+            1 | 2 => i == self.cc_target,
+            _ => self.ae.is_target(i),
         }
     }
     fn name(&self, k: usize) -> &'static str {
-        ["corners+edges", "corners+B", "corners+A"][k.min(2)]
+        [
+            "corners+edges",
+            "corners+B",
+            "corners+A",
+            "AE (H_A)",
+            "AE of SWAP_AB (H_B)",
+        ][k.min(4)]
     }
 }
 
