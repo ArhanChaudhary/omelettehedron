@@ -328,7 +328,7 @@ impl<B: Bounds> Shared<'_, B> {
         for (i, c) in out.iter().enumerate() {
             ev.ys[i % N_MOVES] = c.p;
         }
-        let k = self.bound_children(&mut ev, n, t.h, bound - g - 1, ctr);
+        let k = self.bound_children(&mut ev, n, t.h, bound - g - 1, ctr, false);
         let alive: Vec<Task> = ev.sel[..k]
             .iter()
             .map(|&i| {
@@ -357,22 +357,24 @@ impl<B: Bounds> Shared<'_, B> {
         h: [u8; MAX_K],
         budget: usize,
         ctr: &mut Counter,
+        ready: bool,
     ) -> usize {
         let mut alive = n;
         for i in 0..n {
             ev.sel[i % N_MOVES] = i as u8;
             ev.mx[i % N_MOVES] = 0;
         }
-        for &k in B::ORDER.iter().take(B::K) {
+        if !ready {
+            self.first_stage(ev, n);
+        }
+        let order = &B::ORDER[..B::K.min(B::ORDER.len())];
+        for (s, &k) in order.iter().enumerate() {
             let k = k % MAX_K;
             ctr.lookups += alive as u64;
             let tab = self.b.table(k);
-            for j in 0..alive {
-                let u = usize::from(ev.sel[j % N_MOVES]) % N_MOVES;
-                let ix = self.b.index(k, &ev.ys[u]);
-                ev.idx[u][k] = ix;
-                prefetch_at(&tab.data, ix >> 5);
-            }
+            // (the first stage's indices are computed and prefetched already, the later
+            // stages' as soon as a child passes the stage before)
+            let nk = order.get(s + 1).map(|&x| x % MAX_K);
             let mut next = 0;
             for j in 0..alive {
                 let i = ev.sel[j % N_MOVES];
@@ -381,7 +383,13 @@ impl<B: Bounds> Shared<'_, B> {
                 ev.hs[u][k] = v;
                 ev.mx[u] = ev.mx[u].max(v);
                 ev.sel[next % N_MOVES] = i;
-                next += usize::from(self.prune_stats || usize::from(v) <= budget);
+                let keep = self.prune_stats || usize::from(v) <= budget;
+                if let (true, Some(nk)) = (keep, nk) {
+                    let ix = self.b.index(nk, &ev.ys[u]);
+                    ev.idx[u][nk] = ix;
+                    prefetch_at(&self.b.table(nk).data, ix >> 5);
+                }
+                next += usize::from(keep);
             }
             alive = next;
         }
@@ -402,6 +410,22 @@ impl<B: Bounds> Shared<'_, B> {
             alive = next;
         }
         alive
+    }
+
+    /// The first stage's indices of children `ev.ys[..n]` (in child order), their entries
+    /// prefetched.
+    #[inline(always)]
+    fn first_stage(&self, ev: &mut Eval, n: usize) {
+        let Some(&k) = B::ORDER.first() else {
+            return;
+        };
+        let k = k % MAX_K;
+        let tab = self.b.table(k);
+        for u in 0..n {
+            let ix = self.b.index(k, &ev.ys[u % N_MOVES]);
+            ev.idx[u % N_MOVES][k] = ix;
+            prefetch_at(&tab.data, ix >> 5);
+        }
     }
 
     /// Tasks of an iteration with depth bound `bound`: the root expanded level by level (at
@@ -449,6 +473,28 @@ impl<B: Bounds> Shared<'_, B> {
         tasks.into_iter().filter(|t| seen.insert(key(t))).collect()
     }
 
+    /// Generate the children of `p` (the moves allowed after `last`) into `fr`, and when they
+    /// have moves left after them (`budget > 0`) compute and prefetch their first-stage
+    /// entries. Returns the number of children. Nothing is counted here: a node's children are
+    /// counted when the search enters it ([`Shared::enter`]), so the counts do not depend on
+    /// how early its frame was prepared.
+    #[inline(always)]
+    fn prepare(&self, p: &Pos, last: usize, budget: usize, fr: &mut Eval) -> usize {
+        let mut moves = ALLOWED[last.min(N_MOVES)];
+        let mut n = 0;
+        while moves != 0 {
+            let m = moves.trailing_zeros() as usize;
+            moves &= moves - 1;
+            fr.ys[n % N_MOVES] = self.mt.apply(p, m);
+            fr.ms[n % N_MOVES] = m as u8;
+            n += 1;
+        }
+        if budget > 0 {
+            self.first_stage(fr, n);
+        }
+        n
+    }
+
     /// Depth-first search below a node at depth `g` (its distances `h`, `last` the move that
     /// led to it) with depth bound `bound`. `path` holds the moves from the root.
     fn dfs(
@@ -459,7 +505,7 @@ impl<B: Bounds> Shared<'_, B> {
         bound: usize,
         path: &mut Vec<u8>,
         ctr: &mut Counter,
-        frames: &mut [Eval],
+        frames: &mut [[Eval; 2]],
         stat: &mut f32,
     ) {
         let g = path.len();
@@ -469,24 +515,42 @@ impl<B: Bounds> Shared<'_, B> {
             }
             return;
         }
-        if ctr.stop {
-            return;
-        }
-        // (the caller provides one frame per remaining level)
-        let Some((fr, rest)) = frames.split_first_mut() else {
+        let Some((pair, _)) = frames.split_first_mut() else {
             debug_assert!(false, "out of search frames");
             return;
         };
-        let budget = bound - g - 1;
-        let mut moves = ALLOWED[last.min(N_MOVES)];
-        let mut n = 0;
-        while moves != 0 {
-            let m = moves.trailing_zeros() as usize;
-            moves &= moves - 1;
-            fr.ys[n % N_MOVES] = self.mt.apply(p, m);
-            fr.ms[n % N_MOVES] = m as u8;
-            n += 1;
+        let n = self.prepare(p, last, bound - g - 1, &mut pair[0]);
+        self.enter(n, h, bound, path, ctr, frames, 0, stat);
+    }
+
+    /// The search below a node at depth `g` < `bound` whose `n` children are prepared in
+    /// `frames[0][slot]` ([`Shared::prepare`]). Sibling pipeline: before the search descends
+    /// into a surviving child, the next surviving child's children are generated and their
+    /// first-stage entries prefetched (in the other frame of the level below), so those misses
+    /// overlap the current child's subtree, which near the leaves is a few nodes. The same
+    /// tree in the same order, so the same node counts.
+    fn enter(
+        &self,
+        n: usize,
+        h: [u8; MAX_K],
+        bound: usize,
+        path: &mut Vec<u8>,
+        ctr: &mut Counter,
+        frames: &mut [[Eval; 2]],
+        slot: usize,
+        stat: &mut f32,
+    ) {
+        if ctr.stop {
+            return;
         }
+        let g = path.len();
+        // (the caller provides two frames per remaining level)
+        let Some((pair, rest)) = frames.split_first_mut() else {
+            debug_assert!(false, "out of search frames");
+            return;
+        };
+        let fr = &mut pair[slot & 1];
+        let budget = bound - g - 1;
         self.count(ctr, n);
         ctr.stats.left(budget, n);
         if budget == 0 {
@@ -501,21 +565,50 @@ impl<B: Bounds> Shared<'_, B> {
             }
             return;
         }
-        let kk = self.bound_children(fr, n, h, budget, ctr);
+        let kk = self.bound_children(fr, n, h, budget, ctr, true);
         for j in 0..kk {
             let u = usize::from(fr.sel[j % N_MOVES]) % N_MOVES;
             *stat += STAT_W[usize::from(fr.mx[u]) & 31];
         }
+        if kk == 0 {
+            return;
+        }
+        // the survivors, at depth g + 1 < bound: their children have budget - 1 moves left
+        let child = |j: usize| usize::from(fr.sel[j % N_MOVES]) % N_MOVES;
+        let Some((cpair, _)) = rest.split_first_mut() else {
+            debug_assert!(false, "out of search frames");
+            return;
+        };
+        let i0 = child(0);
+        let mut n_cur = self.prepare(
+            &fr.ys[i0],
+            usize::from(fr.ms[i0]),
+            budget - 1,
+            &mut cpair[0],
+        );
         for j in 0..kk {
-            let i = usize::from(fr.sel[j % N_MOVES]) % N_MOVES;
-            let m = fr.ms[i];
-            path.push(m);
-            let (y, hy) = (fr.ys[i], fr.hs[i]);
-            self.dfs(&y, hy, usize::from(m), bound, path, ctr, rest, stat);
+            let n_next = if j + 1 < kk {
+                let i1 = child(j + 1);
+                let Some((cpair, _)) = rest.split_first_mut() else {
+                    return;
+                };
+                self.prepare(
+                    &fr.ys[i1],
+                    usize::from(fr.ms[i1]),
+                    budget - 1,
+                    &mut cpair[(j + 1) & 1],
+                )
+            } else {
+                0
+            };
+            let i = child(j);
+            path.push(fr.ms[i]);
+            self.enter(n_cur, fr.hs[i], bound, path, ctr, rest, j & 1, stat);
             path.pop();
             if ctr.stop {
                 return;
             }
+            n_cur = n_next;
         }
     }
 }
@@ -644,7 +737,7 @@ pub fn solve<B: Bounds>(
         let next = AtomicUsize::new(0);
         let worker = || {
             let mut path: Vec<u8> = Vec::with_capacity(64);
-            let mut frames = vec![Eval::new(); depth + 1];
+            let mut frames = vec![[Eval::new(), Eval::new()]; depth + 1];
             let mut ctr = Counter::default();
             loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
