@@ -131,6 +131,24 @@ impl OptMoves {
         }
     }
 
+    /// [`OptMoves::apply`] in a search over `N` moves: with the 16 face turns only (`N <=
+    /// N_MOVES`, known when compiling), the face rows directly, so the face metric runs the
+    /// same code as without slice support.
+    #[inline(always)]
+    pub fn apply_n<const N: usize>(&self, p: &Pos, m: usize) -> Pos {
+        if N <= N_MOVES {
+            let m = m & 15;
+            Pos {
+                ep: shuffle(&p.ep, &self.shuf_e[m]),
+                xa: shuffle(&p.xa, &self.shuf_a[m]),
+                xb: shuffle(&p.xb, &self.shuf_b[m]),
+                c: self.corner[p.c as usize & 1023][m],
+            }
+        } else {
+            self.apply(p, m)
+        }
+    }
+
     /// Apply move `m` to the edge permutation only.
     #[inline(always)]
     pub fn apply_ep(&self, ep: &[u8; 16], m: usize) -> [u8; 16] {

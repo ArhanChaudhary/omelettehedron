@@ -325,7 +325,7 @@ impl<B: Bounds, const N: usize> Shared<'_, B, N> {
             let mut c = *t;
             c.path[g % MAX_SPLIT] = m as u8;
             c.len += 1;
-            c.p = self.mt.apply(&t.p, m);
+            c.p = self.mt.apply_n::<N>(&t.p, m);
             out.push(c);
         }
         let n = out.len();
@@ -490,7 +490,7 @@ impl<B: Bounds, const N: usize> Shared<'_, B, N> {
         while moves != 0 {
             let m = moves.trailing_zeros() as usize;
             moves &= moves - 1;
-            fr.ys[n % N] = self.mt.apply(p, m);
+            fr.ys[n % N] = self.mt.apply_n::<N>(p, m);
             fr.ms[n % N] = m as u8;
             n += 1;
         }
