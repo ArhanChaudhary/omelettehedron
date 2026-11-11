@@ -73,14 +73,14 @@ a colour interchangeable), large tier, 48 threads. (A first run took the algorit
 scrambles, i.e. the inverse positions, which in the normal FTO need not have the same length:
 21 / 21 / 21 / 22 there. Those numbers do not apply to the listed positions.)
 
-| position | listed | proven optimum (normal FTO) | proof |
-|---|---|---|---|
-| tri_adj+edge_opp | 23 | 23 | 8,866 s (2.5 h, 1.4e13 nodes) |
-| tri_adj+edge_adj | 23 | 23 | 11,877 s (3.3 h, 1.9e13 nodes) |
-| tri_adj-[Uf_Fu;Db_Bd] | 23 | 23 | 10,942 s (3.0 h, 1.7e13 nodes) |
-| tri_adj+[UB_FD,NL_MR] | 23 | 23 | 8,397 s (2.3 h, 1.3e13 nodes) |
-| edge_hard | 21 | 21 | 74 s |
-| pure_corn_6flip | >= 24 (pure) | 20 | 661 s (`--lower-bound 19`, after an earlier run excluded 18) |
+| position | listed | proven optimum (normal FTO) | proof | optimal solver, large tier |
+|---|---|---|---|---|
+| tri_adj+edge_opp | 23 | 23 | 8,866 s (2.5 h, 1.4e13 nodes) | **23 in 266.5 s** (1.2e11 nodes) |
+| tri_adj+edge_adj | 23 | 23 | 11,877 s (3.3 h, 1.9e13 nodes) | |
+| tri_adj-[Uf_Fu;Db_Bd] | 23 | 23 | 10,942 s (3.0 h, 1.7e13 nodes) | |
+| tri_adj+[UB_FD,NL_MR] | 23 | 23 | 8,397 s (2.3 h, 1.3e13 nodes) | |
+| edge_hard | 21 | 21 | 74 s | 21 in 344.7 s |
+| pure_corn_6flip | >= 24 (pure) | 20 | 661 s (`--lower-bound 19`, after an earlier run excluded 18) | **20 in 0.48 s** |
 
 The corner 6-flip undoes itself, so it is the same position either way. Its normal-FTO optimum is
 20 (no solution of at most 19 moves after 620 s, a 20-move solution at 661 s; verified on the
@@ -105,7 +105,9 @@ complete, no solution, at 152.8 s; a 23-move solution at 266.5 s), against 8,866
 two-phase solver; solution `B D' L R' D L' B U L BL' F' BL D U BR B' R' BR L' B' U' BL D'`
 (exchanges centres of a colour; scramble plus solution leaves each face one colour). It proves
 the corner 6-flip 20 in 0.48 s (9.6e7 nodes), against 626.5 s for the two-phase solver without
-a lower bound. The other three 23-move positions are next.
+a lower bound, and edge_hard 21 in 344.7 s (its corners are solved, so the triple table adds
+little; the two-phase solver: 71-74 s). The other three 23-move positions are next. (Optimal
+solver times on the quiet machine, 48 threads; the two-phase proofs ran on the same machine.)
 
 ## Start-up
 

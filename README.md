@@ -239,7 +239,10 @@ solvers), in `src/optimal/`. It has its own tiers and tables (`opt-*.prun`) and 
 benchmark; see [docs/OPTIMAL.md](docs/OPTIMAL.md). The two-phase solver's optimal mode is
 still faster on most positions (1.7x to 3.5x on 19- to 21-move positions against the large
 tier, more where it finds the optimum early), but the optimal solver's large tier proves the
-corner 6-flip in half a second, against ten minutes for the two-phase solver.
+corner 6-flip in half a second, against ten minutes for the two-phase solver. For the hardest
+positions (deep, symmetric, or with the edges and centres nearly solved), `optimal solve --tier
+large` can prove optimality much faster than the two-phase solver: it proves the 23-move
+tri_adj+edge_opp in 4.5 minutes, against 2.5 hours.
 
 ```sh
 target/release/omelettehedron optimal solve --tier medium "U R' BL F D B' L BR"
