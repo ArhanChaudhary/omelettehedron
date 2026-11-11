@@ -21,7 +21,7 @@
 use super::cbe::{build_cbe, CbeIndex, N_LOOKUPS};
 use super::coords::*;
 use crate::cube::*;
-use crate::fast::{fast, FastTables};
+use crate::fast::{fast, masks, FastTables};
 use crate::preflight::{check_plan, MemGuard, Planned};
 use crate::prune::{bfs, Graph, Table2};
 use crate::tables::{ae_targets, build_ae, prefetch_at, AeIndex, AeSym};
@@ -68,6 +68,20 @@ pub trait Bounds: Sync {
     fn is_target(&self, k: usize, i: usize) -> bool;
     /// Short name of lookup `k` (for messages).
     fn name(&self, k: usize) -> &'static str;
+    /// First step of [`Bounds::index`] for lookups whose index reads a table that misses the
+    /// cache before the final entry is known (the A-centre/edge lookups' symmetry-class
+    /// table): computes what that read needs and prefetches it. The search calls it for all
+    /// children of a stage before any of their indices, and passes the result to
+    /// [`Bounds::index_with`].
+    #[inline(always)]
+    fn pre(&self, _k: usize, _p: &Pos) -> u32 {
+        0
+    }
+    /// [`Bounds::index`] of `p` given `pre(k, p)`.
+    #[inline(always)]
+    fn index_with(&self, k: usize, p: &Pos, _pre: u32) -> usize {
+        self.index(k, p)
+    }
     /// The order in which the search reads the lookups (the first `K` entries: a permutation of
     /// `0..K`); a child is dropped at the first value that exceeds its moves left, so the most
     /// selective lookups go first (measured with `FTO_OPT_PRUNE_STATS=1`).
@@ -253,6 +267,26 @@ impl AeBound {
 
     fn is_target(&self, i: usize) -> bool {
         self.targets.contains(&i)
+    }
+
+    /// The A-centre rank of the position (or of its conjugate), its symmetry-class entry
+    /// prefetched (see [`Bounds::pre`]).
+    #[inline(always)]
+    pub fn pre(&self, p: &Pos, swap: bool) -> u32 {
+        let r = self.f.rank(&masks(&self.maps.a_of(p, swap)));
+        self.ix.prefetch_class(r);
+        r
+    }
+
+    /// [`AeBound::index`] given the A-centre rank from [`AeBound::pre`].
+    #[inline(always)]
+    pub fn index_with(&self, p: &Pos, swap: bool, a_rank: u32) -> usize {
+        let x = if swap {
+            self.maps.fc_swap(p)
+        } else {
+            self.maps.fc(p)
+        };
+        self.ix.index_fast(self.f, &x, a_rank)
     }
 }
 
@@ -637,6 +671,22 @@ impl Bounds for SmallBounds<'_> {
         }
     }
     #[inline(always)]
+    fn pre(&self, k: usize, p: &Pos) -> u32 {
+        match k {
+            3 => self.ae.pre(p, false),
+            4 => self.ae.pre(p, true),
+            _ => 0,
+        }
+    }
+    #[inline(always)]
+    fn index_with(&self, k: usize, p: &Pos, pre: u32) -> usize {
+        match k {
+            3 => self.ae.index_with(p, false, pre),
+            4 => self.ae.index_with(p, true, pre),
+            _ => self.index(k, p),
+        }
+    }
+    #[inline(always)]
     fn table(&self, k: usize) -> &Table2 {
         match k {
             0 => self.edges,
@@ -692,6 +742,22 @@ impl Bounds for MediumBounds<'_> {
             2 => self.cc_ix.index_a(p.c, &p.xa),
             3 => self.ae.index(p, false),
             _ => self.ae.index(p, true),
+        }
+    }
+    #[inline(always)]
+    fn pre(&self, k: usize, p: &Pos) -> u32 {
+        match k {
+            3 => self.ae.pre(p, false),
+            4 => self.ae.pre(p, true),
+            _ => 0,
+        }
+    }
+    #[inline(always)]
+    fn index_with(&self, k: usize, p: &Pos, pre: u32) -> usize {
+        match k {
+            3 => self.ae.index_with(p, false, pre),
+            4 => self.ae.index_with(p, true, pre),
+            _ => self.index(k, p),
         }
     }
     #[inline(always)]
@@ -755,6 +821,22 @@ impl Bounds for LargeBounds<'_> {
     fn index(&self, k: usize, p: &Pos) -> usize {
         if k < LARGE_CBE {
             self.m.index(LARGE_FROM_MEDIUM[k], p)
+        } else {
+            self.cbe_ix.index(k - LARGE_CBE, p)
+        }
+    }
+    #[inline(always)]
+    fn pre(&self, k: usize, p: &Pos) -> u32 {
+        if k < LARGE_CBE {
+            self.m.pre(LARGE_FROM_MEDIUM[k], p)
+        } else {
+            0
+        }
+    }
+    #[inline(always)]
+    fn index_with(&self, k: usize, p: &Pos, pre: u32) -> usize {
+        if k < LARGE_CBE {
+            self.m.index_with(LARGE_FROM_MEDIUM[k], p, pre)
         } else {
             self.cbe_ix.index(k - LARGE_CBE, p)
         }
