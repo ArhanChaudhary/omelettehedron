@@ -232,11 +232,12 @@ const buttons = () => {
 
 // --- Generation progress ---
 // Share of the generation time when each depth of the A-centre/edge table is done (small:
-// measured on one thread; medium: natively on 48 threads); the corner/B-centre table and the
-// rest take the time after `cb`.
+// measured on one thread; medium: from the work of each depth, the positions it makes, which
+// agrees roughly with a run in Bun: depth 11 takes about three quarters of the time); the
+// corner/B-centre table and the rest take the time after `cb`.
 const PROGRESS = {
   small: { ae: { 8: 0.01, 9: 0.14, 10: 0.73, 11: 0.87, 12: 0.88 }, cb: 0.88 },
-  medium: { ae: { 8: 0.03, 9: 0.05, 10: 0.26, 11: 0.94, 12: 0.97, 13: 0.98 }, cb: 0.98 },
+  medium: { ae: { 8: 0.01, 9: 0.02, 10: 0.07, 11: 0.8, 12: 0.97, 13: 0.975 }, cb: 0.975 },
 };
 let generating = null;
 const generationProgress = (line) => {
