@@ -331,7 +331,10 @@ thread, 10 x 15-move face-turn scrambles (seed 1717): mean optimal length 13.6 w
 (14.5 without), the same lengths as the two-phase solver's optimal mode with slices on all ten,
 1,297,054,007 nodes (96x the face metric's 13,456,478: about 18 children per node instead of
 13, and shallower tables), 1.34 lookups per node (the face-metric lookup order is also within
-0.1% of the best one here, by the pruning statistics of a 13-move set).
+0.1% of the best one here, by the pruning statistics of a 13-move set). Medium tier with slices
+(corners x edges in the slice metric: 9,580,032,000 entries, max 11, mean 9.27; generated in 47
+minutes on the busy machine): 139,550,571 nodes on the same set (0.108x the small tier, 120x
+the face metric's 1,162,092), same lengths, 1.37 lookups per node.
 
 ## Missing (v0)
 
