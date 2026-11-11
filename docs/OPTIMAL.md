@@ -627,7 +627,18 @@ threads, 19-move set; 0.950, 0.956, 0.956).
 * Lanes (several depth-first stacks per worker, so that the misses of different subtrees
   overlap): tried, slower or neutral (`neg/optimal-lanes`): the first-stage read stall (26% /
   35% of the samples, medium / large) does not shrink with 2-8 nodes of slack, so it is not
-  plain latency; address translation is the likely remainder (no hardware counters here).
+  plain latency.
+* 1 GiB pages (`FTO_HUGE1G=1`; the optimal solver's tables load through the same allocator as
+  the two-phase solver's, so it applies as is): no effect. The medium tier with its whole
+  working set on 1 GiB pages (corners x edges on 3 pages, A-centres/edges on 1; the baseline
+  fully on 2 MB transparent huge pages) took 0.996x the time on one thread (17-move set; rounds
+  1.000, 0.995, 0.962) and 0.983x on 48 (19-move set; 0.987, 1.008, 0.981). Only 5 pages could
+  be reserved after boot (fragmented memory), so the large tier ran once each way with just the
+  A-centre/edge table on a 1 GiB page: 0.992x / 0.995x. So the first-stage stall is not address
+  translation either; without hardware counters its cause stays open (sample skid onto the
+  load after the prefetches is possible).
+* Code placement: aligning the hot loops to 64 bytes (`-C llvm-args=-align-loops=64`) is
+  neutral for both solvers (0.995x-1.005x, three rounds), so the build stays as it is.
 
 ## Done and next
 
@@ -642,8 +653,8 @@ stage, an A-centre/edge class prefetch pass before every stage, per-node lookup 
 Next, by expected value:
 
 1. **The table-read stall** (still the largest single cost, about 26-35% of the samples, all in
-   the first stage): lanes did not hide it; 1 GiB pages for the tables (a reserved hugetlb
-   pool) would test the address-translation explanation.
+   the first stage): neither lanes (more work in flight) nor 1 GiB pages (no TLB misses)
+   reduce it; a machine with hardware counters would be needed to find out more.
 2. **A stronger bound for the 10-11 moves-left nodes** beyond the triple table: an
    A-centre/edge table to solved with chirality would prune about as much as the triple table
    (0.34x on the 13-move set) but needs 68.7 GB; added to the triple table, the one without
