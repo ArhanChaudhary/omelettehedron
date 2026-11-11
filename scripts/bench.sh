@@ -6,8 +6,8 @@ set -euo pipefail
 label=${1:?label}
 tier=${2:?tier (small|medium|large|huge)}
 cd "$(dirname "$0")/.."
-# Serialize builds and runs with other benchmarks on this machine (lock shared with the
-# egg-solver sessions), so no build or other benchmark overlaps a measurement.
+# Serialize builds and runs with other benchmarks on this machine (the lock is shared with
+# other projects' benchmarks), so no build or other benchmark overlaps a measurement.
 exec 9>/tmp/cube-bench.lock
 flock 9
 cargo build --release -q

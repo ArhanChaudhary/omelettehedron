@@ -4,8 +4,6 @@
 // The module's threads (rayon's global pool) never end, so in practice each worker runs one.
 // Its output lines go to the BroadcastChannel `channel` if given (this worker's own event
 // loop is blocked while the thread runs), else to the console.
-//
-// Adapted from egg-solver's wasm/egg-solver-thread.mjs (same author).
 
 import { wasiImports, threadSpawn, lineSink, slotBase, SLOT_IDLE, SLOT_RUN } from './omelettehedron.mjs';
 

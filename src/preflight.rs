@@ -1,7 +1,7 @@
 //! Checks before generating tables: fail at once, not after minutes of work, when the tables
 //! cannot be held in memory or saved to disk. All tables of a run are checked together
-//! before any is generated (as egg-solver's preflight does), so a later, larger table cannot
-//! fail after an earlier one has already been built.
+//! before any is generated, so a later, larger table cannot fail after an earlier one has
+//! already been built.
 
 use std::io;
 use std::path::{Path, PathBuf};

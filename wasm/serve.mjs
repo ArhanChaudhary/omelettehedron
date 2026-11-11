@@ -5,8 +5,6 @@
 //
 //   bun wasm/serve.mjs [--port 8000] [--tables DIR]
 //   then open http://localhost:8000/
-//
-// Adapted from egg-solver's wasm/serve.mjs (same author).
 
 import { join, normalize, resolve } from 'node:path';
 
