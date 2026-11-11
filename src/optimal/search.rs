@@ -222,6 +222,8 @@ struct Eval {
     hs: [[u8; MAX_K]; N_MOVES],
     /// each child's bound (the largest of its values read so far)
     mx: [u8; N_MOVES],
+    /// each child's [`Bounds::pre`] value of the first stage
+    pre: [u32; N_MOVES],
     sel: [u8; N_MOVES],
 }
 
@@ -234,6 +236,7 @@ impl Eval {
             idx: [[0; MAX_K]; N_MOVES],
             hs: [[0; MAX_K]; N_MOVES],
             mx: [0; N_MOVES],
+            pre: [0; N_MOVES],
             sel: [0; N_MOVES],
         }
     }
@@ -365,7 +368,7 @@ impl<B: Bounds> Shared<'_, B> {
             ev.mx[i % N_MOVES] = 0;
         }
         if !ready {
-            self.first_stage(ev, n);
+            self.first_stage(ev, n, false);
         }
         let order = &B::ORDER[..B::K.min(B::ORDER.len())];
         for (s, &k) in order.iter().enumerate() {
@@ -414,15 +417,22 @@ impl<B: Bounds> Shared<'_, B> {
 
     /// The first stage's indices of children `ev.ys[..n]` (in child order), their entries
     /// prefetched.
+    /// (`have_pre`: `ev.pre` holds the children's [`Bounds::pre`] values of this lookup.)
     #[inline(always)]
-    fn first_stage(&self, ev: &mut Eval, n: usize) {
+    fn first_stage(&self, ev: &mut Eval, n: usize, have_pre: bool) {
         let Some(&k) = B::ORDER.first() else {
             return;
         };
         let k = k % MAX_K;
         let tab = self.b.table(k);
         for u in 0..n {
-            let ix = self.b.index(k, &ev.ys[u % N_MOVES]);
+            let y = &ev.ys[u % N_MOVES];
+            let pre = if have_pre {
+                ev.pre[u % N_MOVES]
+            } else {
+                self.b.pre(k, y)
+            };
+            let ix = self.b.index_with(k, y, pre);
             ev.idx[u % N_MOVES][k] = ix;
             prefetch_at(&tab.data, ix >> 5);
         }
@@ -482,15 +492,22 @@ impl<B: Bounds> Shared<'_, B> {
     fn prepare(&self, p: &Pos, last: usize, budget: usize, fr: &mut Eval) -> usize {
         let mut moves = ALLOWED[last.min(N_MOVES)];
         let mut n = 0;
+        // (with lookups left, the first stage's Bounds::pre in the same loop: it prefetches
+        // what the first-stage index reads first)
+        let k0 = B::ORDER.first().map_or(0, |&k| k % MAX_K);
         while moves != 0 {
             let m = moves.trailing_zeros() as usize;
             moves &= moves - 1;
-            fr.ys[n % N_MOVES] = self.mt.apply(p, m);
+            let y = self.mt.apply(p, m);
+            if budget > 0 {
+                fr.pre[n % N_MOVES] = self.b.pre(k0, &y);
+            }
+            fr.ys[n % N_MOVES] = y;
             fr.ms[n % N_MOVES] = m as u8;
             n += 1;
         }
         if budget > 0 {
-            self.first_stage(fr, n);
+            self.first_stage(fr, n, true);
         }
         n
     }
