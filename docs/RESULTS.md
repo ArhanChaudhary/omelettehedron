@@ -76,10 +76,10 @@ scrambles, i.e. the inverse positions, which in the normal FTO need not have the
 | position | listed | proven optimum (normal FTO) | proof |
 |---|---|---|---|
 | tri_adj+edge_opp | 23 | (running) | |
-| tri_adj+edge_adj | 23 | (running) | |
+| tri_adj+edge_adj | 23 | 23 | 11,877 s (3.3 h, 1.9e13 nodes) |
 | tri_adj-[Uf_Fu;Db_Bd] | 23 | (running) | |
 | tri_adj+[UB_FD,NL_MR] | 23 | (running) | |
-| edge_hard | 21 | (running) | |
+| edge_hard | 21 | 21 | 74 s |
 | pure_corn_6flip | >= 24 (pure) | 20 | 661 s (`--lower-bound 19`, after an earlier run excluded 18) |
 
 The corner 6-flip undoes itself, so it is the same position either way. Its normal-FTO optimum is
