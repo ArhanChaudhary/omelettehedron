@@ -58,7 +58,8 @@ if [ "${FTO_CHECK_FAST:-0}" != 1 ]; then
         not_checked+=("wasm32 tests (bun missing)")
     fi
     # The WebAssembly demo module: clippy for both of its builds, then build them and run its
-    # test in Bun (generation, load, optimal solves against native values, cancellation).
+    # test in Bun (generation, load, optimal solves against native values, cancellation; with
+    # FTO_TABLES holding the native medium tier, also loading and solving with it).
     if rustup target list --installed | grep -qx wasm32-wasip1-threads; then
         for t in wasm32-wasip1 wasm32-wasip1-threads; do
             RUSTFLAGS="-C target-feature=+simd128" \
@@ -66,7 +67,7 @@ if [ "${FTO_CHECK_FAST:-0}" != 1 ]; then
         done
         if [ -x "$bun" ]; then
             scripts/build-wasm.sh
-            timeout 900 "$bun" wasm/test.mjs
+            timeout 1800 "$bun" wasm/test.mjs
         else
             not_checked+=("wasm demo test (bun missing)")
         fi

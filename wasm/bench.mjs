@@ -2,17 +2,20 @@
 // Timings of the WebAssembly build in Bun (a browser-like engine: JavaScriptCore, as Safari),
 // comparable with the native `bench`:
 //
-//   bun wasm/bench.mjs [--threads N] [--tables DIR] [--count 10] [--seed 2026] [--seconds 5]
+//   bun wasm/bench.mjs [--tier small|medium] [--threads N] [--tables DIR] [--count 10]
+//                      [--seed 2026] [--seconds 5]
 //
+// --tier T      the tables: small (default) or medium
 // --threads N   the threads build with N threads (default: the single-thread build)
-// --tables DIR  load ae-sym288-triples.prun and cb-sym24.prun from DIR instead of generating
+// --tables DIR  load the tier's files from DIR (ae-sym288-triples.prun or
+//               ae-sym288-chiral.prun, and cb-sym24.prun) instead of generating
 //
 // Prints the table generation (or load) time and the module's memory, the optimal solves of
 // short scrambles (those of test.mjs), then the native `bench` summary for `count` seeded
 // random positions with a time limit of `seconds` each (the same positions as the native
-// `bench --tier small -N count --seed seed -t seconds`).
+// `bench --tier T -N count --seed seed -t seconds`).
 
-import { FtoSolver, randomMoves } from './omelettehedron.mjs';
+import { FtoSolver, randomMoves, TIERS, wasmFile } from './omelettehedron.mjs';
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => {
@@ -20,8 +23,9 @@ const option = (name, fallback) => {
   return i >= 0 ? args[i + 1] : fallback;
 };
 const threads = Number(option('--threads', 0));
+const tier = option('--tier', 'small');
 const dist = new URL('./dist/', import.meta.url);
-const wasm = new URL(threads ? 'omelettehedron-threads.wasm' : 'omelettehedron.wasm', dist);
+const wasm = new URL(wasmFile(tier, threads ? Math.max(threads, 2) : 1), dist);
 const MiB = 2 ** 20;
 
 let t0 = performance.now();
@@ -31,9 +35,9 @@ console.log(`module: ${wasm.pathname.split('/').pop()}, ${solver.threads} thread
 t0 = performance.now();
 const tables = option('--tables');
 const info = tables
-  ? await solver.loadTables(`${tables}/ae-sym288-triples.prun`, `${tables}/cb-sym24.prun`)
-  : solver.generate();
-console.log(`tables: ${tables ? 'loaded' : 'generated'} in ${info.seconds.toFixed(2)} s `
+  ? await solver.loadTables(`${tables}/${TIERS[tier].ae}`, `${tables}/${TIERS[tier].cb}`)
+  : solver.generate({ tier });
+console.log(`tables (${info.tier}): ${tables ? 'loaded' : 'generated'} in ${info.seconds.toFixed(2)} s `
   + `(call ${((performance.now() - t0) / 1000).toFixed(2)} s); memory ${solver.memory.buffer.byteLength / MiB} MiB`
   + `${solver.hasThreads ? ' (fixed)' : ' (grown to)'}`);
 
