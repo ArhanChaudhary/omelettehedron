@@ -77,7 +77,7 @@ scrambles, i.e. the inverse positions, which in the normal FTO need not have the
 |---|---|---|---|
 | tri_adj+edge_opp | 23 | (running) | |
 | tri_adj+edge_adj | 23 | 23 | 11,877 s (3.3 h, 1.9e13 nodes) |
-| tri_adj-[Uf_Fu;Db_Bd] | 23 | (running) | |
+| tri_adj-[Uf_Fu;Db_Bd] | 23 | 23 | 10,942 s (3.0 h, 1.7e13 nodes) |
 | tri_adj+[UB_FD,NL_MR] | 23 | (running) | |
 | edge_hard | 21 | 21 | 74 s |
 | pure_corn_6flip | >= 24 (pure) | 20 | 661 s (`--lower-bound 19`, after an earlier run excluded 18) |

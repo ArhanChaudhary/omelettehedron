@@ -172,8 +172,9 @@ such as two edges swapped).
 `pattern` prints the standard colour scheme (that of the Diansheng, Dayan and most other FTOs)
 held the standard way, white on U and green on F, the scrambling orientation of FTO competitions:
 W R G P / B O Y A = white, red, green, purple / blue, orange, yellow, grey on U R F L / B BL D BR.
-Opposite faces are white/yellow, green/blue, red/orange and purple/grey. LanLan FTOs have red and
-green swapped (so white on U and green on F is not possible on them).
+Opposite faces are white/yellow, green/blue, red/orange and purple/grey (checked on a physical
+puzzle, which also settles which of red and purple is on R). LanLan FTOs have red and green
+swapped (so white on U and green on F is not possible on them).
 
 The FTO has no fixed centres, so the same scrambled puzzle can be held 24 ways, and a scramble
 (the solution reversed) makes the pattern exactly only from the solved puzzle held the way the
