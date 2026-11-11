@@ -137,3 +137,8 @@ no timings yet). Same optimal lengths as the two-phase solver's optimal mode.
 | 10 x 15-move scrambles, seed 1717 | medium | 14.5 | 2.87e6 |
 | 10 x 17-move scrambles, seed 1717 | medium | 16.5 | 3.85e8 |
 | 10 x 19-move scrambles, seed 1919 (48 threads) | medium | 18.1 | 3.76e10 |
+
+Hard positions (`bench/hard.tsv`; 48 threads beside the two-phase proofs, medium tier,
+symmetric start): `pure_corn_6flip` proven optimal at 20 in 232 s (3.05e10 nodes; the
+two-phase solver: 661 s with `--lower-bound 19`). The others reach lower bounds 19-20 in 300 s
+(details in [OPTIMAL.md](OPTIMAL.md#symmetric-start-on-the-hard-positions)).

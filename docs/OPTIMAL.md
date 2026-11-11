@@ -224,7 +224,24 @@ a solution that short), with and without the filter (`FTO_OPT_SYMSTART=0`):
 | pure_corn_6flip | 48 | 685,776 | 32,842,576 | 0.021 (47.9x) |
 | edge_hard | 1 | (no symmetry: unchanged) | | |
 
-Full solves of the hard positions: see below (48 threads).
+The hard positions on 48 threads (at `nice 10` beside the two-phase proofs, about 1.35e8
+nodes/s), medium tier with symmetric start (commit df9e167), 300 s each, the 6-flip without a
+limit:
+
+| position | known | root bound | symmetries | result | nodes |
+|---|---|---|---|---|---|
+| tri_adj+edge_opp | 23 | 12 | 48 | no solution below 20 moves (300 s) | 41,139,142,554 |
+| tri_adj+edge_adj | 23 | 11 | 24 | no solution below 20 (300 s) | 40,986,460,294 |
+| tri_adj-[Uf_Fu;Db_Bd] | 23 | 10 | 8 | no solution below 19 (300 s) | 41,302,196,336 |
+| tri_adj+[UB_FD,NL_MR] | 23 | 11 | 16 | no solution below 20 (300 s) | 42,527,118,126 |
+| edge_hard | 21 | 12 | 1 | no solution below 19 (300 s) | 39,977,083,142 |
+| pure_corn_6flip | 20 (normal FTO) | 9 | 48 | **20, optimal, in 232 s** | 30,526,471,644 |
+
+The 6-flip's optimum agrees with the two-phase solver's (20, docs/RESULTS.md: 661 s with
+`--lower-bound 19` after an earlier run had excluded 18). Its solution
+`D B BR L' BL U' L' D B' L' D B L' U D BL' BR' D' L B'` exchanges centres of a colour (not a
+pure-FTO solution), like the two-phase solver's. Each further iteration of the others costs
+about 12.5 times the last (about 9 minutes for depth 20 of tri_adj+edge_opp, 2 hours for 21).
 
 ## Missing (v0)
 
