@@ -423,6 +423,33 @@ in 29.0 s; large **96,270,740 nodes in 0.497 s** (214x fewer nodes, 58x faster),
 deeper the triple table sees the corners together with the edges and centres they disturb
 (depth 19: 4.17e9 -> 5.82e7 nodes).
 
+## The optimal solver against the two-phase solver's optimal mode
+
+Both solvers prove optimality; the same positions, quiet machine, bench lock, two interleaved
+rounds (`opt-vs-2p.sh`): the two-phase solver (`bench`/`solve --tier large`, main 4c96995)
+against this solver's large tier. Times to a proven optimum (both rounds):
+
+| positions | threads | two-phase (s) | optimal solver (s) | ratio | nodes, two-phase / optimal |
+|---|---|---|---|---|---|
+| 10 x 17 moves, seed 1717 (mean 16.5) | 1 | 2.82, 2.87 | 7.06, 7.28 | 2.51x, 2.54x | 1.06e8 / 7.61e7 |
+| 10 x 19 moves, seed 1919 (mean 18.1) | 48 | 7.95, 8.01 | 14.23, 14.93 | 1.79x, 1.86x | 1.24e10 / 6.27e9 |
+| random position, seed 1 (21) | 48 | 53.8, 53.5 | 91.7, 91.4 | 1.70x, 1.71x | 8.60e10 / 3.85e10 |
+| random position, seed 2 (21) | 48 | 61.2, 60.4 | 210.9, 214.6 | 3.45x, 3.55x | 9.69e10 / 9.10e10 |
+| random position, seed 3 (20) | 48 | 4.94, 4.97 | 106.0, 105.5 | 21.4x, 21.2x | 7.88e9 / 4.52e10 |
+| edge_hard (21, `bench/hard.tsv`) | 48 | 71.3 | 344.7 | 4.84x | 1.08e11 / 1.67e11 |
+| corner 6-flip (20, normal FTO) | 48 | 626.5 | **0.478** | **0.00076x (1,310x faster)** | 7.97e11 / 9.60e7 |
+
+The two-phase solver stays faster everywhere except on the corner 6-flip, where the large
+tier's triple table sees the flipped corners together with the edges and centres they would
+disturb (every root bound is 9, but its depth-19 iteration has 98.6% fewer nodes than the
+medium tier's). The optimal solver usually
+searches fewer nodes (0.4x to 0.9x on the sets and the 21-move positions), but each costs 3.5
+times as much (1.08e7 against 3.75e7 nodes/s on one thread, 4.4e8 against 1.57e9 on 48; the
+large tier reads 2.4 to 2.6 table entries per node, nearly half of them in the 21 GB table). It
+is weakest where the optimum is reached early: on the
+random position of length 20 the two-phase solver has its 20 within 0.5 s and only has to
+exclude 19 (7.9e9 nodes), while IDA* must finish the whole depth-19 iteration (4.5e10).
+
 ## Missing (v0)
 
 * Timings: the machine was busy with long two-phase proofs, so only node counts are measured.

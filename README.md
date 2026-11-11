@@ -236,8 +236,10 @@ scripts/compare-optimal.py <before> <after>     # the same for scripts/bench-opt
 `omelettehedron optimal` is a second, separate solver: a single-phase IDA* straight to the
 solved state with pattern databases of distances to solved (as in optimal Rubik's Cube
 solvers), in `src/optimal/`. It has its own tiers and tables (`opt-*.prun`) and its own
-benchmark; see [docs/OPTIMAL.md](docs/OPTIMAL.md). It is a first version (v0): the two-phase
-solver's optimal mode is much faster today.
+benchmark; see [docs/OPTIMAL.md](docs/OPTIMAL.md). The two-phase solver's optimal mode is
+still faster on most positions (1.7x to 3.5x on 19- to 21-move positions against the large
+tier, more where it finds the optimum early), but the optimal solver's large tier proves the
+corner 6-flip in half a second, against ten minutes for the two-phase solver.
 
 ```sh
 target/release/omelettehedron optimal solve --tier medium "U R' BL F D B' L BR"
