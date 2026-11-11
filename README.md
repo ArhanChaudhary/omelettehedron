@@ -343,14 +343,20 @@ reloads once; where a browser refuses, the demo runs on one thread.
 * Tables can also be loaded from the native `gen --tier small` or `gen --tier medium` files:
   the formats are the same, and the module generates byte-identical files.
 
-Measured in Bun 1.4.4 (JavaScriptCore, Safari's engine) on the 48-core EPYC VM:
+Measured in Bun 1.4.4 (JavaScriptCore, Safari's engine) on the 48-core EPYC VM (small tier;
+generation and search re-measured on 2026-11-11 after `opt/wasm-gen`, quiet machine):
 
 | | native | wasm, 1 thread | wasm, 8 threads | wasm, 48 threads |
 |---|---|---|---|---|
-| table generation | 23.6 s (1T), ~1 s (48T) | 32.7 s | 31.0 s | 16.4 s |
+| table generation | 21.3 s (1T), 1.1 s (48T) | 29.6-30.8 s | 5.7 s (6 threads: 6.7-7.4 s) | 2.3 s |
 | table load (both files) | | 0.55 s | 0.22 s | |
-| search speed (10 random positions, 5 s each) | 58 / 399 / 2162 M nodes/s (1/8/48T) | 23 M nodes/s | 36 M nodes/s | 74 M nodes/s |
-| random positions with any solution after 5 s | 9 / 10 / 10 of 10 | 4 | 7 | 10 |
+| search speed (10 random positions, 5 s each) | 58 / 399 / 2162 M nodes/s (1/8/48T) | 20.7 M nodes/s | 148.5 M nodes/s | 782 M nodes/s |
+| random positions with any solution after 5 s | 9 / 10 / 10 of 10 | 4 | 10 | 10 |
+
+Until `opt/wasm-gen`, threads made generation slower, not faster (6 threads 48.6 s against 30.9 s
+on one): the generator read `OnceLock` statics per entry, and in WebAssembly each such read is an
+atomic load, which in JavaScriptCore (Bun, Safari, every browser on iOS) makes the threads
+contend; the generator's graphs and indices now hold those tables.
 
 The modules are 0.63 MB (one thread) and 0.67 MB (each threads module). The single-thread
 module grows to 352 MiB while generating and 358 MiB while loading table files (428 MiB before
@@ -365,7 +371,8 @@ thread, the process CPU time stands in for the time on an idle machine.
 |---|---|---|
 | tables | 134 MB | 1.04 GB |
 | generation, native | 27 s (1T), 1.2 s (48T) | 167 s (1T), 6.6 s (48T) |
-| generation, wasm, 16 threads (wall time under load) | 257 s | 872 s (files identical to the native ones) |
+| generation, wasm, 16 threads (wall time under load, before `opt/wasm-gen`) | 257 s | 872 s (files identical to the native ones) |
+| generation, wasm, 8 threads (quiet machine, `opt/wasm-gen`) | 5.7 s | 45.2 s |
 | table load, wasm, 1 thread (CPU time) | 0.8 s | 1.6 s |
 | module memory after loading | 358 MiB (1 thread) | 1220 MiB (1 thread); 2 GiB fixed (threads) |
 | 10 optimal solves of 16-move scrambles, wasm, 1 thread | 53.2 M nodes, 7.3 s CPU | 5.9 M nodes, 1.6 s CPU |

@@ -179,6 +179,10 @@ pub struct AeSym {
     pub chiral: bool,
     /// symmetry pairs (other than the identity) fixing each class representative
     pub stab: Vec<Vec<(u8, u8)>>,
+    /// the symmetry and move tables, held here so that the per-entry methods read no
+    /// `OnceLock` (see [`AeGraph`])
+    s: &'static Syms,
+    mt: &'static MoveTables,
 }
 
 impl AeSym {
@@ -202,7 +206,13 @@ impl AeSym {
                     .collect()
             })
             .collect();
-        AeSym { cls, chiral, stab }
+        AeSym {
+            cls,
+            chiral,
+            stab,
+            s,
+            mt: move_tables(),
+        }
     }
 }
 
@@ -212,7 +222,7 @@ impl AeIndex for AeSym {
     }
     #[inline(always)]
     fn index(&self, x: &Coords) -> usize {
-        let s = syms();
+        let s = self.s;
         let v = self.cls.sym[x.a as usize];
         let (g, t) = (v >> 16 & 0xff, v >> 24);
         let (e, b) = s.apply_e(g as usize, t as usize, x.e, x.ebits);
@@ -225,7 +235,7 @@ impl AeIndex for AeSym {
     }
     #[inline(always)]
     fn index_batch(&self, xs: &[Coords], out: &mut [usize]) {
-        let s = syms();
+        let s = self.s;
         let n = xs.len();
         let mut v = [0u32; MAX_MOVES];
         let mut e1 = [0u32; MAX_MOVES];
@@ -256,7 +266,7 @@ impl AeIndex for AeSym {
         }
     }
     fn decode(&self, i: usize) -> (u32, u32, u8) {
-        let mt = move_tables();
+        let mt = self.mt;
         if self.chiral {
             let c = i / N_ECOSET;
             let r = i % N_ECOSET;
@@ -316,7 +326,7 @@ impl AeIndex for AeSym {
         if self.stab[c].is_empty() {
             return;
         }
-        let s = syms();
+        let s = self.s;
         let (_, e, bits) = self.decode(i);
         for &(g, t) in &self.stab[c] {
             let (e2, b2) = s.apply_e(g as usize, t as usize, e, bits);
@@ -332,6 +342,9 @@ impl AeIndex for AeSym {
 /// Full edge coset, reduced only by colour relabelling with the 12 rotations.
 pub struct AeRelabel {
     pub cls: AClasses,
+    /// as in [`AeSym`]
+    s: &'static Syms,
+    mt: &'static MoveTables,
 }
 
 impl AeRelabel {
@@ -342,6 +355,8 @@ impl AeRelabel {
             .collect();
         AeRelabel {
             cls: AClasses::new(&pairs),
+            s: syms(),
+            mt: move_tables(),
         }
     }
 }
@@ -352,7 +367,7 @@ impl AeIndex for AeRelabel {
     }
     #[inline(always)]
     fn index(&self, x: &Coords) -> usize {
-        let s = syms();
+        let s = self.s;
         let v = self.cls.sym[x.a as usize];
         // pair index == rotation index in the identity-first list of rotations
         let g = ROT_IDX[(v >> 16) as usize] as usize;
@@ -362,7 +377,7 @@ impl AeIndex for AeRelabel {
     }
     #[inline(always)]
     fn index_batch(&self, xs: &[Coords], out: &mut [usize]) {
-        let s = syms();
+        let s = self.s;
         let n = xs.len();
         let mut v = [0u32; MAX_MOVES];
         for i in 0..n {
@@ -381,7 +396,7 @@ impl AeIndex for AeRelabel {
         }
     }
     fn decode(&self, i: usize) -> (u32, u32, u8) {
-        let mt = move_tables();
+        let mt = self.mt;
         let c = i / N_ECOSET;
         let r = i % N_ECOSET;
         let e = (r / 8) as u32;
@@ -630,10 +645,10 @@ impl CbTable {
         targets.dedup();
         let name = format!("cb{}", moves.table_suffix());
         if moves.slice {
-            let g = crate::cbsym::CbSymGraph::<MAX_MOVES>;
+            let g = crate::cbsym::CbSymGraph::<MAX_MOVES>::default();
             bfs(&g, N_CB, &targets, &name, verbose)
         } else {
-            let g = crate::cbsym::CbSymGraph::<N_MOVES>;
+            let g = crate::cbsym::CbSymGraph::<N_MOVES>::default();
             bfs(&g, N_CB, &targets, &name, verbose)
         }
     }
@@ -674,6 +689,12 @@ pub fn ae_targets<I: AeIndex>(ix: &I) -> Vec<usize> {
 struct AeGraph<'a, I: AeIndex, const N: usize> {
     ix: &'a I,
     f: &'static FastTables,
+    /// [`mset_labels`], held here: a `OnceLock` read per entry is an atomic load, cheap
+    /// natively but slow with threads in WebAssembly on `JavaScriptCore`, where threads made
+    /// generation slower than one thread. With this, [`AeSym`]'s and [`crate::cbsym`]'s held
+    /// tables: small tier in Bun, 6 threads 48.6 -> 7.35 s; one thread and native unchanged
+    /// (opt/wasm-gen).
+    labels: &'static [[u8; 16]],
     /// class-table entry of each class representative after each move
     next: Vec<[u32; N]>,
     /// whether the index holds chirality bits (see [`AeIndex::entry_parts`])
@@ -697,12 +718,13 @@ impl<'a, I: AeIndex, const N: usize> AeGraph<'a, I, N> {
         // must not start inside a rayon job (the initialising thread could steal a job that
         // waits for it).
         move_tables();
+        let labels = mset_labels();
         let cs = ix.class_size();
         let next = (0..ix.size() / cs)
             .into_par_iter()
             .map(|c| {
                 let x = Fc {
-                    a: mset_labels()[ix.decode(c * cs).0 as usize],
+                    a: labels[ix.decode(c * cs).0 as usize],
                     b: [0; 16],
                     e: [0; 16],
                     c: 0,
@@ -722,6 +744,7 @@ impl<'a, I: AeIndex, const N: usize> AeGraph<'a, I, N> {
         AeGraph {
             ix,
             f,
+            labels,
             next,
             chiral,
         }
@@ -735,7 +758,7 @@ impl<'a, I: AeIndex, const N: usize> AeGraph<'a, I, N> {
         let x = Fc {
             a: [0; 16],
             b: [0; 16],
-            e: mset_labels()[e as usize],
+            e: self.labels[e as usize],
             c: 0,
             ebits: 0,
         };
@@ -776,7 +799,7 @@ impl<I: AeIndex, const N: usize> Graph for AeGraph<'_, I, N> {
         let x = Fc {
             a: [0; 16],
             b: [0; 16],
-            e: mset_labels()[e as usize],
+            e: self.labels[e as usize],
             c: 0,
             ebits: bits,
         };
