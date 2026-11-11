@@ -63,4 +63,5 @@ pub mod progress;
 pub mod prune;
 pub mod search;
 pub mod sym;
+pub mod symsearch;
 pub mod tables;

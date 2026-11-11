@@ -39,7 +39,7 @@ use omelettehedron::optimal::tables::{OptTables, OptTier};
 use omelettehedron::progress::{Progress, Watch};
 use omelettehedron::search::{solve_watched, Limits, Report};
 use omelettehedron::tables::{table_dir, AeIndex, AeRelabel, AeSym, Tables, Tier};
-use omelettehedron::{autotier, info, pattern};
+use omelettehedron::{autotier, info, pattern, symsearch};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -234,6 +234,26 @@ enum Cmd {
     /// bounds on the optimal length), the optimal solver proves lower bounds. Prints each new
     /// bound as it comes and stops when they meet (the solution is optimal) or at the time limit
     Combined(CombinedArgs),
+    /// Positions fixed by symmetries of the octahedron (the notion of `info`)
+    ///
+    /// Without options: the 33 kinds of subgroup of the 48 symmetries (up to conjugation),
+    /// largest first, with how many positions each fixes. With --subgroup or --order: the
+    /// positions whose symmetries are exactly that subgroup, one of each set of conjugate
+    /// positions (conjugates are the same distance from solved), as patterns for `solve
+    /// --patterns` and `optimal solve --patterns`.
+    Symmetric {
+        /// List the positions of this subgroup (its number in the table)
+        #[arg(long, conflicts_with = "order")]
+        subgroup: Option<usize>,
+        /// List the positions with exactly this many symmetries (of every subgroup of that
+        /// order)
+        #[arg(long)]
+        order: Option<usize>,
+        /// List at most this many positions of a subgroup (counted first): a subgroup with more
+        /// is only counted
+        #[arg(long, default_value_t = 1_000_000)]
+        max: u128,
+    },
 }
 
 /// `--progress`: what a search is doing, on stderr while it runs.
@@ -984,6 +1004,11 @@ fn run(cli: Cli) -> Result<(), Error> {
         }
         Cmd::Optimal { cmd } => run_optimal(cmd),
         Cmd::Combined(args) => run_combined(&args),
+        Cmd::Symmetric {
+            subgroup,
+            order,
+            max,
+        } => run_symmetric(subgroup, order, max),
         Cmd::Info {
             scramble,
             input,
@@ -1013,6 +1038,81 @@ fn run(cli: Cli) -> Result<(), Error> {
             unread(&jobs)
         }
     }
+}
+
+/// `symmetric`: the table of subgroups, or the positions of some of them.
+fn run_symmetric(subgroup: Option<usize>, order: Option<usize>, max: u128) -> Result<(), Error> {
+    let census = symsearch::census();
+    if subgroup.is_none() && order.is_none() {
+        println!(
+            "{:>2} {:>5} {:>4} {:>4} {:>24} {:>24} {:>24}  symmetries",
+            "#", "order", "name", "conj", "fixed", "exactly", "up to symmetry"
+        );
+        for (i, (c, n)) in census.iter().enumerate() {
+            println!(
+                "{:>2} {:>5} {:>4} {:>4} {:>24} {:>24} {:>24}  {}",
+                i + 1,
+                c.order,
+                symsearch::schoenflies(c.rep),
+                c.conjugates,
+                n.fixed,
+                n.exact,
+                n.classes,
+                symsearch::kinds_text(c.rep)
+            );
+        }
+        return Ok(());
+    }
+    if let Some(k) = subgroup {
+        if k == 0 || k > census.len() {
+            return Err(format!("--subgroup: give a number from 1 to {}", census.len()).into());
+        }
+    }
+    let mut listed = 0;
+    for (i, (c, n)) in census.iter().enumerate() {
+        if subgroup.is_some_and(|k| k != i + 1) || order.is_some_and(|o| o != c.order) {
+            continue;
+        }
+        let name = symsearch::schoenflies(c.rep);
+        println!(
+            "# subgroup {}: {name}, {} symmetries ({}): {} positions up to symmetry",
+            i + 1,
+            c.order,
+            symsearch::kinds_text(c.rep),
+            n.classes
+        );
+        if n.classes > max || c.order == 1 {
+            println!("# (not listed: more than --max {max})");
+            continue;
+        }
+        let list = symsearch::exact(c.rep).unwrap_or_default();
+        if list.len() as u128 != n.classes {
+            return Err(format!(
+                "subgroup {}: {} positions listed, {} counted (please report this)",
+                i + 1,
+                list.len(),
+                n.classes
+            )
+            .into());
+        }
+        for (j, cube) in list.iter().enumerate() {
+            println!(
+                "{}  # {name} {}.{}",
+                pattern::format(&pattern::of_cube(cube)),
+                i + 1,
+                j + 1
+            );
+        }
+        listed += 1;
+    }
+    if listed == 0 && subgroup.is_none() {
+        if let Some(o) = order {
+            if !census.iter().any(|(c, _)| c.order == o) {
+                return Err(format!("--order: no subgroup has {o} symmetries").into());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The two-phase tier: `--tier`, or the largest whose tables are all in `dir` (said on stderr).
