@@ -499,9 +499,14 @@ impl CbeTable {
     /// Lower bound from all four triples of `x`, prefetching first.
     #[inline(always)]
     pub fn prefetch_all(&self, f: &FastTables, x: &Fc, out: &mut [usize; 4]) {
-        let em = masks(&x.e);
+        self.prefetch_all_em(f, x, &masks(&x.e), out);
+    }
+
+    /// [`CbeTable::prefetch_all`] given the label masks of `x`'s edges (`masks(&x.e)`).
+    #[inline(always)]
+    pub fn prefetch_all_em(&self, f: &FastTables, x: &Fc, em: &[u16; 4], out: &mut [usize; 4]) {
         for k in 0..4 {
-            out[k] = self.ix.index(f, x, &em, k);
+            out[k] = self.ix.index(f, x, em, k);
             prefetch_at(&self.codes, out[k] >> 5);
         }
     }

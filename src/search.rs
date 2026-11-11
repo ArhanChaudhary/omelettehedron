@@ -226,6 +226,10 @@ const NO_CB: usize = usize::MAX;
 #[derive(Clone)]
 struct Scratch<const N: usize> {
     ys: [[Fc; N]; 2],
+    /// each child's edge label masks (`masks(&ys[s][i].e)`), computed once when the child is
+    /// generated and shared by its A-centre/edge index and the joint and distance-to-solved
+    /// tables' indices
+    ems: [[[u16; 4]; N]; 2],
     ms: [u8; N],
     /// the sides each child is still alive on
     live: [u8; N],
@@ -259,6 +263,7 @@ impl<const N: usize> Scratch<N> {
     fn new() -> Self {
         Scratch {
             ys: [[Fc::ZERO; N]; 2],
+            ems: [[[0; 4]; N]; 2],
             ms: [0; N],
             live: [0; N],
             has: [[0; N]; 2],
@@ -631,9 +636,11 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             moves &= moves - 1;
             if on(S, 0) {
                 fr.ys[0][n % N] = f.apply_any::<N>(x[0], fw0.0, fw0.1, self.side_move(r, m as u8));
+                fr.ems[0][n % N] = masks(&fr.ys[0][n % N].e);
             }
             if on(S, 1) {
                 fr.ys[1][n % N] = f.apply_any::<N>(x[1], fw1.0, fw1.1, self.mb[m & 31]);
+                fr.ems[1][n % N] = masks(&fr.ys[1][n % N].e);
             }
             fr.ms[n % N] = m as u8;
             // (a node alive on one side has it in slot 0, and the moves are its leaf moves)
@@ -653,9 +660,10 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                 continue;
             }
             if budget >= AE_FIRST {
-                t.ae_ix.index_batch_fast_pf::<N>(
+                t.ae_ix.index_batch_fast_pf_em::<N>(
                     f,
                     &fr.ys[s][..n],
+                    &fr.ems[s][..n],
                     &mut fr.idx[s][..n],
                     &t.ae.data,
                 );
@@ -698,6 +706,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         let need = if B { BOTH } else { S };
         let Scratch {
             ys,
+            ems,
             ms,
             live,
             has,
@@ -776,9 +785,10 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                 for &i in &sel[..k] {
                     let i = usize::from(i) % N;
                     ys[o][i] = f.apply_any::<N>(x[o], fw, fws, self.side_move(o ^ r, ms[i]));
+                    ems[o][i] = masks(&ys[o][i].e);
                 }
                 t.ae_ix
-                    .index_sel_pf(f, &ys[o], &sel[..k], &mut idx[o], &t.ae.data);
+                    .index_sel_pf_em(f, &ys[o], &ems[o], &sel[..k], &mut idx[o], &t.ae.data);
                 for &i in &sel[..k] {
                     let i = usize::from(i) % N;
                     cbi[o][i] = CbTable::index_fast(f, &ys[o][i]);
@@ -797,8 +807,8 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                         for &i in &sel[..k] {
                             let i = usize::from(i) % N;
                             for s in 0..2 {
-                                let em = masks(&ys[s][i].e);
-                                cs[s][i] = cbs.prefetch_one(&cbe.ix, f, &ys[s][i], &em, CBS_FIRST);
+                                cs[s][i] =
+                                    cbs.prefetch_one(&cbe.ix, f, &ys[s][i], &ems[s][i], CBS_FIRST);
                             }
                         }
                         *cs_done = true;
@@ -816,7 +826,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                         for &i in &sel[..k] {
                             let i = usize::from(i) % N;
                             if S != BOTH || on(live[i], s) {
-                                cbe.prefetch_all(f, &ys[s][i], &mut ci[s][i]);
+                                cbe.prefetch_all_em(f, &ys[s][i], &ems[s][i], &mut ci[s][i]);
                             }
                         }
                     }
@@ -846,7 +856,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             for s in 0..2 {
                 if on(S, s) {
                     t.ae_ix
-                        .index_sel_pf(f, &ys[s], &sel[..k], &mut idx[s], &t.ae.data);
+                        .index_sel_pf_em(f, &ys[s], &ems[s], &sel[..k], &mut idx[s], &t.ae.data);
                 }
             }
         }
@@ -879,6 +889,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         let need = if B { BOTH } else { S };
         let Scratch {
             ys,
+            ems,
             ms,
             live,
             has,
@@ -1009,7 +1020,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                     for &i in &sel[..n] {
                         let i = usize::from(i) % N;
                         if S != BOTH || on(live[i], s) {
-                            cbe.prefetch_all(f, &ys[s][i], &mut ci[s][i]);
+                            cbe.prefetch_all_em(f, &ys[s][i], &ems[s][i], &mut ci[s][i]);
                         }
                     }
                 }
@@ -1045,9 +1056,10 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                 for &i in &sel[..n] {
                     let i = usize::from(i) % N;
                     ys[o][i] = f.apply_any::<N>(x[o], fw, fws, self.side_move(o ^ r, ms[i]));
+                    ems[o][i] = masks(&ys[o][i].e);
                 }
                 t.ae_ix
-                    .index_sel_pf(f, &ys[o], &sel[..n], &mut idx[o], &t.ae.data);
+                    .index_sel_pf_em(f, &ys[o], &ems[o], &sel[..n], &mut idx[o], &t.ae.data);
                 for &i in &sel[..n] {
                     let i = usize::from(i) % N;
                     cbi[o][i] = CbTable::index_fast(f, &ys[o][i]);
@@ -1100,8 +1112,8 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                         for &i in &sel[..n] {
                             let u = usize::from(i) % N;
                             for s in 0..2 {
-                                let em = masks(&ys[s][u].e);
-                                cs[s][u] = cbs.prefetch_one(&cbe.ix, f, &ys[s][u], &em, CBS_FIRST);
+                                cs[s][u] =
+                                    cbs.prefetch_one(&cbe.ix, f, &ys[s][u], &ems[s][u], CBS_FIRST);
                             }
                         }
                     }
@@ -1120,9 +1132,9 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                     for &i in &sel[..n] {
                         let u = usize::from(i) % N;
                         for s in 0..2 {
-                            let em = masks(&ys[s][u].e);
+                            let em = &ems[s][u];
                             for (j, t) in CBS_REST.into_iter().enumerate() {
-                                ci[s][u][j] = cbs.prefetch_one(&cbe.ix, f, &ys[s][u], &em, t);
+                                ci[s][u][j] = cbs.prefetch_one(&cbe.ix, f, &ys[s][u], em, t);
                             }
                         }
                     }

@@ -52,7 +52,13 @@ pub trait AeIndex: Send + Sync + 'static {
     }
     /// Index of a fast-coordinate position, given the symmetry-class table entry of its A
     /// rank (only the edges of `x` are read).
-    fn index_entry(&self, f: &FastTables, x: &Fc, v: u32) -> usize;
+    #[inline(always)]
+    fn index_entry(&self, f: &FastTables, x: &Fc, v: u32) -> usize {
+        self.index_entry_em(f, x, &masks(&x.e), v)
+    }
+    /// [`AeIndex::index_entry`] given the label masks of `x`'s edges (`masks(&x.e)`, which the
+    /// search computes once per child and shares with its other tables).
+    fn index_entry_em(&self, f: &FastTables, x: &Fc, em: &[u16; 4], v: u32) -> usize;
     /// Entries per A-centre class (the index is class * `class_size()` + edge part).
     fn class_size(&self) -> usize;
     /// [`AeIndex::index_entry`] in parts, for the generator: `(base, g, flips)` such that the
@@ -94,6 +100,50 @@ pub trait AeIndex: Send + Sync + 'static {
         }
         for i in 0..n {
             out[i] = self.index_fast(f, &xs[i], ar[i]);
+            prefetch_at(tab, out[i] >> 5);
+        }
+    }
+    /// [`AeIndex::index_batch_fast_pf`] with the positions' edge label masks `ems` (see
+    /// [`AeIndex::index_entry_em`]).
+    #[inline(always)]
+    fn index_batch_fast_pf_em<const N: usize>(
+        &self,
+        f: &FastTables,
+        xs: &[Fc],
+        ems: &[[u16; 4]],
+        out: &mut [usize],
+        tab: &[u64],
+    ) {
+        let n = xs.len().min(ems.len());
+        let mut ar = [0u32; N];
+        for i in 0..n {
+            ar[i] = f.a_rank(&xs[i]);
+            self.prefetch_class(ar[i]);
+        }
+        for i in 0..n {
+            out[i] = self.index_entry_em(f, &xs[i], &ems[i], *self.class_entry(ar[i]));
+            prefetch_at(tab, out[i] >> 5);
+        }
+    }
+    /// [`AeIndex::index_sel_pf`] with the positions' edge label masks `ems`.
+    #[inline(always)]
+    fn index_sel_pf_em<const N: usize>(
+        &self,
+        f: &FastTables,
+        xs: &[Fc; N],
+        ems: &[[u16; 4]; N],
+        sel: &[u8],
+        out: &mut [usize; N],
+        tab: &[u64],
+    ) {
+        let mut ar = [0u32; N];
+        for (j, &i) in sel.iter().enumerate() {
+            ar[j % N] = f.a_rank(&xs[usize::from(i) % N]);
+            self.prefetch_class(ar[j % N]);
+        }
+        for (j, &i) in sel.iter().enumerate() {
+            let i = usize::from(i) % N;
+            out[i] = self.index_entry_em(f, &xs[i], &ems[i], *self.class_entry(ar[j % N]));
             prefetch_at(tab, out[i] >> 5);
         }
     }
@@ -270,9 +320,9 @@ impl AeIndex for AeSym {
         }
     }
     #[inline(always)]
-    fn index_entry(&self, f: &FastTables, x: &Fc, v: u32) -> usize {
+    fn index_entry_em(&self, f: &FastTables, x: &Fc, em: &[u16; 4], v: u32) -> usize {
         let (g, t) = (v >> 16 & 0xff, v >> 24);
-        let (e, b) = f.sym_e(x, &masks(&x.e), g as usize, t as usize);
+        let (e, b) = f.sym_e(x, em, g as usize, t as usize);
         let c = (v & 0xffff) as usize;
         if self.chiral {
             c * N_ECOSET + e as usize * 8 + (b & 7) as usize
@@ -390,7 +440,7 @@ impl AeIndex for AeRelabel {
         (self.cls.rep[c], e, b3 | bit3 << 3)
     }
     #[inline(always)]
-    fn index_entry(&self, f: &FastTables, x: &Fc, v: u32) -> usize {
+    fn index_entry_em(&self, f: &FastTables, x: &Fc, _em: &[u16; 4], v: u32) -> usize {
         let g = ROT_IDX[(v >> 16) as usize] as usize;
         let (e, b) = f.relabel_e(x, g);
         (v & 0xffff) as usize * N_ECOSET + e as usize * 8 + (b & 7) as usize
