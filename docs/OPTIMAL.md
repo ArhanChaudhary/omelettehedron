@@ -573,6 +573,14 @@ are solved). With about 14.5 times more nodes per iteration and 4.4e8 nodes/s, f
 whole depth 23 at most 2,100 / 5,200 / 19,000 / 6,600 s; the two-phase solver proved them in
 8,866 / 11,878 / 10,942 / 8,397 s.
 
+**tri_adj+edge_opp proven 23 in 266.5 s** (large tier, 48 threads, `-t 3600`, quiet machine,
+main 5106ccf; the two-phase solver: 8,866 s). Root bounds: corners x edges 12, AE 13 on both
+sides, the A-triple lookups 13; symmetric start (48 symmetries, 726 tasks). Iterations: depth
+20 3.03e8 nodes (0.75 s), 21 4.38e9 (10.7 s), 22 6.31e10 (152.8 s, complete: no solution of 22
+moves), 23 5.56e10 until the first solution (266.5 s); 1.23e11 nodes in all, against 1.4e13 for
+the two-phase solver. Solution `B D' L R' D L' B U L BL' F' BL D U BR B' R' BR L' B' U' BL
+D'`; `omelettehedron pattern` of scramble plus solution prints each face in one colour.
+
 ## Missing (v0)
 
 * Timings: the machine was busy with long two-phase proofs, so only node counts are measured.

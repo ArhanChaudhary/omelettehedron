@@ -99,6 +99,14 @@ All four positions listed at 23 are 23 in the normal FTO too (two-phase solver, 
 Each proof takes 2.3-3.3 hours on 48 threads (1.3-1.9e13 nodes), most of it in the last target
 pass (no solution of at most 22 moves).
 
+The optimal solver's large tier (`omelettehedron optimal solve --tier large`, 48 threads, quiet
+machine, main 5106ccf) proves tri_adj+edge_opp 23 in **266.5 s** (1.23e11 nodes: depth 22
+complete, no solution, at 152.8 s; a 23-move solution at 266.5 s), against 8,866 s for the
+two-phase solver; solution `B D' L R' D L' B U L BL' F' BL D U BR B' R' BR L' B' U' BL D'`
+(exchanges centres of a colour; scramble plus solution leaves each face one colour). It proves
+the corner 6-flip 20 in 0.48 s (9.6e7 nodes), against 626.5 s for the two-phase solver without
+a lower bound. The other three 23-move positions are next.
+
 ## Start-up
 
 Wall time of a solve of a 2-move scramble, tables already on disk (mostly loading the tables and
