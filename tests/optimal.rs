@@ -372,3 +372,43 @@ fn edge_table_matches_independent_bfs() {
         front = next;
     }
 }
+
+/// The medium tier (corners x edges, 2.4 GB: generated or loaded from `$FTO_TABLES`): the same
+/// optimal lengths as the brute force, consistent tables, and never a weaker root bound than the
+/// small tier's edge table.
+#[test]
+#[ignore = "needs the medium tier's tables (2.4 GB; `omelettehedron optimal gen --tier medium`)"]
+fn medium_tier_matches_brute_force() {
+    let dir = omelettehedron::tables::table_dir(None);
+    let t = OptTables::load(&dir, OptTier::Medium, false).unwrap();
+    let b = t.medium().unwrap();
+    let small = tables().small().unwrap();
+    let mt = opt_moves();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(107);
+    for len in [0usize, 2, 4, 6, 8, 9, 10, 11, 12] {
+        for _ in 0..4 {
+            let scr = random_scramble(&mut rng, len);
+            let (c, fr) = scramble_to_cube(&scr);
+            let Some(truth) = mitm().distance(&c) else {
+                continue;
+            };
+            let o = pool(8).install(|| solve(&b, c, fr, &Limits::default(), false));
+            assert_eq!(o.length, Some(truth), "scramble {}", format_moves(&scr));
+            check_solution(&scr, &o.solutions[0]);
+        }
+    }
+    for _ in 0..100 {
+        let p = Pos::of(&Cube::random(&mut rng));
+        let h = exact(&b, &p).unwrap();
+        // corners x edges >= edges
+        assert!(h[0] >= exact(&small, &p).unwrap()[0]);
+        for m in 0..N_MOVES {
+            let q = mt.apply(&p, m);
+            let hq = exact(&b, &q).unwrap();
+            for k in 0..MediumBounds::K {
+                assert!(h[k].abs_diff(hq[k]) <= 1);
+                assert_eq!(decode(h[k], b.table(k).get(b.index(k, &q))), hq[k]);
+            }
+        }
+    }
+}
