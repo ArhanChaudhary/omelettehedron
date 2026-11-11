@@ -33,8 +33,10 @@ omelettehedron optimal bench --tier medium -N 10 --scramble-len 17 --seed 1717 -
 
 `--tier` is required. `--tables DIR` / `$FTO_TABLES` / `./tables` hold the tables, as for the
 two-phase solver; the optimal solver's files start with `opt-`. Before generating, the disk
-space and free memory are checked for all tables of the tier (`--force` skips the check).
-Face turns only (no `--moves`).
+space and free memory are checked for all tables of the tier (`--force` skips the check);
+`--min-free-memory GB` leaves that much memory to the rest of the machine (added to the check,
+and the large tier's 21 GB table stops generating, writing nothing, if the free memory falls
+below it). Face turns only (no `--moves`).
 
 ## Search
 
@@ -371,7 +373,55 @@ serves all eight lookups. Without the corners, an A-centre/edge table keeps only
 frame-fixing symmetries.) Dropping the chirality loses most of the A-centre/edge table's
 gain at 11 moves left (477 -> 89 cuts), and the table that keeps it does not fit next to the
 proofs; the ordered triple table is as strong at a third of the size. The set + chirality
-variant (7.0 GB, 0.62x) is the fallback for smaller machines.
+variant (7.0 GB, 0.62x) is the fallback for smaller 64-bit machines (with the medium tier,
+10.4 GB in all; not built). WebAssembly stays on the small tier: wasm32 has 4 GB of address
+space, and every table beyond the small tier has more than 2^32 entries. A check on two
+positions of the 15-move set (83,960 nodes) gave 0.351x for the ordered triple table, as on the
+13-move set.
+
+**The `large` tier (`optimal/cbe-solved`).** The ordered triple table (`opt-cbe-sym6.prun`,
+`optimal/cbe.rs`): 83,913,984,000 entries, 20,978,496,152 bytes, generated in 98.7 s on the
+free machine (48 threads; peak memory the table plus the medium tier), every entry reached, max
+depth 14, mean 10.98; depths 0..14: 1, 4, 42, 461, 6,187, 77,829, 988,289, 12,226,937,
+149,316,933, 1,699,817,301, 14,901,628,662, 50,036,333,989, 17,080,092,594, 33,494,770, 1.
+The tier reads corners x edges, AE and its twin, and the eight triple lookups (K = 11): the
+corner x centre lookups are dominated (each triple lookup is at least the corner x centre value
+of its orbit; with every lookup read they prune no child). Lookup order AE, B-triple 3, AE twin,
+the other triples, corners x edges (greedy on the pruning masks of the 17-move set).
+
+Nodes (one thread; the 48-thread counts vary slightly with the split), same lengths everywhere:
+
+| set | medium + AE | large | ratio | completed iterations | all optimal solutions (`-n`) |
+|---|---|---|---|---|---|
+| 10 x 15 moves, seed 1717 | 1,162,092 | 638,270 | 0.549x | 0.285x | 4,461,034 -> 1,290,732 (0.289x) |
+| 10 x 17 moves, seed 1717 | 147,723,722 | 76,064,980 | 0.515x | 0.350x | 626,281,636 -> 210,553,326 (0.336x) |
+| 10 x 19 moves, seed 1919 (48 threads) | 25,165,160,444 | 6,272,933,698 | 0.249x | | |
+
+The full trees shrink as estimated; to the first solution the gain is smaller on the shorter
+sets because the last iteration's task order (from the previous iteration's statistics)
+changes with the bounds and puts the solution elsewhere (position 3 of the 15-move set: 9,344
+-> 216,266 nodes in its last iteration). Lookups per node: 2.36 on the 17-move set (2.53 on
+the 15-move set) against 1.51, 1.08 of them in the 21 GB table.
+
+Time on the quiet machine (bench lock, three interleaved rounds, the same binary for both
+tiers, medians):
+
+| set | threads | medium (s) | large (s) | ratio (rounds) |
+|---|---|---|---|---|
+| 10 x 15 moves, seed 1717 | 1 | 0.069 | 0.066 | 0.956 (0.955, 0.970, 0.975) |
+| 10 x 15 moves, seed 1717 | 48 | 0.021 | 0.018 | 0.861 |
+| 10 x 17 moves, seed 1717 | 1 | 8.077 | 7.147 | 0.885 (0.890, 0.885, 0.888) |
+| 10 x 17 moves, seed 1717 | 48 | 0.236 | 0.209 | 0.888 |
+| 10 x 19 moves, seed 1919 | 48 | 31.399 | 14.753 | **0.470** (0.459, 0.471, 0.468) |
+
+A node costs about 1.7 times as much (more lookups, and the triple table misses the cache and
+the TLB), so the gain grows with the depth: 0.89x at 17 moves, 0.47x at 19.
+
+**The corner 6-flip** (`bench/hard.tsv`, 48 threads, quiet machine): medium 20,555,511,618 nodes
+in 29.0 s; large **96,270,740 nodes in 0.497 s** (214x fewer nodes, 58x faster), the same
+20-move solution. Its edges and centres are solved, so AE is 0 and every root bound is 9, but
+deeper the triple table sees the corners together with the edges and centres they disturb
+(depth 19: 4.17e9 -> 5.82e7 nodes).
 
 ## Missing (v0)
 
