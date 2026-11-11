@@ -845,6 +845,9 @@ pub struct Tables<I: AeIndex> {
     pub cb: CbTable,
     pub p2: Phase2,
     pub cbe: Option<crate::cbe::CbeTable>,
+    /// distances to solved on the joint table's index (large and huge tiers, face turns): a
+    /// bound for optimal mode (see `search.rs`)
+    pub cbs: Option<crate::cbe::CbsTable>,
 }
 
 pub fn table_dir(dir: Option<&Path>) -> PathBuf {
@@ -902,6 +905,7 @@ impl<I: AeIndex> Tables<I> {
             cb,
             p2: Phase2::new(),
             cbe: None,
+            cbs: None,
         }
     }
 
@@ -932,10 +936,14 @@ impl<I: AeIndex> Tables<I> {
         let ae_path = dir.join(format!("{}{sfx}.prun", ae_ix.name()));
         let cb_path = dir.join(format!("cb-sym24{sfx}.prun"));
         let cbe_path = dir.join(format!("cbe{sfx}.prun"));
+        // (face turns only: the slice metric would need its own table, not made)
+        let with_cbs = with_cbe && !moves.slice;
+        let cbs_path = dir.join(format!("cbe-solved{}.prun", crate::cbe::CBS_MIN));
         // Check all tables of the tier before generating any (a table that exists is loaded:
         // it only needs memory). 2 bits per entry.
-        // (generation needs no memory beyond the tables themselves: the large tier peaks at
-        // 8.1 GB for 8.1 GB of tables)
+        // (generation needs no memory beyond the tables themselves, except the 7.0 GB search
+        // array of the 3.5 GB distance-to-solved table: the large tier peaks at 18.6 GB for
+        // 11.6 GB of tables)
         let planned = |path: PathBuf, size: &dyn Fn() -> usize| {
             let bytes =
                 std::fs::metadata(&path).map_or_else(|_| size().div_ceil(4) as u64, |m| m.len());
@@ -953,6 +961,16 @@ impl<I: AeIndex> Tables<I> {
             plan.push(planned(cbe_path.clone(), &|| {
                 crate::cbe::CbeIndex::new().size()
             }));
+        }
+        if with_cbs {
+            // (one bit per entry, made from a 2-bit breadth-first search array)
+            let n = || crate::cbe::CbeIndex::new().size();
+            let exists = std::fs::metadata(&cbs_path).is_ok();
+            let mut p = planned(cbs_path.clone(), &|| n().div_ceil(2));
+            if !exists {
+                p.working_set = n().div_ceil(4) as u64;
+            }
+            plan.push(p);
         }
         crate::preflight::check_plan(&plan)?;
         let ae = load_or_build(&ae_path, ae_ix.size(), verbose, || {
@@ -990,6 +1008,44 @@ impl<I: AeIndex> Tables<I> {
         } else {
             None
         };
+        let cbs = match (&cbe, with_cbs) {
+            (Some(cbe), true) => {
+                let path = cbs_path;
+                let t = match crate::cbe::CbsTable::load(&cbe.ix, &path) {
+                    Ok(t) => {
+                        if verbose {
+                            eprintln!(
+                                "loaded {} ({:.1} MB)",
+                                path.display(),
+                                t.bits.len() as f64 * 8e-6
+                            );
+                        }
+                        t
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        if verbose {
+                            eprintln!("generating {} ...", path.display());
+                        }
+                        let t = crate::cbe::CbsTable::build(&cbe.ix, verbose);
+                        t.save(&cbe.ix, &path)?;
+                        t
+                    }
+                    Err(e) => return Err(e),
+                };
+                if !t.check_walks(&cbe.ix) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "{}: not a distance-to-solved table for this version's layout \
+                             (made by a different version?); delete it to regenerate",
+                            path.display()
+                        ),
+                    ));
+                }
+                Some(t)
+            }
+            _ => None,
+        };
         let t = Tables {
             moves,
             ae_ix,
@@ -998,6 +1054,7 @@ impl<I: AeIndex> Tables<I> {
             cb,
             p2: Phase2::new(),
             cbe,
+            cbs,
         };
         t.check_walks(&ae_path, &cb_path)?;
         Ok(t)

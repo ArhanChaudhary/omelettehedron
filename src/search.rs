@@ -150,6 +150,9 @@ struct Shared<'a, I: AeIndex, const N: usize> {
     mv: [[usize; 32]; 2],
     /// largest CB distance (8): with at least this many moves left CB cannot prune
     cb_max: u8,
+    /// the distance-to-solved table and the joint table (for its index), in optimal mode
+    /// (see `finish`)
+    cbs: Option<(&'a crate::cbe::CbsTable, &'a crate::cbe::CbeTable)>,
 }
 
 /// A node of the top levels of the search tree (see [`Shared::tasks`]).
@@ -1035,6 +1038,39 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             }
             n = k;
         }
+        // Distance-to-solved bound (optimal mode, large and huge tiers): a solution through a
+        // child at depth g+1 has at least g+1+d moves, d its distance to solved, so a child is
+        // dropped (on both sides) when one of the eight joint-index projections of its two
+        // positions (four triples per side) is at least `CBS_MIN` from solved and fewer moves
+        // are left. The search's other bounds keep almost no child with fewer than
+        // `CBS_MIN` - 1 moves left, and at `CBS_MIN` - 1 this cuts about 96% of the children
+        // that pass them (1T nodes 0.775x / 0.803x on the 17 / 19-move sets; time 0.843x /
+        // 0.874x at 1T / 48T, opt/tosolved, measured with the equivalent 2-bit codes).
+        if B && n > 0 && budget > 0 {
+            if let Some((cbs, cbe)) = self.cbs {
+                let lim = ctr.prune_len.saturating_sub(g + 2);
+                if lim < usize::from(crate::cbe::CBS_MIN) {
+                    for &i in &sel[..n] {
+                        let u = usize::from(i) % N;
+                        for s in 0..2 {
+                            cbs.prefetch_all(&cbe.ix, f, &ys[s][u], &mut ci[s][u]);
+                        }
+                    }
+                    let mut k = 0;
+                    for j in 0..n {
+                        let i = sel[j];
+                        let u = usize::from(i) % N;
+                        let ok = !(cbs.any_far(&ci[0][u]) || cbs.any_far(&ci[1][u]));
+                        if !ok {
+                            live[u] = 0;
+                        }
+                        sel[k % N] = i;
+                        k += usize::from(ok);
+                    }
+                    n = k;
+                }
+            }
+        }
         // Ordering statistic of the task: how close its subtree gets to the phase-1 targets.
         for &i in &sel[..n] {
             let i = usize::from(i) % N;
@@ -1431,6 +1467,14 @@ fn solve_n<I: AeIndex, const N: usize>(
         mb: swap_moves::<N>(),
         mv: [std::array::from_fn(|m| m), swap_moves::<N>()],
         cb_max: (t.cb.tab.hist.len() - 1) as u8,
+        cbs: match (&t.cbs, &t.cbe) {
+            (Some(s), Some(e))
+                if limits.is_optimal() && std::env::var_os("FTO_NO_CBS").is_none() =>
+            {
+                Some((s, e))
+            }
+            _ => None,
+        },
     };
     let lo = (0..2)
         .map(|s| sh.root.h_ae[s].max(sh.root.h_cb[s]) as usize)

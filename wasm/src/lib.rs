@@ -418,6 +418,7 @@ pub extern "C" fn fto_load() -> i32 {
             },
             p2: Phase2::new(),
             cbe: None,
+            cbs: None,
             moves: MoveSet::FACE,
         };
         let info = tables_json(&t, &json!({ "seconds": start.elapsed().as_secs_f64() }));

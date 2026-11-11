@@ -813,6 +813,9 @@ fn run(cli: Cli) -> Result<(), Error> {
                     if let Some(cbe) = &t.cbe {
                         eprintln!("CBE depth histogram {:?}", cbe.hist);
                     }
+                    if let Some(cbs) = &t.cbs {
+                        eprintln!("CBE-to-solved depth histogram {:?}", cbs.hist);
+                    }
                 });
                 Ok(())
             })
