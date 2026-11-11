@@ -51,11 +51,18 @@
   td { padding: 0 0.75rem 0 0; vertical-align: top; }
   td.moves { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
   td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .switch { margin: 0.6rem 0 0.3rem; }
+  .switch label { margin-right: 1rem; }
+  #pattern-help { margin: 0.2rem 0 0.4rem; }
+  #pattern-scramble pre { margin-top: 0.2rem; }
+  .bad { color: #c0177f; }
+  @media (prefers-color-scheme: dark) { .bad { color: #ff7ac8; } }
 </style>
 </head>
 <body>
 <h1>omelettehedron</h1>
-<p class="note">Solve any face-turning octahedron (FTO) scramble right here in your browser.
+<p class="note">Solve any face-turning octahedron (FTO) scramble right here in your browser, or a
+scrambled puzzle from its colours.
 Hold the puzzle with a corner pointing at you: front faces U (top), R, F (bottom), L; back faces
 B (top), BR, D (bottom), BL. <code>X</code> turns face X clockwise as seen from outside, <code>X'</code>
 anticlockwise.</p>
@@ -65,9 +72,29 @@ anticlockwise.</p>
   <span id="status" role="status">Starting…</span>
 </div>
 
+<div class="row switch" role="radiogroup" aria-label="What to solve">
+  <label><input type="radio" name="input" value="scramble" checked> a scramble (moves)</label>
+  <label><input type="radio" name="input" value="pattern"> a pattern (the colours you see)</label>
+</div>
+
+<div id="pattern-input" hidden>
+  <p id="pattern-help" class="note">Hold your puzzle with a corner pointing at you and colour the
+  front picture as you see it: U at the top, R on the right, F at the bottom, L on the left. Then
+  turn the whole puzzle around, keeping the top at the top, and colour the back picture: B at the
+  top, BL on the right, D at the bottom, BR on the left. Pick a colour, then click or drag over the
+  stickers. The colours under the picture are your solved puzzle as you usually hold it (each
+  face's colour); if your puzzle's colours differ, press Change colours.</p>
+  <div id="pattern-picture"></div>
+  <div class="row">
+    <button id="pattern-solved" type="button">Solved puzzle</button>
+    <button id="pattern-blank" type="button">All blank</button>
+  </div>
+</div>
+
 <textarea id="scramble" rows="3" aria-label="Scramble" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Paste a scramble, e.g. U R' BL F D B' L BR, or press Random scramble"></textarea>
 <div class="row">
   <button id="random" disabled>Random scramble</button>
+  <button id="show-pattern" disabled>Show its pattern</button>
   <label><input type="radio" name="mode" value="time" checked> best solution in <input id="seconds" type="number" min="0.1" step="any" value="10" style="width:4rem" aria-label="Time limit in seconds"> seconds</label>
   <label><input type="radio" name="mode" value="optimal"> shortest possible (can be slow)</label>
   <button id="solve" class="primary" disabled>Solve</button>
@@ -77,6 +104,7 @@ anticlockwise.</p>
 <section id="result" hidden>
   <div id="summary"></div>
   <pre id="solution"></pre>
+  <div id="pattern-scramble" hidden></div>
   <div id="stats" class="note"></div>
   <table id="history" aria-label="Solutions found, each shorter than the one before"></table>
 </section>
@@ -104,6 +132,7 @@ anticlockwise.</p>
 
 <script type="module">
 import { cancel, parseImprovement } from './omelettehedron.mjs';
+import { PatternInput } from './pattern-input.mjs';
 
 const $ = (id) => document.getElementById(id);
 const status = (text) => { $('status').textContent = text; };
@@ -177,6 +206,7 @@ const buttons = () => {
   $('random').disabled = $('solve').disabled = !ready || solving;
   $('stop').disabled = !solving;
   $('apply').disabled = $('files').disabled = $('forget').disabled = !ready || solving;
+  $('show-pattern').disabled = !ready || solving;
 };
 
 // --- Generation progress ---
@@ -292,11 +322,107 @@ const showHistory = () => {
 const primes = /[‘’‛′´`ʼʹ]/g;
 const plain = (text) => text.replace(primes, "'").replace(/ /g, ' ');
 
-$('solve').onclick = () => run('Solve', async () => {
+// --- Patterns (the colours of a scrambled puzzle; src/pattern.rs, pattern-input.mjs) ---
+const pi = new PatternInput($('pattern-picture'));
+const patternMode = () => document.querySelector('input[name=input]:checked').value === 'pattern';
+const setMode = (mode) => {
+  const pattern = mode === 'pattern';
+  document.querySelector(`input[name=input][value=${pattern ? 'pattern' : 'scramble'}]`).checked = true;
+  $('pattern-input').hidden = !pattern;
+  for (const id of ['scramble', 'random', 'show-pattern']) $(id).hidden = pattern;
+  try {
+    localStorage.setItem('omelettehedron-input', pattern ? 'pattern' : 'scramble');
+  } catch {
+    // (only a convenience)
+  }
+};
+for (const r of document.querySelectorAll('input[name=input]')) r.onchange = () => setMode(r.value);
+try {
+  setMode(localStorage.getItem('omelettehedron-input') ?? 'scramble');
+} catch {
+  setMode('scramble');
+}
+$('pattern-solved').onclick = () => pi.fillSolved();
+$('pattern-blank').onclick = () => pi.clear();
+$('show-pattern').onclick = () => run('Show its pattern', async () => {
   const scramble = plain($('scramble').value).trim();
-  $('scramble').value = scramble;
+  const { pattern } = await call('pattern', { scramble });
+  pi.setCode(pattern);
+  setMode('pattern');
+});
+
+/** What is wrong with a pattern, with the stickers concerned outlined in the picture. */
+const showPatternError = (e) => {
+  pi.highlight(e.stickers);
+  let text;
+  if (e.kind === 'counts') {
+    const parts = e.counts.map(([c, n]) => `${pi.colourName(c)} is on ${n}`);
+    const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0];
+    text = `Each colour should be on exactly 9 stickers, but ${list}.`;
+  } else {
+    text = `${e.message[0].toUpperCase()}${e.message.slice(1)}.`;
+  }
+  if (e.stickers.length) text += ' The stickers concerned are outlined in the picture.';
+  $('result').hidden = false;
+  $('summary').innerHTML = '<strong class="bad">This pattern cannot be solved</strong>';
+  $('solution').textContent = text;
+  $('stats').textContent = '';
+};
+
+/**
+ * The scramble that makes the pattern: from the usual hold when one makes it exactly (whole-
+ * puzzle turns first), else from the hold the solution ends in (the FTO has no fixed centres,
+ * so a scrambled puzzle can be held 24 ways and a scramble starts from a particular hold).
+ */
+const showPatternScramble = (sc) => {
+  const box = $('pattern-scramble');
+  box.hidden = !sc;
+  if (!sc) return;
+  const hold = `${pi.colourName(sc.start[0])} on U and ${pi.colourName(sc.start[2])} on F`;
+  const parts = [];
+  if (sc.usual !== null && sc.exact) {
+    parts.push(['A scramble that makes this pattern, from your solved puzzle held the usual way:', sc.usual]);
+    if (sc.usual !== sc.moves) {
+      parts.push([`Or, without the whole-puzzle turns at the start, from your solved puzzle held with ${hold}:`, sc.moves]);
+    }
+  } else {
+    parts.push([`A scramble that makes this pattern, from your solved puzzle held with ${hold}:`, sc.moves]);
+    if (sc.usual !== null) {
+      parts.push(['No scramble from your usual hold makes the pattern exactly as you entered it, because '
+        + 'you were holding the puzzle another way round. From your usual hold, this scramble makes the '
+        + 'same puzzle; then turn the whole puzzle until it matches the picture:', sc.usual]);
+    } else {
+      parts.push(["For a scramble from your usual hold, set your puzzle's colours under the picture "
+        + '(Change colours).', null]);
+    }
+  }
+  box.replaceChildren(...parts.flatMap(([text, moves]) => {
+    const p = document.createElement('div');
+    p.textContent = text;
+    if (moves === null) return [p];
+    const pre = document.createElement('pre');
+    pre.textContent = moves || '(no moves: the pattern is the solved puzzle)';
+    return [p, pre];
+  }));
+};
+
+$('solve').onclick = () => run('Solve', async () => {
+  const usePattern = patternMode();
   const optimal = document.querySelector('input[name=mode]:checked').value === 'optimal';
   const seconds = optimal ? 0 : Math.max(0.01, Number($('seconds').value) || 10);
+  let request;
+  if (usePattern) {
+    if (pi.blanks) {
+      status(`Colour every sticker first: ${plural(pi.blanks, 'sticker')} ${pi.blanks === 1 ? 'is' : 'are'} still blank.`);
+      return;
+    }
+    request = ['solvePattern', { pattern: pi.pattern, usual: pi.usual, seconds }];
+  } else {
+    const scramble = plain($('scramble').value).trim();
+    $('scramble').value = scramble;
+    request = ['solve', { scramble, seconds }];
+  }
+  $('pattern-scramble').hidden = true;
   solving = true;
   best = null;
   rows = [];
@@ -307,7 +433,12 @@ $('solve').onclick = () => run('Solve', async () => {
   const timer = setInterval(() => status(`Solving… ${((performance.now() - t0) / 1000).toFixed(1)} s`
     + (best ? ` · best so far ${plural(best.length, 'move')}` : '')), 100);
   try {
-    const r = await call('solve', { scramble, seconds });
+    const r = await call(...request);
+    if (r.error) {
+      showPatternError(r.error);
+      status('Ready');
+      return;
+    }
     const how = r.optimal ? '<span class="ok">shortest possible</span>'
       : r.cancelled ? 'stopped; there may be a shorter solution'
       : optimal ? 'there may be a shorter solution'
@@ -318,7 +449,8 @@ $('solve').onclick = () => run('Solve', async () => {
     } else {
       showSolution(r.solution, `<strong>${plural(r.length, 'move')}</strong> · ${how}`
         + (r.verified ? ' · <span class="ok">verified</span>'
-          : ' · <strong>verification failed: please report this scramble</strong>'));
+          : ` · <strong>verification failed: please report this ${usePattern ? 'pattern' : 'scramble'}</strong>`));
+      if (usePattern) showPatternScramble(r.scramble);
     }
     $('stats').textContent = `Took ${r.seconds.toFixed(2)} s and searched `
       + `${(r.nodes / 1e6).toFixed(1)} million positions.`;

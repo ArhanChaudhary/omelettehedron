@@ -516,6 +516,23 @@ export class FtoSolver {
     return this.withText(moves, (ptr, len) => this.call('fto_is_solved', ptr, len));
   }
 
+  /** The pattern (72 sticker colours, src/pattern.rs) that a scramble makes: `{ pattern }`. */
+  pattern(scramble) {
+    return this.withText(scramble, (ptr, len) => this.call('fto_pattern', ptr, len));
+  }
+
+  /**
+   * Solve a pattern (72 sticker colours) as `solve` solves a scramble; `usual` is the colours
+   * of U R F L B BL D BR on the solved puzzle as usually held (8 letters), for a scramble from
+   * that hold. Returns `solve`'s result plus `scramble: { start, moves, usual, exact }`, or
+   * `{ error: { message, kind, stickers, counts } }` for a wrong pattern.
+   */
+  solvePattern(pattern, { usual = '', seconds = 0, maxLength = 0, improvements = false } = {}) {
+    return this.withText(pattern, (ptr, len) =>
+      this.withText(usual, (uptr, ulen) =>
+        this.call('fto_solve_pattern', ptr, len, uptr, ulen, seconds, maxLength, improvements ? 1 : 0)));
+  }
+
   /**
    * The native `bench`: `count` seeded random positions (or random-move scrambles of
    * `scrambleLength` moves) solved one at a time for `seconds` each (0: optimal). Returns the

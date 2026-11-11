@@ -40,6 +40,10 @@ const commands = {
   /** Solve, printing improvements on the channel. */
   solve: ({ scramble, seconds = 0, maxLength = 0 }) =>
     solver.solve(scramble, { seconds, maxLength, improvements: true }),
+  /** Solve a pattern (72 sticker colours), printing improvements on the channel. */
+  solvePattern: ({ pattern, usual = '', seconds = 0, maxLength = 0 }) =>
+    solver.solvePattern(pattern, { usual, seconds, maxLength, improvements: true }),
+  pattern: ({ scramble }) => solver.pattern(scramble),
   random: ({ seed }) => solver.randomScramble({ seed }),
   isSolved: ({ moves }) => solver.isSolved(moves),
   bench: (args) => solver.bench(args),

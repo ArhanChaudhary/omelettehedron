@@ -139,6 +139,44 @@ target/release/omelettehedron solve --tier large --moves slice "U R' BL F D B' L
 Stopping rules can be combined; the search stops when any of them triggers. `-j N` sets the
 thread count (default: all cores).
 
+### Patterns
+
+A position can also be given as what it looks like: its 72 sticker colours (a *pattern*), for
+example to find a scramble for a scrambled puzzle whose scramble is not known.
+
+```sh
+# the pattern a scramble makes
+target/release/omelettehedron pattern "R U' BL F D B' R L' BR U F' D"
+# OOGAAGGOG BYRPBYRPR AWAWGOGWA RPBBPRPPY / RBYYYPRBB GOWWWAGGW PYYRYRBBP OAAOWOAWO
+
+# solve a pattern; --usual gives your solved puzzle as you usually hold it (the colours of
+# U R F L B BL D BR), for a scramble from that hold
+target/release/omelettehedron solve --tier large -t 5 --usual WRGPBOYA \
+    --pattern "OOGAAGGOG BYRPBYRPR AWAWGOGWA RPBBPRPPY / RBYYYPRBB GOWWWAGGW PYYRYRBBP OAAOWOAWO"
+# D' F U' L BR' R' B D' F' BL' U R'
+# scramble from solved with W on U and G on F: R U' BL F D B' R BR L' U F' D
+# scramble from your usual hold: R U' BL F D B' R BR L' U F' D
+```
+
+Hold the puzzle with a corner pointing at you and read the front faces U, R, F, L (top, right,
+bottom, left), then turn the whole puzzle around, keeping the top at the top, and read the back
+faces B, BL, D, BR (top, right, bottom, left). Read each face with its outer edge at the top: the
+5 stickers along that edge from left to right, the 3 of the middle row, then the one at the
+corner in the middle. Spaces and `/` are ignored. Any 8 letters work, the puzzle may be held any
+way and its colour scheme does not matter: which colour belongs to which face is worked out from
+the corners. A pattern with a mistake gets a plain explanation (a colour on the wrong number of
+stickers, a piece that cannot exist, two identical pieces, or a pattern that turning cannot make,
+such as two edges swapped).
+
+The FTO has no fixed centres, so the same scrambled puzzle can be held 24 ways, and a scramble
+(the solution reversed) makes the pattern exactly only from the solved puzzle held the way the
+solution ends; the output says which (the colours on U and F). With `--usual`, the scramble
+starts from your usual hold: it begins with up to two whole-puzzle rotations (`v` turns, such as
+`Lv`) when the pattern was entered holding the puzzle one of the 12 ways rotations reach; for the
+other 12 (the colours of the two halves of the faces swapped, a quarter turn about a corner) no
+scramble from the usual hold makes the pattern as entered, and the output gives the one that
+makes the same puzzle, held another way.
+
 ### Pruning tables
 
 `--tier` is required (there is no default size): choose the largest tier that fits

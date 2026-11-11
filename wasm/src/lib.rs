@@ -42,6 +42,7 @@ use omelettehedron::notation::{
     apply_physical, format_moves, is_solved_physical, parse_moves, scramble_to_cube, Frame,
     PhysMove,
 };
+use omelettehedron::pattern::{self, PatternError};
 use omelettehedron::prune::{checksum, Table2};
 use omelettehedron::search::{solve, Limits, Report};
 use omelettehedron::tables::{ae_targets, AeIndex, AeSym, CbTable, Phase2, Tables, N_CB};
@@ -521,5 +522,130 @@ pub extern "C" fn fto_bench(count: u32, seed: u32, seconds: f64, scramble_len: u
             false,
         );
         serde_json::to_string(&s).map_err(|e| e.to_string())
+    })
+}
+
+/// The pattern a scramble makes (as the native `pattern`): the 72 sticker colours in picture
+/// order (src/pattern.rs), with the letters of the solved faces, W R G P / B O Y A for U R F L
+/// / B BL D BR. Output: `{"pattern":..}`.
+///
+/// # Safety
+/// As `fto_solve`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fto_pattern(text: *const u8, len: usize) -> i32 {
+    // SAFETY: as the caller promises.
+    let text = unsafe { text_argument(text, len) };
+    with_state(|_| {
+        let moves = parse_moves(text?)?;
+        Ok(json!({ "pattern": pattern::format(&pattern::of_moves(&moves)) }).to_string())
+    })
+}
+
+/// What is wrong with a pattern, for the page: `{"message":.., "kind":.., "stickers": the
+/// picture positions to point out, "counts": [[colour, stickers], ..] for the colours not on
+/// 9 stickers}`.
+fn pattern_error(e: &PatternError) -> serde_json::Value {
+    let kind = match e {
+        PatternError::Length(_) => "length",
+        PatternError::Colours(_) => "colours",
+        PatternError::Counts(_) => "counts",
+        PatternError::Pieces(_) => "pieces",
+        PatternError::Duplicates(_) => "duplicates",
+        PatternError::Unreachable(_) => "unreachable",
+    };
+    let counts: Vec<(String, usize)> = match e {
+        PatternError::Counts(c) => c.iter().map(|&(s, n)| (s.to_string(), n)).collect(),
+        _ => vec![],
+    };
+    json!({
+        "message": e.to_string(),
+        "kind": kind,
+        "stickers": e.stickers(),
+        "counts": counts,
+    })
+}
+
+/// Solve a pattern (src/pattern.rs) as `fto_solve` solves a scramble. `usual`: the colours of
+/// U R F L B BL D BR on the solved puzzle as usually held (8 letters of the pattern), or empty.
+/// Output: as `fto_solve` (`verified`: the solution leaves every face one colour), plus
+/// `"scramble": {"start": the colours of U R F L B BL D BR on the solved puzzle it starts
+/// from, "moves":.., "usual": the scramble from the usual hold or null, "exact": whether that
+/// makes the pattern as entered (otherwise the same puzzle, held another way)}`. A wrong
+/// pattern gives `{"error": ..}` (see `pattern_error`) instead of a solve.
+///
+/// # Safety
+/// As `fto_solve`, for both strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fto_solve_pattern(
+    text: *const u8,
+    len: usize,
+    usual: *const u8,
+    usual_len: usize,
+    seconds: f64,
+    max_length: u32,
+    improvements: u32,
+) -> i32 {
+    // SAFETY: as the caller promises.
+    let (text, usual) = unsafe { (text_argument(text, len), text_argument(usual, usual_len)) };
+    with_state(|state| {
+        let p = match pattern::parse(text?).and_then(|p| pattern::position(&p).map(|c| (p, c))) {
+            Ok(x) => x,
+            Err(e) => return Ok(json!({ "error": pattern_error(&e) }).to_string()),
+        };
+        let (p, cube) = p;
+        let usual: Option<[char; 8]> = match usual? {
+            "" => None,
+            u => Some(
+                u.chars()
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .map_err(|_| "usual: 8 colours".to_string())?,
+            ),
+        };
+        ensure_pool(state, 1)?;
+        let t = tables(state)?;
+        let time = if seconds > 0.0 {
+            Some(Duration::try_from_secs_f64(seconds).map_err(|e| format!("time limit: {e}"))?)
+        } else {
+            None
+        };
+        let limits = Limits {
+            time,
+            max_length: (max_length > 0).then_some(max_length as usize),
+            cancel_after: Some(NO_LIMIT),
+            ..Limits::default()
+        };
+        let report = if improvements == 0 {
+            Report::Quiet
+        } else {
+            Report::Improvements
+        };
+        let o = solve(t, cube, Frame::identity(), &limits, report);
+        let events: Vec<(f64, usize)> = o.events.iter().map(|e| (e.time, e.length)).collect();
+        let scramble = o
+            .solution
+            .as_deref()
+            .and_then(|s| pattern::scramble(&p, s, usual.as_ref()))
+            .map(|sc| {
+                let from_usual = sc.from_usual_text();
+                json!({
+                    "start": sc.start.iter().collect::<String>(),
+                    "moves": format_moves(&sc.moves),
+                    "usual": from_usual.as_ref().map(|(t, _)| t.clone()),
+                    "exact": from_usual.is_some_and(|(_, exact)| exact),
+                })
+            });
+        Ok(json!({
+            "solution": o.solution.as_deref().map(format_moves),
+            "length": o.length,
+            "optimal": o.optimal,
+            "verified": o.solution.as_deref().is_some_and(|s| pattern::solves(&p, s)),
+            "seconds": o.elapsed,
+            "nodes": o.nodes,
+            "solutions": o.solutions_found,
+            "events": events,
+            "scramble": scramble,
+        })
+        .to_string())
     })
 }
