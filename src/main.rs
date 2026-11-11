@@ -163,9 +163,10 @@ enum Cmd {
     /// faces B, BL, D, BR (again clockwise from the top: B is now at the top and BL on the
     /// right). Read each face with its outer edge at the top: the 5 stickers along that edge
     /// from left to right, the 3 of the middle row, then the one at the corner in the middle of
-    /// the picture. Printed patterns use the letters W R G P / B O Y A for the solved faces U R
-    /// F L / B BL D BR; patterns given to `solve --pattern` may use any letters, and the
-    /// puzzle may be held any way and have any colour scheme.
+    /// the picture. Printed patterns use the standard colour scheme held the standard way
+    /// (white on U, green on F): W R G P / B O Y A (white red green purple / blue orange yellow
+    /// grey) for the solved faces U R F L / B BL D BR. Patterns given to `solve --pattern` may
+    /// use any letters, and the puzzle may be held any way and have any colour scheme.
     Pattern {
         /// Scramble in FTO notation
         scramble: Vec<String>,

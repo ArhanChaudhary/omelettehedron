@@ -58,9 +58,12 @@ const PICTURE: [(usize, [V3; 3]); 8] = [
 /// Faces in picture order (indices into [`FACE_NAMES`]).
 pub const PICTURE_FACES: [usize; 8] = [0, 1, 3, 2, 4, 6, 7, 5];
 
-/// The colour letter of each face (indexed like [`FACE_NAMES`]) when a pattern is printed: an
-/// example scheme (white U, red R, purple L, green F, blue B, grey BR, orange BL, yellow D).
-/// Patterns that are read may use any 8 characters.
+/// The colour letter of each face (indexed like [`FACE_NAMES`]) when a pattern is printed: the
+/// standard colour scheme (that of the Diansheng, Dayan and most other FTOs) held the standard
+/// way, white on U and green on F (the scrambling orientation of FTO competitions): white U,
+/// red R, purple L, green F, blue B, grey BR, orange BL, yellow D. Opposite faces are
+/// white/yellow, green/blue, red/orange and purple/grey. (Lanlan FTOs have red and green
+/// swapped.) Patterns that are read may use any 8 characters.
 pub const DEFAULT_SYMBOLS: [char; 8] = ['W', 'R', 'P', 'G', 'B', 'A', 'O', 'Y'];
 
 /// `a * p + b * q + c * r`: a sticker centroid (scaled by 9, as in [`crate::geometry`]).
@@ -981,7 +984,7 @@ mod tests {
                 }
                 Err(e) => {
                     assert!(e.stickers().iter().all(|&i| i < STICKERS), "{e:?}");
-                    assert!(!e.to_string().is_empty());
+                    assert_ne!(e.to_string(), "");
                     errors += 1;
                 }
             }

@@ -6,6 +6,10 @@
 
 import { stickerTriangles, faceLabels, PICTURE_FACES, SOLVED_LETTERS } from './pattern-picture.mjs';
 
+// The standard colour scheme, held the standard way (white on U, green on F: the scrambling
+// orientation of FTO competitions): the scheme of the Diansheng, Dayan and most other FTOs.
+// Opposite faces are white/yellow, green/blue, red/orange and purple/grey, and red, purple and
+// blue surround white clockwise. (LanLan FTOs have red and green swapped: SCHEMES.)
 const DEFAULTS = {
   W: ['#f4f4f0', 'white'],
   R: ['#d42a2f', 'red'],
@@ -15,6 +19,11 @@ const DEFAULTS = {
   O: ['#f47c0c', 'orange'],
   Y: ['#f4d10b', 'yellow'],
   A: ['#8b8b87', 'grey'],
+};
+/** Colour schemes to start from: the colour of each face letter's face. */
+const SCHEMES = {
+  standard: Object.fromEntries(Object.entries(DEFAULTS).map(([l, [hex]]) => [l, hex])),
+  lanlan: { ...Object.fromEntries(Object.entries(DEFAULTS).map(([l, [hex]]) => [l, hex])), R: DEFAULTS.G[0], G: DEFAULTS.R[0] },
 };
 const STORE_COLOURS = 'omelettehedron-pattern-colours';
 const STORE_CELLS = 'omelettehedron-pattern';
@@ -123,7 +132,20 @@ export class PatternInput {
       this.editing = !this.editing;
       this.renderPalette();
     });
-    this.palette.append(this.editButton);
+    this.scheme = el('select', { 'aria-label': 'Colour scheme' });
+    for (const [value, label] of [['standard', 'Standard colours'], ['lanlan', 'LanLan colours'], ['custom', 'Your own colours']]) {
+      const o = el('option', { value });
+      o.textContent = label;
+      this.scheme.append(o);
+    }
+    this.scheme.addEventListener('change', () => {
+      const preset = SCHEMES[this.scheme.value];
+      if (!preset) return;
+      this.colours = { ...preset };
+      save(STORE_COLOURS, this.colours);
+      this.render();
+    });
+    this.palette.append(this.editButton, this.scheme);
 
     // picture
     this.svg = el('svg', { class: 'pi-picture', viewBox: `0 0 450 ${FRONT[1] + SIZE + 6}`, role: 'img' }, SVG);
@@ -182,8 +204,15 @@ export class PatternInput {
 
   /** The name of a colour for messages: its colour name, or the face it is on when solved. */
   colourName(letter) {
-    if (this.colours[letter]?.toLowerCase() === DEFAULTS[letter]?.[0]) return DEFAULTS[letter][1];
+    const hex = this.colours[letter]?.toLowerCase();
+    const known = Object.values(DEFAULTS).find(([h]) => h === hex);
+    if (known) return known[1];
     return `your ${PICTURE_FACES[SOLVED_LETTERS.indexOf(letter)]} colour`;
+  }
+
+  /** The usual hold in words: the colours on U and F. */
+  get usualHold() {
+    return `${this.colourName(SOLVED_LETTERS[0])} on U and ${this.colourName(SOLVED_LETTERS[2])} on F`;
   }
 
   /** Number of stickers without a colour. */
@@ -259,6 +288,8 @@ export class PatternInput {
       button.title = `Paint with ${this.colourName(letter)} (the colour of ${face} on your solved puzzle)`;
     }
     this.editButton.textContent = this.editing ? 'Done' : 'Change colours';
+    const same = (preset) => SOLVED_LETTERS.every((l) => preset[l] === this.colours[l]?.toLowerCase());
+    this.scheme.value = Object.keys(SCHEMES).find((k) => same(SCHEMES[k])) ?? 'custom';
   }
 
   render() {
