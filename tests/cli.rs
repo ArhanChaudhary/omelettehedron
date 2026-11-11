@@ -413,3 +413,96 @@ fn nothing_written_when_tables_do_not_fit() {
     assert_eq!(files, 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `symmetric`: the table of subgroups, and the positions of one listed as patterns that `info`
+/// reads back with that many symmetries (no table needed).
+#[test]
+fn symmetric_positions() {
+    let (ok, out, err) = run(&["symmetric"], "");
+    assert!(ok, "{err}");
+    // a header and the 33 classes, the full group first and the trivial one last
+    assert_eq!(out.lines().count(), 34, "{out}");
+    let first: Vec<&str> = out.lines().nth(1).unwrap().split_whitespace().collect();
+    assert_eq!(&first[..7], ["1", "48", "Oh", "1", "8", "8", "8"], "{out}");
+    let last: Vec<&str> = out.lines().last().unwrap().split_whitespace().collect();
+    assert_eq!(
+        &last[..5],
+        ["33", "1", "C1", "1", "31408133379194880000000"]
+    );
+
+    // the 24-symmetry positions: 20 (three subgroups), each with 24 symmetries
+    let (ok, out, err) = run(&["symmetric", "--order", "24"], "");
+    assert!(ok, "{err}");
+    let patterns: Vec<&str> = out.lines().filter(|l| !l.starts_with('#')).collect();
+    assert_eq!(patterns.len(), 20, "{out}");
+    let (ok, info, err) = run(&["info", "--patterns"], &out);
+    assert!(ok, "{err}");
+    assert_eq!(info.matches("symmetries: 24 of 48").count(), 20, "{info}");
+    // tri_adj+edge_adj of bench/hard.tsv is one of them (up to symmetry: some listed
+    // position has the same pattern up to turning, mirroring and renaming colours, so check
+    // the count of one subgroup and that the scramble's pattern has 24 symmetries)
+    assert!(out.contains("# subgroup 2: Th, 24 symmetries"), "{out}");
+
+    // a subgroup with too many positions is only counted
+    let (ok, out, err) = run(&["symmetric", "--subgroup", "33"], "");
+    assert!(ok, "{err}");
+    assert!(out.contains("not listed"), "{out}");
+    let (ok, _, err) = run(&["symmetric", "--order", "5"], "");
+    assert!(!ok);
+    assert!(err.contains("no subgroup has 5 symmetries"), "{err}");
+}
+
+/// `optimal solve --start-depth`: with `-l` of the same value, whether a position needs more
+/// moves (one iteration); above the optimum, a solution that is not proven optimal.
+#[test]
+fn optimal_start_depth() {
+    let dir = small_tables().to_str().unwrap();
+    let scramble = "U R' BL F D B' L BR";
+    let opt = |extra: &[&str]| {
+        let mut args = vec![
+            "optimal", "solve", "--tier", "small", "--tables", dir, "-j", "2",
+        ];
+        args.extend_from_slice(extra);
+        args.push(scramble);
+        let (ok, out, err) = run(&args, "");
+        assert!(ok, "{err}");
+        out
+    };
+    let out = opt(&[]);
+    let optimum = out.lines().next().unwrap().split_whitespace().count();
+    let below = (optimum - 1).to_string();
+    let out = opt(&["--start-depth", &below, "-l", &below]);
+    assert_eq!(
+        out.trim(),
+        format!("no solution of at most {below} moves"),
+        "{out}"
+    );
+    let above = (optimum + 2).to_string();
+    let out = opt(&["--start-depth", &above]);
+    let sol = out.lines().next().unwrap();
+    let n = sol.split_whitespace().count();
+    assert!(n >= optimum && n <= optimum + 2, "{out}");
+    let (ok, solved, err) = run(&["pattern", &format!("{scramble} {sol}")], "");
+    assert!(ok, "{err}");
+    // (solved up to a whole-puzzle turn: every face one colour)
+    let faces: Vec<&str> = solved.split_whitespace().filter(|f| *f != "/").collect();
+    assert_eq!(faces.len(), 8, "{solved}");
+    assert!(
+        faces.iter().all(|f| f.chars().all(|c| f.starts_with(c))),
+        "{solved}"
+    );
+    let (ok, _, err) = run(
+        &[
+            "optimal",
+            "solve",
+            "--start-depth",
+            "9",
+            "-l",
+            "8",
+            scramble,
+        ],
+        "",
+    );
+    assert!(!ok);
+    assert!(err.contains("--start-depth"), "{err}");
+}

@@ -86,6 +86,7 @@ pub fn run<B: Bounds>(
             r.elapsed,
             match r.stop {
                 Stop::Solved => "",
+                Stop::Found => "  (start depth: not proven optimal)",
                 Stop::Time => "  (time limit)",
                 Stop::MaxLength => "  (longer than the length limit)",
                 Stop::BadTables => "  (bad tables)",

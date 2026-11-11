@@ -40,7 +40,8 @@ use omelettehedron::optimal::tables::{OptTables, OptTier};
 use omelettehedron::progress::{Progress, Watch};
 use omelettehedron::search::{solve_watched, Limits, Report};
 use omelettehedron::tables::{table_dir, AeIndex, AeRelabel, AeSym, Tables, Tier};
-use omelettehedron::{autotier, info, pattern};
+use omelettehedron::{autotier, info, pattern, symsearch};
+use std::fmt::Write as _;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -168,6 +169,11 @@ enum Cmd {
         /// scramble then starts from that hold
         #[arg(long, requires = "patterns_in")]
         usual: Option<String>,
+        /// Solve the positions concurrently, one thread each (-j of them), instead of one at a
+        /// time on all threads: faster for many short solves (with -l or -t). Prints the best
+        /// solution of each in input order, and its length and time on stderr
+        #[arg(long, conflicts_with_all = ["lower_bound", "progress", "improve"])]
+        batch: bool,
         #[command(flatten)]
         tab: TableArgs,
         #[command(flatten)]
@@ -240,6 +246,36 @@ enum Cmd {
     /// bounds on the optimal length), the optimal solver proves lower bounds. Prints each new
     /// bound as it comes and stops when they meet (the solution is optimal) or at the time limit
     Combined(CombinedArgs),
+    /// Positions fixed by symmetries of the octahedron (the notion of `info`)
+    ///
+    /// Without options: the 33 kinds of subgroup of the 48 symmetries (up to conjugation),
+    /// largest first, with how many positions each fixes. With --subgroup or --order: the
+    /// positions whose symmetries are exactly that subgroup, one of each set of conjugate
+    /// positions (conjugates are the same distance from solved), as patterns for `solve
+    /// --patterns` and `optimal solve --patterns`.
+    Symmetric {
+        /// List the positions of this subgroup (its number in the table)
+        #[arg(long, conflicts_with = "order")]
+        subgroup: Option<usize>,
+        /// List the positions with exactly this many symmetries (of every subgroup of that
+        /// order)
+        #[arg(long)]
+        order: Option<usize>,
+        /// List at most this many positions of a subgroup (counted first): a subgroup with more
+        /// is only counted
+        #[arg(long, default_value_t = 1_000_000)]
+        max: u128,
+        /// Say where positions are listed (their subgroup and number, e.g. 2.4): scrambles as
+        /// arguments or one per line on stdin, or patterns with --patterns
+        #[arg(long, conflicts_with_all = ["subgroup", "order"])]
+        identify: bool,
+        /// Scrambles for --identify
+        #[arg(requires = "identify")]
+        scramble: Vec<String>,
+        /// --identify reads patterns from stdin (as `solve --patterns`)
+        #[arg(long, requires = "identify")]
+        patterns: bool,
+    },
 }
 
 /// `--progress`: what a search is doing, on stderr while it runs.
@@ -322,10 +358,22 @@ struct OptStopArgs {
     /// Give up if the optimum is longer than this many moves
     #[arg(short = 'l', long)]
     max_length: Option<usize>,
+    /// Start the search at this depth instead of the position's lower bound: the first
+    /// iteration finds any solution of at most this many moves, shorter ones too, but one it
+    /// finds is not proven optimal. With `-l` of the same value: whether the position needs
+    /// more than this many moves (e.g. `--start-depth 23 -l 23`: no solution of at most 23
+    /// moves, or one), without the iterations below
+    #[arg(long, value_name = "MOVES")]
+    start_depth: Option<usize>,
 }
 
 impl OptStopArgs {
     fn limits(&self) -> Result<OptLimits, Error> {
+        if let (Some(d), Some(l)) = (self.start_depth, self.max_length) {
+            if d > l {
+                return Err(format!("--start-depth {d} is above -l {l}").into());
+            }
+        }
         Ok(OptLimits {
             max_solutions: self.max_solutions,
             time: self
@@ -334,6 +382,7 @@ impl OptStopArgs {
                 .transpose()
                 .map_err(|e| format!("--time: {e}"))?,
             max_length: self.max_length,
+            start_depth: self.start_depth,
         })
     }
 }
@@ -473,29 +522,120 @@ fn parse_usual(usual: Option<&str>) -> Result<Option<[char; 8]>, Error> {
 
 /// Print the scramble that makes a solved pattern (and check the solution).
 fn print_pattern_scramble(pi: &PatternInput, solution: &[PhysMove]) {
+    let (out, err) = pattern_scramble_text(pi, solution);
+    print!("{out}");
+    eprint!("{err}");
+}
+
+/// What [`print_pattern_scramble`] prints: (stdout, stderr).
+fn pattern_scramble_text(pi: &PatternInput, solution: &[PhysMove]) -> (String, String) {
     let Some(sc) = pattern::scramble(&pi.pattern, solution, pi.usual.as_ref()) else {
-        eprintln!("error: the solution does not solve the pattern (please report this pattern)");
-        return;
+        return (
+            String::new(),
+            "error: the solution does not solve the pattern (please report this pattern)\n".into(),
+        );
     };
-    println!(
-        "scramble from solved with {} on U and {} on F: {}",
+    let mut out = format!(
+        "scramble from solved with {} on U and {} on F: {}\n",
         sc.start[0],
         sc.start[2],
         format_moves(&sc.moves)
     );
     match sc.from_usual_text() {
-        Some((text, true)) => println!("scramble from your usual hold: {text}"),
-        Some((text, false)) => println!(
-            "scramble from your usual hold (no turns from it make the pattern exactly as \
-             entered: this makes the same puzzle, which matches it once the whole puzzle is \
-             turned): {text}"
-        ),
-        None if pi.usual.is_some() => println!(
-            "no scramble from your usual hold: its colours are not a solved state of this \
-             puzzle"
-        ),
+        Some((text, true)) => {
+            let _ = writeln!(out, "scramble from your usual hold: {text}");
+        }
+        Some((text, false)) => {
+            let _ = writeln!(
+                out,
+                "scramble from your usual hold (no turns from it make the pattern exactly as \
+                 entered: this makes the same puzzle, which matches it once the whole puzzle is \
+                 turned): {text}"
+            );
+        }
+        None if pi.usual.is_some() => {
+            out += "no scramble from your usual hold: its colours are not a solved state of this \
+                    puzzle\n";
+        }
         None => {}
     }
+    (out, String::new())
+}
+
+/// A position for `solve --batch`: the position, its frame, its label and its pattern (if given
+/// as one).
+type BatchJob<'a> = (Cube, Frame, String, Option<&'a PatternInput>);
+
+/// The texts (stdout, stderr) of the positions of `solve --batch` solved and not yet printed,
+/// and the next to print.
+type BatchDone = (Vec<Option<(String, String)>>, usize);
+
+/// `solve --batch`: the positions solved concurrently, one thread each (`threads` of them),
+/// printed in input order as for one at a time (`print` best only), with the length and time of
+/// each on stderr.
+fn solve_batch<I: AeIndex>(tables: &Tables<I>, jobs: &[BatchJob], limits: &Limits, threads: usize) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Mutex, PoisonError};
+    let next = AtomicUsize::new(0);
+    let done: Mutex<BatchDone> = Mutex::new((vec![None; jobs.len()], 0));
+    std::thread::scope(|scope| {
+        for _ in 0..threads.max(1) {
+            scope.spawn(|| {
+                let Ok(one) = rayon::ThreadPoolBuilder::new().num_threads(1).build() else {
+                    return;
+                };
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((cube, frame, label, pi)) = jobs.get(i) else {
+                        return;
+                    };
+                    let o = one.install(|| {
+                        solve_watched(
+                            tables,
+                            *cube,
+                            *frame,
+                            limits,
+                            Report::Quiet,
+                            &Watch::default(),
+                        )
+                    });
+                    let mut out = format!("# {label}\n");
+                    let mut err = String::new();
+                    match &o.solution {
+                        Some(sol) => {
+                            let _ = writeln!(out, "{}", format_moves(sol));
+                            if let Some(pi) = pi {
+                                let (a, b) = pattern_scramble_text(pi, sol);
+                                out += &a;
+                                err += &b;
+                            }
+                        }
+                        None => out += "no solution found\n",
+                    }
+                    let _ = writeln!(
+                        err,
+                        "length {} in {:.3}s, {} solutions, {:.3e} nodes{}",
+                        o.length.map_or("-".into(), |l| l.to_string()),
+                        o.elapsed,
+                        o.solutions_found,
+                        o.nodes as f64,
+                        if o.optimal { ", optimal" } else { "" }
+                    );
+                    let mut guard = done.lock().unwrap_or_else(PoisonError::into_inner);
+                    let (texts, first) = &mut *guard;
+                    if let Some(slot) = texts.get_mut(i) {
+                        *slot = Some((out, err));
+                    }
+                    // print every finished position whose turn it is
+                    while let Some((out, err)) = texts.get_mut(*first).and_then(Option::take) {
+                        print!("{out}");
+                        eprint!("{err}");
+                        *first += 1;
+                    }
+                }
+            });
+        }
+    });
 }
 
 fn run_solve<I: AeIndex>(
@@ -707,6 +847,12 @@ fn run_optimal(cmd: OptCmd) -> Result<(), Error> {
                         }
                         match o.stop {
                             Stop::Solved => {}
+                            Stop::Found => println!(
+                                "{} moves, not proven optimal (--start-depth: no solution has \
+                                 fewer than {} moves)",
+                                o.length.unwrap_or(0),
+                                o.lower_bound
+                            ),
                             Stop::Time => println!(
                                 "no solution found (time limit): none has fewer than {} moves",
                                 o.lower_bound
@@ -726,7 +872,13 @@ fn run_optimal(cmd: OptCmd) -> Result<(), Error> {
                                 "optimal solver: {} in {:.3}s, {} solution(s), {} nodes",
                                 o.length.map_or_else(
                                     || format!("no solution, lower bound {}", o.lower_bound),
-                                    |l| format!("length {l} (optimal)")
+                                    |l| {
+                                        if o.stop == Stop::Found {
+                                            format!("length {l} (not proven optimal)")
+                                        } else {
+                                            format!("length {l} (optimal)")
+                                        }
+                                    }
                                 ),
                                 o.elapsed,
                                 o.solutions.len(),
@@ -849,6 +1001,7 @@ fn run(cli: Cli) -> Result<(), Error> {
             pattern,
             patterns,
             usual,
+            batch,
             tab,
             prog,
         } => {
@@ -860,7 +1013,7 @@ fn run(cli: Cli) -> Result<(), Error> {
             limits.improve = improve;
             let print = if improve { Report::Improvements } else { print };
             if patterns {
-                return solve_pattern_list(&tab, usual.as_deref(), &limits, print, progress);
+                return solve_pattern_list(&tab, usual.as_deref(), &limits, print, progress, batch);
             }
             let input = match &pattern {
                 Some(text) => Some(read_pattern(text, usual.as_deref())?),
@@ -906,6 +1059,17 @@ fn run(cli: Cli) -> Result<(), Error> {
                 std::process::exit(2);
             }
             let p = pool(tab.threads)?;
+            if batch {
+                let list: Vec<BatchJob> = positions
+                    .iter()
+                    .map(|(c, f, l)| (*c, *f, l.clone(), input.as_ref()))
+                    .collect();
+                let threads = p.current_num_threads();
+                return p.install(|| {
+                    dispatch!(tab, |t, _name| solve_batch(&t, &list, &limits, threads));
+                    Ok(())
+                });
+            }
             p.install(|| {
                 dispatch!(tab, |t, _name| run_solve(
                     &t,
@@ -999,6 +1163,35 @@ fn run(cli: Cli) -> Result<(), Error> {
         }
         Cmd::Optimal { cmd } => run_optimal(cmd),
         Cmd::Combined(args) => run_combined(&args),
+        Cmd::Symmetric {
+            subgroup,
+            order,
+            max,
+            identify,
+            scramble,
+            patterns,
+        } => {
+            if identify {
+                let jobs = read_jobs(&Inputs {
+                    scramble: &scramble,
+                    pattern: None,
+                    patterns,
+                    usual: None,
+                    random: None,
+                    seed: 0,
+                    inverse: false,
+                })?;
+                let census = symsearch::census();
+                for job in &jobs {
+                    match job {
+                        Ok(j) => identify_position(j, &census, max),
+                        Err(bad) => bad.report(),
+                    }
+                }
+                return unread(&jobs);
+            }
+            run_symmetric(subgroup, order, max)
+        }
         Cmd::Info {
             scramble,
             input,
@@ -1028,6 +1221,107 @@ fn run(cli: Cli) -> Result<(), Error> {
             unread(&jobs)
         }
     }
+}
+
+/// `symmetric --identify`: the subgroup of a position's symmetries and its number in the list
+/// (if that subgroup has at most `max` positions up to symmetry, as when listing).
+fn identify_position(j: &Job, census: &[(symsearch::SubgroupClass, symsearch::Counts)], max: u128) {
+    let (k, rep) = symsearch::identify(&j.cube);
+    println!("# {}", j.name.as_deref().unwrap_or(&j.label));
+    let Some((c, n)) = census.get(k) else { return };
+    if c.order == 1 {
+        println!("no symmetry: not listed");
+        return;
+    }
+    let name = symsearch::schoenflies(c.rep);
+    let at = if n.classes <= max {
+        symsearch::exact(c.rep)
+            .and_then(|l| l.iter().position(|x| *x == rep))
+            .map_or_else(String::new, |i| format!(": position {}.{}", k + 1, i + 1))
+    } else {
+        String::new()
+    };
+    println!(
+        "subgroup {}: {name}, {} symmetries ({}){at}",
+        k + 1,
+        c.order,
+        symsearch::kinds_text(c.rep)
+    );
+}
+
+/// `symmetric`: the table of subgroups, or the positions of some of them.
+fn run_symmetric(subgroup: Option<usize>, order: Option<usize>, max: u128) -> Result<(), Error> {
+    let census = symsearch::census();
+    if subgroup.is_none() && order.is_none() {
+        println!(
+            "{:>2} {:>5} {:>4} {:>4} {:>24} {:>24} {:>24}  symmetries",
+            "#", "order", "name", "conj", "fixed", "exactly", "up to symmetry"
+        );
+        for (i, (c, n)) in census.iter().enumerate() {
+            println!(
+                "{:>2} {:>5} {:>4} {:>4} {:>24} {:>24} {:>24}  {}",
+                i + 1,
+                c.order,
+                symsearch::schoenflies(c.rep),
+                c.conjugates,
+                n.fixed,
+                n.exact,
+                n.classes,
+                symsearch::kinds_text(c.rep)
+            );
+        }
+        return Ok(());
+    }
+    if let Some(k) = subgroup {
+        if k == 0 || k > census.len() {
+            return Err(format!("--subgroup: give a number from 1 to {}", census.len()).into());
+        }
+    }
+    let mut listed = 0;
+    for (i, (c, n)) in census.iter().enumerate() {
+        if subgroup.is_some_and(|k| k != i + 1) || order.is_some_and(|o| o != c.order) {
+            continue;
+        }
+        let name = symsearch::schoenflies(c.rep);
+        println!(
+            "# subgroup {}: {name}, {} symmetries ({}): {} positions up to symmetry",
+            i + 1,
+            c.order,
+            symsearch::kinds_text(c.rep),
+            n.classes
+        );
+        if n.classes > max || c.order == 1 {
+            println!("# (not listed: more than --max {max})");
+            continue;
+        }
+        let list = symsearch::exact(c.rep).unwrap_or_default();
+        if list.len() as u128 != n.classes {
+            return Err(format!(
+                "subgroup {}: {} positions listed, {} counted (please report this)",
+                i + 1,
+                list.len(),
+                n.classes
+            )
+            .into());
+        }
+        for (j, cube) in list.iter().enumerate() {
+            println!(
+                "{}  # {name} {}.{}",
+                pattern::format(&pattern::of_cube(cube)),
+                i + 1,
+                j + 1
+            );
+        }
+        listed += 1;
+    }
+    if listed == 0 && subgroup.is_none() {
+        if let Some(o) = order {
+            if !census.iter().any(|(c, _)| c.order == o) {
+                return Err(format!("--order: no subgroup has {o} symmetries").into());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The two-phase tier: `--tier`, or the largest whose tables are all in `dir` (said on stderr).
@@ -1218,6 +1512,7 @@ fn solve_pattern_list(
     limits: &Limits,
     print: Report,
     progress: Option<std::time::Duration>,
+    batch: bool,
 ) -> Result<(), Error> {
     let jobs = read_jobs(&Inputs {
         scramble: &[],
@@ -1232,6 +1527,22 @@ fn solve_pattern_list(
         return none_read(&jobs);
     }
     let p = pool(tab.threads)?;
+    if batch {
+        let list: Vec<BatchJob> = jobs
+            .iter()
+            .filter_map(|j| j.as_ref().ok())
+            .map(|j| (j.cube, j.frame, j.label.clone(), j.pattern.as_ref()))
+            .collect();
+        for bad in jobs.iter().filter_map(|j| j.as_ref().err()) {
+            eprintln!("error: {}: {}", bad.label, bad.message);
+        }
+        let threads = p.current_num_threads();
+        p.install(|| {
+            dispatch!(tab, |t, _name| solve_batch(&t, &list, limits, threads));
+            Ok::<(), Error>(())
+        })?;
+        return unread(&jobs);
+    }
     p.install(|| {
         dispatch!(tab, |t, _name| {
             for job in &jobs {

@@ -182,6 +182,42 @@ target/release/omelettehedron info "U R' BL F D B' L BR"
 * The lower bound (face turns) is the largest distance to solved of the corners, the centres of
   each half and the edges' places, each taken alone (small tables built in memory).
 
+### Symmetric positions
+
+`symmetric` counts and lists the positions that symmetries of the octahedron fix (turning or
+mirroring the whole puzzle, colours renamed to match: the symmetries `info` counts). It needs no
+table and takes a few seconds.
+
+```text
+$ omelettehedron symmetric
+ # order name conj                    fixed                  exactly           up to symmetry  symmetries
+ 1    48   Oh    1                        8                        8                        8  E 8C3 3C2 6m' 6S4 6C2' 6C4 i 8S6 3m
+ 2    24   Th    1                       32                       24                       12  E 8C3 3C2 i 8S6 3m
+ ...
+32     2   C2    3             603979776000             603959367680              75494920960  E C2
+33     1   C1    1  31408133379194880000000  31408133376309204485184    654336112006441760108  E
+```
+
+* The symmetries that fix a position form a group. Up to turning and mirroring there are 33
+  such groups (`name`, `conj`: how many copies of it the 48 symmetries contain).
+* `fixed`: the positions the group fixes. `exactly`: those it fixes and no other symmetry does.
+  `up to symmetry`: the same, counting once the positions that are turned or mirrored copies
+  of each other (they are the same distance from solved).
+* The kinds of symmetry: `C3` a third of a turn about a face axis; `C4`, `C2` a quarter and a
+  half turn about a corner axis; `C2'` a half turn about an edge axis; `i` the point
+  reflection; `m` a mirror through four corners, `m'` through two; `S4`, `S6` a turn and a
+  mirror.
+
+`--order N` or `--subgroup K` lists the positions, one of each set of copies, as patterns for
+`solve --patterns` or `optimal solve --patterns`. `solve --batch` solves many positions at once,
+one per thread:
+
+```sh
+omelettehedron symmetric --order 24 | omelettehedron solve --patterns --batch -l 22 -t 3
+```
+
+The distances of the symmetric positions are in [docs/SYMMETRIC.md](docs/SYMMETRIC.md).
+
 ### Progress
 
 `--progress` (for `solve`, `optimal solve` and `combined`) prints what the search is doing to
@@ -396,6 +432,12 @@ Stopping rules: none (first optimal solution), `-n N` (up to N optimal solutions
 that some of the octahedron's 48 symmetries fix (like most of `bench/hard.tsv`) are searched
 with a symmetric start (only one of each set of equivalent first moves is searched), which
 divides their node counts by about the number of symmetries.
+
+`--start-depth D` starts the search at depth D instead of the position's lower bound. That
+first iteration finds any solution of at most D moves, shorter ones too, but a solution it
+finds is not proven optimal. With `-l D` it answers whether a position needs more than D moves
+without the iterations below D: `--start-depth 23 -l 23` either finds a solution of at most 23
+moves or prints "no solution of at most 23 moves".
 
 ## Both solvers at once
 

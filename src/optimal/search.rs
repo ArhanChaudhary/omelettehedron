@@ -37,6 +37,13 @@ pub struct Limits {
     pub time: Option<Duration>,
     /// give up when the optimum is longer than this (no iteration deeper than this runs)
     pub max_length: Option<usize>,
+    /// Start the iterations at this depth instead of the root's lower bound: the first
+    /// iteration finds any solution of at most this many moves (also shorter ones), so if it
+    /// ends without one, no solution has fewer than `start_depth + 1` moves. A solution it
+    /// finds is not proven optimal ([`Stop::Found`]) unless it is as short as the root bound.
+    /// For deciding whether a position needs more than this many moves, without the cost of
+    /// the iterations below it
+    pub start_depth: Option<usize>,
 }
 
 /// Why a search ended.
@@ -44,6 +51,9 @@ pub struct Limits {
 pub enum Stop {
     /// solutions of the optimal length found
     Solved,
+    /// with `Limits::start_depth`: a solution of at most the start depth, not proven optimal
+    /// (the iterations below the start depth were not run)
+    Found,
     /// the time limit ran out first
     Time,
     /// the optimum is longer than `Limits::max_length`
@@ -67,11 +77,13 @@ pub struct Iteration {
 
 #[derive(Clone, Debug)]
 pub struct Outcome {
-    /// solutions found, all of the optimal length (internal moves of the fixed frame)
+    /// solutions found, all of the optimal length (internal moves of the fixed frame; with
+    /// [`Stop::Found`], all of the shortest length found)
     pub internal: Vec<Vec<usize>>,
     /// the same as physical moves
     pub solutions: Vec<Vec<PhysMove>>,
-    /// the optimal length, if a solution was found
+    /// the optimal length, if a solution was found (with [`Stop::Found`], the length of the
+    /// solutions found: an upper bound)
     pub length: Option<usize>,
     /// no solution has fewer moves (proven by the completed iterations)
     pub lower_bound: usize,
@@ -457,6 +469,16 @@ impl<B: Bounds, const N: usize> Shared<'_, B, N> {
                 .iter()
                 .flat_map(|t| self.expand(t, bound, ctr))
                 .collect();
+            // a solution shorter than the bound (only after a start depth: shorter solutions
+            // were not searched for in earlier iterations; one as long as the bound is found
+            // by the search of its task)
+            if k + 1 < bound {
+                for t in &front {
+                    if t.p == self.solved {
+                        self.found(&t.path[..usize::from(t.len).min(MAX_SPLIT)], ctr);
+                    }
+                }
+            }
             if !self.symmetries.is_empty() {
                 front = self.dedup(front);
             }
@@ -595,6 +617,13 @@ impl<B: Bounds, const N: usize> Shared<'_, B, N> {
         for j in 0..kk {
             let u = usize::from(fr.sel[j % N]) % N;
             *stat += STAT_W[usize::from(fr.mx[u]) & 31];
+            // a solved child before the bound: a solution shorter than the bound (only after a
+            // start depth; every table is 0 at the solved state, so it survives)
+            if fr.mx[u] == 0 && fr.ys[u] == self.solved {
+                path.push(fr.ms[u]);
+                self.found(path, ctr);
+                path.pop();
+            }
         }
         if kk == 0 {
             return;
@@ -736,13 +765,22 @@ fn solve_n<B: Bounds, const N: usize>(
         h: h0,
     };
     let lo = usize::from(h0.iter().copied().max().unwrap_or(0));
+    // the first iteration: the start depth if it is deeper (never for the solved state, which
+    // only the iteration at depth 0 recognises)
+    let first = match limits.start_depth {
+        Some(d) if d > lo && p != sh.solved => d,
+        _ => lo,
+    };
+    let skipped = first > lo;
     if verbose {
         let names: Vec<String> = (0..B::K)
             .map(|k| format!("{} {}", b.name(k), h0[k]))
             .collect();
         eprintln!(
-            "root bounds: {} (search from depth {lo}); symmetries of the position: {} of 48{}",
+            "root bounds: {} (search from depth {first}{}); symmetries of the position: {} of \
+             48{}",
             names.join(", "),
+            if skipped { ", the start depth" } else { "" },
             root_syms.len() + 1,
             if sh.symmetries.is_empty() {
                 ""
@@ -757,13 +795,21 @@ fn solve_n<B: Bounds, const N: usize>(
     let mut prev_nodes: Option<u64> = None;
     // time of the previous iteration (progress: no heartbeat after a short one)
     let mut prev_dt: Option<f64> = None;
-    let mut depth = lo;
+    let mut depth = first;
     out.lower_bound = lo;
     if lo > 0 {
         watch.bound(Bound::Lower(lo));
     }
     watch.line(format_args!(
-        "search from depth {lo}{}",
+        "search from depth {first}{}{}",
+        if skipped {
+            format!(
+                " (start depth; the root bound is {lo}: this iteration also finds shorter \
+                 solutions)"
+            )
+        } else {
+            String::new()
+        },
         if sh.symmetries.is_empty() {
             String::new()
         } else {
@@ -780,7 +826,9 @@ fn solve_n<B: Bounds, const N: usize>(
         let it_start = sh.nodes.load(Ordering::Relaxed);
         let it_lookups = sh.lookups.load(Ordering::Relaxed);
         let it_t0 = start.elapsed().as_secs_f64();
-        let predicted = prev_nodes.map_or(0, |n| n.saturating_mul(13));
+        // (an iteration after skipped ones is taken to be large: split into the most tasks)
+        let predicted =
+            prev_nodes.map_or(if skipped { u64::MAX } else { 0 }, |n| n.saturating_mul(13));
         let inline = threads == 1 || predicted < SERIAL_NODES;
         let want = if inline && threads > 1 {
             1
@@ -910,7 +958,9 @@ fn solve_n<B: Bounds, const N: usize>(
             p.line(format_args!(
                 "depth {depth} {} in {dt:.3} s: {}; {:.3e} nodes ({}, {})",
                 if stopped { "stopped" } else { "done" },
-                if n_sols > 0 {
+                if n_sols > 0 && skipped && depth == first {
+                    format!("{n_sols} solution(s) of at most {depth} moves")
+                } else if n_sols > 0 {
                     format!("{n_sols} solution(s) of {depth} moves")
                 } else if stopped {
                     "no lower bound from it".into()
@@ -923,21 +973,32 @@ fn solve_n<B: Bounds, const N: usize>(
             ));
         }
         if n_sols > 0 {
-            out.length = Some(depth);
-            out.lower_bound = depth;
-            // (the solutions are all of this length, which the iterations below prove optimal)
+            // (the solutions are all of this length, which the iterations below prove optimal;
+            // after a start depth, the shortest found, kept alone, is optimal only if it is as
+            // short as the root bound)
+            let shortest = {
+                let mut sols = sh.sols.lock().unwrap_or_else(PoisonError::into_inner);
+                let l = sols.iter().map(Vec::len).min().unwrap_or(depth);
+                sols.retain(|s| s.len() == l);
+                l
+            };
+            out.length = Some(shortest);
             if watch.on_bound.is_some() {
-                let first = sh
+                let best = sh
                     .sols
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .first()
                     .map(|s| solution_to_physical(frame, s, b.moves().wide));
-                if let Some(m) = first {
+                if let Some(m) = best {
                     watch.bound(Bound::Upper(&m));
                 }
             }
-            watch.bound(Bound::Lower(depth));
+            if skipped && depth == first && shortest > lo {
+                break Stop::Found;
+            }
+            out.lower_bound = shortest;
+            watch.bound(Bound::Lower(shortest));
             break Stop::Solved;
         }
         if stopped {
