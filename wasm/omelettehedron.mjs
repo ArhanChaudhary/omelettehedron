@@ -530,15 +530,24 @@ export class FtoSolver {
    * `cancelled`: stopped by `cancel`).
    */
   solve(scramble, { seconds = 0, maxLength = 0, improvements = false } = {}) {
+    return this.timed(() => this.withText(scramble, (ptr, len) =>
+      this.call('fto_solve', ptr, len, seconds, maxLength, improvements ? 1 : 0)));
+  }
+
+  /**
+   * Run a solve (`fto_solve` or `fto_solve_pattern`) and set `cancelled`. A cancellation moves
+   * the module's clock on by `CANCEL_JUMP_NS` (that is how the search sees its time run out),
+   * so the times of a cancelled solve are measured here instead: without this a stopped solve
+   * reported about 10,000,000 s.
+   */
+  timed(run) {
     const cancels = Atomics.load(this.control, CANCEL_WORD);
     const start = performance.now();
-    const r = this.withText(scramble, (ptr, len) =>
-      this.call('fto_solve', ptr, len, seconds, maxLength, improvements ? 1 : 0));
+    const r = run();
     r.cancelled = Atomics.load(this.control, CANCEL_WORD) !== cancels;
-    // (a cancellation moved the module's clock: measure here instead)
-    if (r.cancelled) {
+    if (r.cancelled && typeof r.seconds === 'number') {
       r.seconds = (performance.now() - start) / 1000;
-      r.events = r.events.map(([t, length]) => [Math.min(t, r.seconds), length]);
+      r.events = (r.events ?? []).map(([t, length]) => [Math.min(t, r.seconds), length]);
     }
     return r;
   }
@@ -568,9 +577,9 @@ export class FtoSolver {
    * `{ error: { message, kind, stickers, counts } }` for a wrong pattern.
    */
   solvePattern(pattern, { usual = '', seconds = 0, maxLength = 0, improvements = false } = {}) {
-    return this.withText(pattern, (ptr, len) =>
+    return this.timed(() => this.withText(pattern, (ptr, len) =>
       this.withText(usual, (uptr, ulen) =>
-        this.call('fto_solve_pattern', ptr, len, uptr, ulen, seconds, maxLength, improvements ? 1 : 0)));
+        this.call('fto_solve_pattern', ptr, len, uptr, ulen, seconds, maxLength, improvements ? 1 : 0))));
   }
 
   /**
