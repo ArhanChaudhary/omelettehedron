@@ -200,7 +200,7 @@ optimisation.
     button) is not a stopping rule and keeps them;
   * `--lower-bound L` resumes a long proof: the search finds a first solution, then starts its
     passes at L (from a previous run's "pass L − 1 complete" log line);
-  * a *distance-to-solved bound* (large and huge tiers, face turns): optimal mode only looks for
+  * a *distance-to-solved bound* (large and huge tiers, face turns): the search only looks for
     solutions shorter than a known length (the best, or T + 1 in pass T), so a child whose
     distance to *solved* exceeds the moves left can go, wherever it is relative to `H_A` and
     `H_B`. A 3.5 GB table on the joint table's index (corners, B-centre colouring, the position
@@ -219,8 +219,10 @@ optimisation.
     0.853x (48T, 19-move set) with the table read on first use; random positions 0.82–0.90x,
     edge_hard 0.85x, corner 6-flip see
     [RESULTS.md](RESULTS.md). The table is read when the first search reaches an iteration
-    that can use it, on a background thread while the search goes on without it, so time-limited
-    solves and short proofs never read it. `FTO_NO_CBS=1` turns it off, `FTO_CBS_EAGER=1` reads
+    that can use it, on a background thread while the search goes on without it, so short solves
+    and proofs never read it. It serves time-limited and `-l` runs too (only counting solutions
+    turns it off): until `opt/tl-cbs` a time limit turned it off, and the corner 6-flip took 624 s
+    under `-t 1800` against 84 s now. `FTO_NO_CBS=1` turns it off, `FTO_CBS_EAGER=1` reads
     it at start-up (deterministic one-thread node counts). Its eight lookups come in two waves:
     triple 2 of both sides (issued with the CB stage), and the other six only for the children
     those two keep (`opt/tosolved-order`: 0.982x / 0.985x time at 1T / 48T, half the reads). Checks: the table's

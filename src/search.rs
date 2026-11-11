@@ -1538,9 +1538,14 @@ fn solve_n<I: AeIndex, const N: usize>(
         mb: swap_moves::<N>(),
         mv: [std::array::from_fn(|m| m), swap_moves::<N>()],
         cb_max: (t.cb.tab.hist.len() - 1) as u8,
+        // The distance-to-solved bound prunes against `prune_len` (the best length, or the
+        // target of a pass), so it is admissible in time-limited and max-length runs too; only
+        // counting solutions turns it off (pruning against the best is off there). Under a time
+        // limit it was off until opt/tl-cbs: corner 6-flip with -t 1800 624 -> 84 s, edge_hard
+        // 67.0 -> 56.4 s; best lengths at 0.1-3 s unchanged (48T and 1T, 2 rounds).
         cbs: match (&t.cbs, &t.cbe) {
             (Some(s), Some(e))
-                if limits.is_optimal() && std::env::var_os("FTO_NO_CBS").is_none() =>
+                if limits.max_solutions.is_none() && std::env::var_os("FTO_NO_CBS").is_none() =>
             {
                 Some((s, e))
             }

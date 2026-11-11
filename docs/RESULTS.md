@@ -78,9 +78,10 @@ so they line up with the numbers below:
 | random positions 1 / 2 / 3, `-t 1200` | 54.6 / 64.3 / 5.3 s | 53.2 / 60.5 / 4.9 s |
 
 `bench-randopt.sh` caps each position with `-t 1200`, and with a time limit the search is the
-time-limited one, which does not use the distance-to-solved bound: the random positions, and
-edge_hard (67.9 s) and the corner 6-flip (624 s) under `-t 1800`, show the speed without it.
-Without `-t` (optimal mode) edge_hard takes 62.8 s and the 6-flip 117 s.
+time-limited one, which on this main did not use the distance-to-solved bound: the random
+positions, and edge_hard (67.9 s) and the corner 6-flip (624 s) under `-t 1800`, show the speed
+without it. Without `-t` (optimal mode) edge_hard takes 62.8 s and the 6-flip 117 s. Since
+`opt/tl-cbs` time-limited runs use it too; see [Under a time limit](#under-a-time-limit-opttl-cbs).
 
 ## Two-phase solving (time limit)
 
@@ -122,7 +123,7 @@ before the merged traversal): the proven lengths agree.
 
 ### With the distance-to-solved bound (`opt/tosolved`)
 
-The large tier's 3.5 GB distance-to-solved table (optimal mode only; see
+The large tier's 3.5 GB distance-to-solved table (optimal mode only until `opt/tl-cbs`; see
 [PHASES.md](PHASES.md#4-search)), main c1dfbd3 against the branch, quiet machine, each run
 alone under the bench lock, two interleaved rounds (random positions: one run each):
 
@@ -139,6 +140,28 @@ alone under the bench lock, two interleaved rounds (random positions: one run ea
 
 The other rows read the table with the other tables. All proven lengths are identical. (These
 main times are above the table above, measured on an earlier main and a quieter day.)
+
+### Under a time limit (`opt/tl-cbs`)
+
+Until `opt/tl-cbs` a time limit (`-t`) or `-l` turned the bound off, although it prunes against
+the best length found, which is just as admissible as a target pass. Main 1cce546 against the
+branch, quiet machine, each run alone under the bench lock (wall times including the table
+reading; the hard positions and random positions one run each):
+
+| | main | with the bound | ratio |
+|---|---|---|---|
+| corner 6-flip (20), `-t 1800`, 48 threads | 624 s (on 9a9262f) | 84.0 s | 0.135x |
+| edge_hard (21), `-t 1800`, 48 threads | 67.0 s | 56.4 s | 0.84x |
+| random position seed 1 (21), `-t 1200` | 53.5 s (8.61e10 nodes) | 45.5 s (7.27e10) | 0.85x |
+| random position seed 2 (21), `-t 1200` | 60.8 s (9.69e10) | 48.6 s (7.66e10) | 0.80x |
+| random position seed 3 (20), `-t 1200` | 5.0 s (7.88e9) | 4.0 s (6.26e9) | 0.80x |
+| 20 random positions, 3 s, 48 threads: mean best after 0.1 / 0.3 / 1 / 3 s (2 rounds) | 21.95 / 21.85 / 21.65 / 21.50 | 21.95 / 21.80-21.85 / 21.65 / 21.50 | unchanged; nodes/s 0.994x, 0.967x |
+| 8 random positions, 3 s, 1 thread (2 rounds) | 22.43 (0.3 s) / 21.875-22.00 (1 s) / 21.50 (3 s) | 22.43 / 21.875 / 21.50 | unchanged; nodes/s 1.013x, 1.003x |
+
+Under a time limit the 6-flip is now faster than in optimal mode (117 s): the first solution
+found is already 20, and pruning against it amounts to pass 19 alone, while optimal mode also
+runs passes 18 and 20. Memory: the table adds 3.5 GB to a long time-limited run (peak 11.4
+against 8.0 GB); short runs never read it.
 
 ## Move sets (`--moves`)
 
