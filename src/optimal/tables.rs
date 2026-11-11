@@ -68,6 +68,10 @@ pub trait Bounds: Sync {
     fn is_target(&self, k: usize, i: usize) -> bool;
     /// Short name of lookup `k` (for messages).
     fn name(&self, k: usize) -> &'static str;
+    /// The order in which the search reads the lookups (the first `K` entries: a permutation of
+    /// `0..K`); a child is dropped at the first value that exceeds its moves left, so the most
+    /// selective lookups go first (measured with `FTO_OPT_PRUNE_STATS=1`).
+    const ORDER: &'static [usize] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 }
 
 /// Moves between entries of the corner x B-centre table.
@@ -543,6 +547,10 @@ pub struct SmallBounds<'a> {
 
 impl Bounds for SmallBounds<'_> {
     const K: usize = 5;
+    /// AE, its `SWAP_AB` twin, the corner x centre table (cache-resident), the edge table: on
+    /// the 15-move set (seed 1717) AE alone prunes 78% of the children, the twin 76%, the edge
+    /// and corner x centre tables 16-18%; 1.46 lookups per node instead of 5.00.
+    const ORDER: &'static [usize] = &[3, 4, 1, 2, 0];
     #[inline(always)]
     fn index(&self, k: usize, p: &Pos) -> usize {
         match k {
@@ -593,6 +601,10 @@ pub struct MediumBounds<'a> {
 
 impl Bounds for MediumBounds<'_> {
     const K: usize = 5;
+    /// AE, its `SWAP_AB` twin, corners x edges, the corner x centre table: on the 15-move set
+    /// (seed 1717) AE alone prunes 74% of the children, the twin 72%, corners x edges 61%, the
+    /// corner x centre lookups 1.4% each; 1.52 lookups per node instead of 5.00.
+    const ORDER: &'static [usize] = &[3, 4, 0, 1, 2];
     #[inline(always)]
     fn index(&self, k: usize, p: &Pos) -> usize {
         match k {
@@ -650,6 +662,13 @@ const LARGE_CBE: usize = LARGE_FROM_MEDIUM.len();
 
 impl Bounds for LargeBounds<'_> {
     const K: usize = LARGE_CBE + N_LOOKUPS;
+    /// AE, the B-triple 3 lookup, the AE twin, then the other triples, corners x edges last:
+    /// greedy by the children each prunes among those the earlier ones keep (17-move set, seed
+    /// 1717: alone AE prunes 65%, its twin 58%, the triple lookups 48-59%, corners x edges 48%;
+    /// 7.8% survive). 2.36 lookups per node on the 17-move set (2.53 on the 15-move set)
+    /// instead of 11; the triple lookups 1.08 of them. (The triples differ because of the fixed
+    /// front corner.)
+    const ORDER: &'static [usize] = &[1, 10, 2, 7, 5, 8, 9, 6, 4, 3, 0];
     #[inline(always)]
     fn index(&self, k: usize, p: &Pos) -> usize {
         if k < LARGE_CBE {
@@ -735,6 +754,19 @@ mod tests {
     use super::*;
     use crate::coord::N_MSET;
     use rand::SeedableRng;
+
+    /// Each tier's lookup order is a permutation of its lookups.
+    #[test]
+    fn lookup_orders_are_permutations() {
+        fn check<B: Bounds>() {
+            let mut o: Vec<usize> = B::ORDER.iter().take(B::K).copied().collect();
+            o.sort_unstable();
+            assert_eq!(o, (0..B::K).collect::<Vec<_>>());
+        }
+        check::<SmallBounds>();
+        check::<MediumBounds>();
+        check::<LargeBounds>();
+    }
 
     /// The unreduced corner x B-centre graph, for checking the reduced table.
     struct RawCc(&'static OptMoves);

@@ -67,7 +67,11 @@ const STYLE = `
 .pi-palette { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; margin: 0.4rem 0; }
 .pi-swatch { width: 2.6rem; height: 2.1rem; padding: 0; border: 2px solid var(--line); border-radius: 6px; font-size: 0.8rem; font-weight: 600; }
 .pi-swatch[aria-pressed="true"] { outline: 3px solid var(--accent); outline-offset: 2px; }
-.pi-swatch input { display: block; width: 100%; height: 0.9rem; border: 0; padding: 0; background: none; }
+.pi-edit { display: flex; flex-wrap: wrap; gap: 0.35rem 0.8rem; align-items: center; margin: 0.2rem 0 0.4rem; }
+.pi-edit[hidden] { display: none; }
+.pi-about { flex-basis: 100%; margin: 0; font-size: 0.85rem; color: var(--muted); }
+.pi-edit label { display: inline-flex; gap: 0.25rem; align-items: center; font-size: 0.85rem; }
+.pi-edit input { width: 2.2rem; height: 1.6rem; padding: 0; border: 1px solid var(--line); background: none; }
 .pi-picture { width: 100%; max-width: 34rem; display: block; touch-action: none; user-select: none; -webkit-user-select: none; }
 .pi-picture polygon { stroke: var(--bg); stroke-width: 1.2; cursor: pointer; }
 .pi-picture polygon.pi-blank { fill: color-mix(in srgb, var(--line) 55%, var(--bg)); }
@@ -103,21 +107,30 @@ export class PatternInput {
     // palette
     this.palette = el('div', { class: 'pi-palette', role: 'group', 'aria-label': 'Colours' });
     this.swatches = {};
+    // the colour pickers live in their own row, shown only by Change colours, so that a click on
+    // a paint button can only pick that colour
+    this.edit = el('div', { class: 'pi-edit', role: 'group', 'aria-label': 'Colour of each face' });
+    this.edit.hidden = true;
+    const about = el('p', { class: 'pi-about' });
+    about.textContent = 'Each face of your solved puzzle, held as you scramble (standard: white on U, '
+      + 'green on F). Colours only change the scramble shown, never the solution.';
+    this.edit.append(about);
     SOLVED_LETTERS.forEach((letter, f) => {
       const b = el('button', { type: 'button', class: 'pi-swatch' });
-      b.addEventListener('click', (e) => {
-        if (e.target.tagName === 'INPUT') return;
+      b.addEventListener('click', () => {
         this.brush = letter;
         this.renderPalette();
       });
+      b.textContent = PICTURE_FACES[f];
       const picker = el('input', { type: 'color', 'aria-label': `Colour of ${PICTURE_FACES[f]}` });
-      picker.hidden = true;
       picker.addEventListener('input', () => {
         this.colours[letter] = picker.value;
         save(STORE_COLOURS, this.colours);
         this.render();
       });
-      b.append(document.createTextNode(PICTURE_FACES[f]), picker);
+      const label = el('label');
+      label.append(document.createTextNode(PICTURE_FACES[f]), picker);
+      this.edit.append(label);
       this.swatches[letter] = { button: b, picker };
       this.palette.append(b);
     });
@@ -200,7 +213,7 @@ export class PatternInput {
     });
     this.code.addEventListener('change', () => this.setCode(this.code.value));
 
-    root.append(this.palette, this.svg, this.code);
+    root.append(this.palette, this.edit, this.svg, this.code);
     this.render();
   }
 
@@ -285,11 +298,11 @@ export class PatternInput {
       button.style.background = colour;
       button.style.color = ink(colour);
       picker.value = colour;
-      picker.hidden = !this.editing;
       const face = PICTURE_FACES[SOLVED_LETTERS.indexOf(letter)];
       button.title = `Paint with ${this.colourName(letter)} (the colour of ${face} on your solved puzzle)`;
     }
     this.editButton.textContent = this.editing ? 'Done' : 'Change colours';
+    this.edit.hidden = !this.editing;
     const same = (preset) => SOLVED_LETTERS.every((l) => preset[l] === this.colours[l]?.toLowerCase());
     this.scheme.value = Object.keys(SCHEMES).find((k) => same(SCHEMES[k])) ?? 'custom';
   }

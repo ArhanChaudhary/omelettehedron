@@ -306,6 +306,42 @@ on the 15-move set (0.9998x), 147,723,722 -> 144,410,408 on the 17-move set (0.9
 so the table, which halved the two-phase solver's phase-1 tree near its leaves, prunes little
 here: 2% fewer nodes for 7 GB more.
 
+**Lookup order and early exits (`optimal/order`).** Which lookups prune a child does not depend
+on the order they are read in, so the tree (and the node count) is the same in any order; only
+the lookups change. A child is dropped at its first value that exceeds its moves left, and each
+stage computes and prefetches the indices of all children still alive before reading any. The
+order comes from one run that reads everything (`FTO_OPT_PRUNE_STATS=1`): for every child the
+set of lookups that alone would prune it (bench JSON `prune_masks`), which gives the lookups of
+every order. Medium tier, 15-move set: 7.9% of the children survive; alone, AE prunes 74%, its
+`SWAP_AB` twin 72%, corners x edges 61%, each corner x centre lookup 1.4%. Orders: medium AE,
+AE twin, corners x edges, corners x B, corners x A; small AE, AE twin, corners x B, corners x A,
+edges (the corner x centre table is cache-resident, the edge table is not). Same lengths and
+the same node count per position on every set:
+
+| set | tier | lookups before | after | per node | per node by table (in order) |
+|---|---|---|---|---|---|
+| 10 x 15 moves, seed 1717 | medium | 5,809,810 | 1,769,241 (0.305x) | 1.52 | AE 1.000, AE twin 0.260, CE 0.105, CB 0.079, CA 0.079 |
+| 10 x 15 moves, seed 1717 | small | 67,281,740 | 19,660,878 (0.292x) | 1.46 | AE 1.000, AE twin 0.220, CB 0.082, CA 0.080, edges 0.078 |
+| 10 x 17 moves, seed 1717 | medium | 738,617,940 | 223,268,625 (0.302x) | 1.51 | AE 1.000, AE twin 0.252, CE 0.105, CB 0.078, CA 0.077 |
+
+The tables that miss the cache (AE 1.03 GB, corners x edges 2.4 GB) are read 1.36 times per node
+instead of 3. The stages add dependent memory rounds (up to five per node instead of one), but
+the fewer misses win on wall time. Timing on the quiet machine (after the two-phase proofs,
+under the bench lock), medium tier, against main 3deb77e, three interleaved A/B rounds (the
+order alternating), `scripts/bench-optimal.sh` sets:
+
+| set | threads | main 3deb77e (s, median) | optimal/order (s, median) | ratio (rounds) | nodes/s |
+|---|---|---|---|---|---|
+| 10 x 17 moves, seed 1717 | 1 | 10.33 | 8.50 | 0.818 (0.818, 0.828, 0.818) | 1.42e7 -> 1.74e7 |
+| 10 x 19 moves, seed 1919 | 48 | 41.19 | 33.42 | 0.811 (0.805, 0.818, 0.811) | 6.07e8 -> 7.54e8 |
+
+Same lengths (means 16.50 / 18.10) and, on one thread, the same nodes (147,723,722); on 48
+threads the node counts differ by under 0.01% between runs (the parallel split), and the
+lookups drop to 0.308x. The statistics also show where the
+nodes are: 92% of the children have 9 or 10 moves left and fewer than 0.01% at most 6 (17-move
+set: 1,700 of 1.5e8), so exact checks near the leaves (for example one move left: one of the 16
+neighbours of solved) cannot change the node count measurably; not done.
+
 ## Optimisation round 2: a bound for the nodes with 9 to 11 moves left
 
 **Estimate before building.** With medium + AE, the expanded nodes of the 13-move set (10
