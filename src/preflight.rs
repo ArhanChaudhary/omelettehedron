@@ -5,7 +5,8 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// Head room kept free on disk and in memory beyond the tables themselves.
 const MARGIN: u64 = 256 << 20;
@@ -78,6 +79,83 @@ fn cgroup_room() -> Option<u64> {
     Some(max.saturating_sub(cur))
 }
 
+/// Memory left to this process: `MemAvailable`, capped by the room under the cgroup v2
+/// limit (`None` if neither can be read).
+fn memory_room() -> Option<u64> {
+    match (available_memory(), cgroup_room()) {
+        (Some(a), Some(c)) => Some(a.min(c)),
+        (a, c) => a.or(c),
+    }
+}
+
+/// Memory to leave to the rest of the machine while tables are generated
+/// (`--min-free-memory`): added to the preflight need, and the floor of [`MemGuard`].
+static FLOOR: AtomicU64 = AtomicU64::new(0);
+
+/// Set the memory to leave free (bytes).
+pub fn set_memory_floor(bytes: u64) {
+    FLOOR.store(bytes, Ordering::Relaxed);
+}
+
+/// Stops a long table generation cleanly when memory runs low: a thread reads the memory left
+/// ([`memory_room`]) every second and sets the flag once it is below the floor
+/// ([`set_memory_floor`], at least 256 MB), which a guarded breadth-first search
+/// ([`crate::prune::bfs_until`]) checks. Where the memory cannot be read or no thread can be
+/// started (WebAssembly), it never trips.
+pub struct MemGuard {
+    flag: Arc<AtomicBool>,
+    done: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl MemGuard {
+    pub fn start() -> MemGuard {
+        Self::with_floor(FLOOR.load(Ordering::Relaxed).max(MARGIN))
+    }
+
+    fn with_floor(floor: u64) -> MemGuard {
+        let flag = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        let (f, d) = (Arc::clone(&flag), Arc::clone(&done));
+        let thread = std::thread::Builder::new()
+            .name("mem-guard".into())
+            .spawn(move || {
+                while !d.load(Ordering::Relaxed) {
+                    if memory_room().is_some_and(|m| m < floor) {
+                        f.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+            })
+            .ok();
+        MemGuard { flag, done, thread }
+    }
+
+    /// The flag set when memory ran low.
+    pub fn flag(&self) -> &AtomicBool {
+        &self.flag
+    }
+
+    /// The error to report after a guarded generation gave up.
+    pub fn error(name: &str) -> io::Error {
+        io::Error::other(format!(
+            "stopped generating {name}: the free memory fell below {:.2} GB \
+             (--min-free-memory); nothing was written",
+            gb(FLOOR.load(Ordering::Relaxed).max(MARGIN))
+        ))
+    }
+}
+
+impl Drop for MemGuard {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
 fn gb(b: u64) -> f64 {
     b as f64 / 1e9
 }
@@ -118,12 +196,10 @@ pub fn check_plan(tables: &[Planned]) -> io::Result<()> {
     }
     let resident: u64 = tables.iter().map(|t| t.bytes).sum();
     let working: u64 = missing.iter().map(|t| t.working_set).max().unwrap_or(0);
-    let need_mem = resident.saturating_add(working).saturating_add(MARGIN);
-    let mem = match (available_memory(), cgroup_room()) {
-        (Some(a), Some(c)) => Some(a.min(c)),
-        (a, c) => a.or(c),
-    };
-    if let Some(mem) = mem {
+    let need_mem = resident
+        .saturating_add(working)
+        .saturating_add(MARGIN.max(FLOOR.load(Ordering::Relaxed)));
+    if let Some(mem) = memory_room() {
         if mem < need_mem {
             return Err(io::Error::other(format!(
                 "not enough memory to generate the tables: this tier needs {:.2} GB while \
@@ -167,5 +243,26 @@ mod tests {
             working_set: u64::MAX / 4,
         }];
         assert!(check_plan(&loaded).is_ok());
+    }
+
+    /// The guard trips when the memory left is below its floor, and not otherwise.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mem_guard_trips_below_the_floor() {
+        let low = MemGuard::with_floor(MARGIN);
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        assert!(!low.flag().load(Ordering::Relaxed));
+        drop(low);
+        let high = MemGuard::with_floor(u64::MAX);
+        for _ in 0..40 {
+            if high.flag().load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(high.flag().load(Ordering::Relaxed));
+        assert!(MemGuard::error("x")
+            .to_string()
+            .contains("nothing was written"));
     }
 }

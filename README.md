@@ -219,8 +219,10 @@ target/release/omelettehedron bench --tier large -N 40 -t 5       # 40 seeded ra
 target/release/omelettehedron bench --tier large -N 20 -t 5 -j 1  # single-threaded
 scripts/bench.sh <label> <tier>                 # the standard set used during optimisation
 scripts/bench-opt.sh <label> <tier>             # optimal mode: time to prove optimality
+scripts/bench-optimal.sh <label> <tier>         # the optimal solver: 17-move (1 thread), 19-move sets
 scripts/bench-randopt.sh <label> <tier>         # optimal mode on random positions (slow)
 scripts/compare.py <before> <after>             # markdown comparison of two runs
+scripts/compare-optimal.py <before> <after>     # the same for scripts/bench-optimal.sh runs
 ```
 
 `bench` reports these figures:
@@ -248,6 +250,7 @@ target/release/omelettehedron optimal solve --tier medium --moves slice "..."  #
 |---|---|---|
 | `small` | 195 MB | corners x centres (both orbits, 24 symmetries), edge permutation, and the two-phase A-centre/edge-triple table on both sides |
 | `medium` | 3.4 GB | corners x centres, corners x edges (48 symmetries), and the two-phase A-centre/edge table on both sides |
+| `large` | 24.4 GB | the medium tier and corners x B-centres x the edges of one face, to solved (21 GB, 6 symmetries, read for all 8 faces); `optimal gen --tier large` takes about 2 minutes on 48 cores (`--min-free-memory GB` stops it cleanly if memory runs low) |
 
 Stopping rules: none (first optimal solution), `-n N` (up to N optimal solutions), `-t T`
 (time limit; prints the lower bound proven so far), `-l L` (give up above L moves). Positions

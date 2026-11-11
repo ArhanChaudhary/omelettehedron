@@ -8,7 +8,7 @@ use crate::tables::prefetch;
 use rayon::prelude::*;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub struct Table2 {
     pub data: HugeBuf<u64>,
@@ -507,6 +507,8 @@ pub struct Bfs<'g, G: Graph> {
     name: &'g str,
     verbose: bool,
     t0: std::time::Instant,
+    /// when set, the remaining chunks of a level are skipped ([`Bfs::stop_on`])
+    stop: Option<&'g AtomicBool>,
 }
 
 impl<'g, G: Graph> Bfs<'g, G> {
@@ -531,6 +533,7 @@ impl<'g, G: Graph> Bfs<'g, G> {
             name,
             verbose,
             t0,
+            stop: None,
         };
         let tab = s.tab();
         let nt = targets
@@ -548,6 +551,19 @@ impl<'g, G: Graph> Bfs<'g, G> {
         unsafe { std::slice::from_raw_parts(self.raw.as_ptr().cast::<AtomicU64>(), self.raw.len()) }
     }
 
+    /// Give up when `flag` is set (by another thread, e.g. a memory guard): the level running
+    /// then skips its remaining chunks and reports nothing found, and the table is incomplete.
+    #[must_use]
+    pub fn stop_on(mut self, flag: &'g AtomicBool) -> Self {
+        self.stop = Some(flag);
+        self
+    }
+
+    /// Whether the stop flag is set.
+    pub fn stopped(&self) -> bool {
+        self.stop.is_some_and(|f| f.load(Ordering::Relaxed))
+    }
+
     /// Entries not reached yet.
     pub fn unvisited(&self) -> u64 {
         self.n as u64 - self.done
@@ -563,9 +579,13 @@ impl<'g, G: Graph> Bfs<'g, G> {
         let frontier = self.hist.last().copied().unwrap_or(0);
         let fwd = frontier.saturating_mul(G::MOVES as u64)
             < self.unvisited().saturating_mul(FORWARD_RATIO);
+        let stop = self.stop;
         let newc: u64 = (0..n.div_ceil(CH))
             .into_par_iter()
             .map(|c| {
+                if stop.is_some_and(|f| f.load(Ordering::Relaxed)) {
+                    return 0;
+                }
                 let (lo, hi) = (c * CH, ((c + 1) * CH).min(n));
                 if fwd {
                     forward(g, tab, lo, hi, cur, next)
@@ -735,9 +755,41 @@ pub fn bfs<G: Graph>(g: &G, n: usize, targets: &[usize], name: &str, verbose: bo
     b.finish()
 }
 
+/// [`bfs`] that gives up when `stop` is set (checked between chunks of 2^14 entries): `None`
+/// then, and the memory of the incomplete table is freed.
+pub fn bfs_until<G: Graph>(
+    g: &G,
+    n: usize,
+    targets: &[usize],
+    name: &str,
+    verbose: bool,
+    stop: &AtomicBool,
+) -> Option<Table2> {
+    let mut b = Bfs::new(g, n, targets, 0, name, verbose).stop_on(stop);
+    let mut cur = 0;
+    while !b.stopped() && b.unvisited() > 0 && b.level(cur, (cur + 1) % 3) > 0 {
+        cur = (cur + 1) % 3;
+    }
+    (!b.stopped()).then(|| b.finish())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stop flag set before the search gives up at once; never set, the guarded search
+    /// equals the plain one.
+    #[test]
+    fn bfs_until_stops() {
+        let g = Ring(1000);
+        let stop = AtomicBool::new(true);
+        assert!(bfs_until(&g, 1000, &[0], "cycle", false, &stop).is_none());
+        stop.store(false, Ordering::Relaxed);
+        let a = bfs_until(&g, 1000, &[0], "cycle", false, &stop).unwrap();
+        let b = bfs(&g, 1000, &[0], "cycle", false);
+        assert_eq!(a.hist, b.hist);
+        assert!((0..1000).all(|i| a.get(i) == b.get(i)));
+    }
 
     #[test]
     fn decode_table() {

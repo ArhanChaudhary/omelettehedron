@@ -3,8 +3,12 @@
 # source: GitHub Actions.
 name: GitHub Pages
 
+# Only pushes to main: a run from another branch would join the github-pages concurrency
+# group and replace a deploy waiting there (it happened: a branch push cancelled the pending
+# deploy of main 5cc3c89), even though its build job is then skipped.
 on:
   push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
