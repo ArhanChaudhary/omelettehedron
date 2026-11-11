@@ -220,7 +220,11 @@ optimisation.
     edge_hard 0.85x, corner 6-flip see
     [RESULTS.md](RESULTS.md). The table is read when the first search reaches an iteration
     that can use it, on a background thread while the search goes on without it, so time-limited
-    solves and short proofs never read it. `FTO_NO_CBS=1` turns it off.
+    solves and short proofs never read it. `FTO_NO_CBS=1` turns it off. Checks: the table's
+    bits equal the estimate's exact distances on all 1,684,303 children it was read for in the
+    17-move searches, an ignored test compares them with search on random positions, the large
+    tier gives the brute force's optimal lengths (ignored test), and regenerating it with 16
+    threads gives the same bytes.
   `FTO_FULL_PROOF=1` turns the early end and the passes off; `scripts/check-optimal.sh` checks
   that the proven lengths agree.
 

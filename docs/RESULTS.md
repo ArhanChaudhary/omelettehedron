@@ -140,7 +140,7 @@ building the move and symmetry tables; `bench` leaves it out of its per-position
 |---|---|---|---|---|
 | small | 134 MB | 1.2 s | 27 s | 0.38 GB |
 | medium | 1.04 GB | 6.6 s | 167 s | 1.26 GB |
-| large | 11.6 GB (8.1 GB before `opt/tosolved`) | 30 s + 20 s | — | 18.3 GB |
+| large | 11.6 GB (8.1 GB before `opt/tosolved`) | 30 s + 20 s (64 s from scratch beside a build) | — | 18.3 GB |
 | huge | 33.5 GB | 3 min 14 s (incl. writing 30 GB) + about 20 s (not measured) | — | 29.4 GB before `opt/tosolved` (not measured since) |
 
 The huge tier holds the same A-centre/edge values as medium with a cheaper index and is measured
