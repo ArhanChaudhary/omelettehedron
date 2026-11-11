@@ -30,6 +30,7 @@ use clap::{Parser, Subcommand};
 use omelettehedron::bench;
 use omelettehedron::combined::TwoPhaseMode;
 use omelettehedron::cube::{Cube, MoveSet};
+use omelettehedron::light::AeLight;
 use omelettehedron::notation::{
     format_moves, invert_moves, parse_moves, pure_stickers, scramble_to_cube, solves_pure, Frame,
     PhysMove,
@@ -553,16 +554,22 @@ macro_rules! dispatch {
         let tier = two_phase_tier(&$tab, &dir)?;
         omelettehedron::preflight::set_force($tab.force);
         // The large tier needs 8 GB and the huge tier's index has 9.1e10 entries: 32-bit
-        // targets such as WebAssembly (4 GB) support the small and medium tiers (the medium
-        // index has 4.13e9 entries, below 2^32).
+        // targets such as WebAssembly (4 GB) support the tiny, small and medium tiers (the
+        // medium index has 4.13e9 entries, below 2^32).
         if cfg!(target_pointer_width = "32") && matches!(tier, Tier::Large | Tier::Huge) {
             return Err(
-                "only --tier small and medium are supported on 32-bit targets such as \
+                "only --tier tiny, small and medium are supported on 32-bit targets such as \
                         WebAssembly"
                     .into(),
             );
         }
         match tier {
+            Tier::Tiny => {
+                let $t = Tables::load(&dir, AeLight::new(), moves, $tab.verbose)
+                    .map_err(|e| table_error(&dir, &e))?;
+                let $name = "tiny";
+                $body
+            }
             Tier::Small => {
                 let $t = Tables::load(&dir, AeSym::new(false), moves, $tab.verbose)
                     .map_err(|e| table_error(&dir, &e))?;

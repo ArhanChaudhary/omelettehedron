@@ -659,12 +659,22 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                 continue;
             }
             if budget >= AE_FIRST {
-                t.ae_ix.index_batch_fast_pf::<N>(
-                    f,
-                    &fr.ys[s][..n],
-                    &mut fr.idx[s][..n],
-                    &t.ae.data,
-                );
+                if I::DIRECT {
+                    t.ae_ix.keys_batch_pf::<N>(
+                        f,
+                        &fr.ys[s][..n],
+                        &mut fr.idx[s][..n],
+                        &t.ae.data,
+                        budget,
+                    );
+                } else {
+                    t.ae_ix.index_batch_fast_pf::<N>(
+                        f,
+                        &fr.ys[s][..n],
+                        &mut fr.idx[s][..n],
+                        &t.ae.data,
+                    );
+                }
             } else {
                 for i in 0..n {
                     fr.cbi[s][i] = CbTable::index_fast(f, &fr.ys[s][i]);
@@ -728,6 +738,14 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         *cbe_done = false;
         *cs_done = false;
         if budget >= AE_FIRST {
+            if I::DIRECT {
+                for s in 0..2 {
+                    if on(S, s) {
+                        t.ae_ix
+                            .resolve(f, &ys[s], &ALL_IDS, n, &mut idx[s], &t.ae.data, budget);
+                    }
+                }
+            }
             let mut min_ha = [u8::MAX; 2];
             for i in 0..n {
                 let mut c = live[i];
@@ -735,7 +753,11 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                     if !on(S, s) {
                         continue;
                     }
-                    let ha = decode(h_ae[s], t.ae.get(idx[s][i]));
+                    let ha = if I::DIRECT {
+                        t.ae_ix.value(&t.ae, h_ae[s], idx[s][i])
+                    } else {
+                        decode(h_ae[s], t.ae.get(idx[s][i]))
+                    };
                     has[s][i] = ha;
                     c &= !(u8::from(ha as usize > budget) << s);
                 }
@@ -783,8 +805,13 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                     let i = usize::from(i) % N;
                     ys[o][i] = f.apply_any::<N>(x[o], fw, fws, self.side_move(o ^ r, ms[i]));
                 }
-                t.ae_ix
-                    .index_sel_pf(f, &ys[o], &sel[..k], &mut idx[o], &t.ae.data);
+                if I::DIRECT {
+                    t.ae_ix
+                        .keys_sel_pf(f, &ys[o], &sel[..k], &mut idx[o], &t.ae.data, lim);
+                } else {
+                    t.ae_ix
+                        .index_sel_pf(f, &ys[o], &sel[..k], &mut idx[o], &t.ae.data);
+                }
                 for &i in &sel[..k] {
                     let i = usize::from(i) % N;
                     cbi[o][i] = CbTable::index_fast(f, &ys[o][i]);
@@ -851,8 +878,13 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             }
             for s in 0..2 {
                 if on(S, s) {
-                    t.ae_ix
-                        .index_sel_pf(f, &ys[s], &sel[..k], &mut idx[s], &t.ae.data);
+                    if I::DIRECT {
+                        t.ae_ix
+                            .keys_sel_pf(f, &ys[s], &sel[..k], &mut idx[s], &t.ae.data, budget);
+                    } else {
+                        t.ae_ix
+                            .index_sel_pf(f, &ys[s], &sel[..k], &mut idx[s], &t.ae.data);
+                    }
                 }
             }
         }
@@ -949,6 +981,12 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                     && (!B || S != BOTH || lim >= cb_max as usize)
             };
             let defer = [defer(0), defer(1)];
+            if I::DIRECT && B && S != BOTH {
+                // (the other side's lookups, issued in `stage2`)
+                let o = usize::from(S == SIDE_A);
+                t.ae_ix
+                    .resolve(f, &ys[o], &sel[..], k, &mut idx[o], &t.ae.data, lim);
+            }
             for j in 0..k {
                 let i = sel[j];
                 let u = usize::from(i) % N;
@@ -968,7 +1006,11 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                     if on(S, s) {
                         c &= !(u8::from(hc as usize > budget) << s);
                     } else {
-                        has[s][u] = decode(h_ae[s], t.ae.get(idx[s][u]));
+                        has[s][u] = if I::DIRECT {
+                            t.ae_ix.value(&t.ae, h_ae[s], idx[s][u])
+                        } else {
+                            decode(h_ae[s], t.ae.get(idx[s][u]))
+                        };
                     }
                 }
                 if B {
@@ -986,13 +1028,25 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             }
             b_done = true;
         } else {
+            if I::DIRECT {
+                for s in 0..2 {
+                    if on(S, s) {
+                        t.ae_ix
+                            .resolve(f, &ys[s], &sel[..], k, &mut idx[s], &t.ae.data, budget);
+                    }
+                }
+            }
             for j in 0..k {
                 let i = sel[j];
                 let u = usize::from(i) % N;
                 let mut c = live[u];
                 for s in 0..2 {
                     if on(S, s) {
-                        let ha = decode(h_ae[s], t.ae.get(idx[s][u]));
+                        let ha = if I::DIRECT {
+                            t.ae_ix.value(&t.ae, h_ae[s], idx[s][u])
+                        } else {
+                            decode(h_ae[s], t.ae.get(idx[s][u]))
+                        };
                         has[s][u] = ha;
                         c &= !(u8::from(ha as usize > budget) << s);
                     }
@@ -1052,16 +1106,29 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                     let i = usize::from(i) % N;
                     ys[o][i] = f.apply_any::<N>(x[o], fw, fws, self.side_move(o ^ r, ms[i]));
                 }
-                t.ae_ix
-                    .index_sel_pf(f, &ys[o], &sel[..n], &mut idx[o], &t.ae.data);
+                if I::DIRECT {
+                    t.ae_ix
+                        .keys_sel_pf(f, &ys[o], &sel[..n], &mut idx[o], &t.ae.data, lim);
+                } else {
+                    t.ae_ix
+                        .index_sel_pf(f, &ys[o], &sel[..n], &mut idx[o], &t.ae.data);
+                }
                 for &i in &sel[..n] {
                     let i = usize::from(i) % N;
                     cbi[o][i] = CbTable::index_fast(f, &ys[o][i]);
                     prefetch_at(&t.cb.tab.data, cbi[o][i] >> 5);
                 }
+                if I::DIRECT {
+                    t.ae_ix
+                        .resolve(f, &ys[o], &sel[..], n, &mut idx[o], &t.ae.data, lim);
+                }
                 for &i in &sel[..n] {
                     let i = usize::from(i) % N;
-                    has[o][i] = decode(h_ae[o], t.ae.get(idx[o][i]));
+                    has[o][i] = if I::DIRECT {
+                        t.ae_ix.value(&t.ae, h_ae[o], idx[o][i])
+                    } else {
+                        decode(h_ae[o], t.ae.get(idx[o][i]))
+                    };
                     hcs[o][i] = decode(h_cb[o], t.cb.tab.get(cbi[o][i]));
                 }
             }
@@ -1299,15 +1366,19 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         let mut ic = [0usize; N];
         let mut icb = [0usize; N];
         tb.ae_ix
-            .index_batch_fast_pf::<N>(f, &ys[..n], &mut ia[..n], &tb.ae.data);
+            .keys_batch_pf::<N>(f, &ys[..n], &mut ia[..n], &tb.ae.data, usize::MAX);
         tb.ae_ix
-            .index_batch_fast_pf::<N>(f, &yb[..n], &mut iab[..n], &tb.ae.data);
+            .keys_batch_pf::<N>(f, &yb[..n], &mut iab[..n], &tb.ae.data, usize::MAX);
         for i in 0..n {
             ic[i] = CbTable::index_fast(f, &ys[i]);
             prefetch(&tb.cb.tab.data[ic[i] >> 5]);
             icb[i] = CbTable::index_fast(f, &yb[i]);
             prefetch(&tb.cb.tab.data[icb[i] >> 5]);
         }
+        tb.ae_ix
+            .resolve(f, &ys, &ALL_IDS, n, &mut ia, &tb.ae.data, usize::MAX);
+        tb.ae_ix
+            .resolve(f, &yb, &ALL_IDS, n, &mut iab, &tb.ae.data, usize::MAX);
         (0..n)
             .map(|i| {
                 let mut path = Vec::with_capacity(t.path.len() + 1);
@@ -1317,8 +1388,8 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                     path,
                     x: [ys[i], yb[i]],
                     h_ae: [
-                        decode(t.h_ae[0], tb.ae.get(ia[i])),
-                        decode(t.h_ae[1], tb.ae.get(iab[i])),
+                        tb.ae_ix.value(&tb.ae, t.h_ae[0], ia[i]),
+                        tb.ae_ix.value(&tb.ae, t.h_ae[1], iab[i]),
                     ],
                     h_cb: [
                         decode(t.h_cb[0], tb.cb.tab.get(ic[i])),

@@ -630,11 +630,19 @@ impl<'g, G: Graph> Bfs<'g, G> {
     /// hold `cur` too (mod-3 distances): a forward step expands them for nothing, a backward
     /// step cannot meet them.
     pub fn level(&mut self, cur: u8, next: u8) -> u64 {
+        self.level_dir(cur, next, None)
+    }
+
+    /// [`Bfs::level`], forward if `fwd` is `Some(true)`, backward if `Some(false)`, and by
+    /// [`FORWARD_RATIO`] if `None`.
+    pub fn level_dir(&mut self, cur: u8, next: u8, fwd: Option<bool>) -> u64 {
         let tab = self.tab();
         let (g, n) = (self.g, self.n);
         let frontier = self.hist.last().copied().unwrap_or(0);
-        let fwd = frontier.saturating_mul(G::MOVES as u64)
-            < self.unvisited().saturating_mul(FORWARD_RATIO);
+        let fwd = fwd.unwrap_or_else(|| {
+            frontier.saturating_mul(G::MOVES as u64)
+                < self.unvisited().saturating_mul(FORWARD_RATIO)
+        });
         let stop = self.stop;
         let newc: u64 = (0..n.div_ceil(CH))
             .into_par_iter()
@@ -798,6 +806,42 @@ pub fn saturating<G: Graph>(
     b.remap([0, 0, 1, 3]);
     b.level(1, 2);
     b.count_rest(2);
+    b.finish()
+}
+
+/// [`saturating`] without counting the distances of the rest: the histogram ends with the
+/// number of entries at `base + 3` or more (unreachable ones included), and the search stops
+/// once `base + 2` is reached, so the levels beyond are never made (the tiny tier's tables,
+/// [`crate::light`]). That last level goes forward: a backward step reads every neighbour of
+/// each entry beyond it, which never meets the frontier (tiny tier's pair table, depth 9:
+/// one WebAssembly thread 6.1 -> 4.3 s, 8 threads 1.85 -> 0.67 s; natively on one thread
+/// 4.7 -> 3.4 s; when added).
+pub fn saturating_codes<G: Graph>(
+    g: &G,
+    n: usize,
+    targets: &[usize],
+    base: u8,
+    name: &str,
+    verbose: bool,
+) -> Table2 {
+    let mut b = Bfs::new(g, n, targets, 0, name, verbose);
+    for d in 0..base {
+        b.level(d % 3, (d + 1) % 3);
+    }
+    let mut map = [0, 0, 0, 3];
+    map[(base % 3) as usize] = 1;
+    b.remap(map);
+    b.level(1, 2);
+    b.remap([0, 0, 1, 3]);
+    b.level_dir(1, 2, Some(true));
+    // (the histogram has an entry per level, empty ones included only up to the last
+    // non-empty one; pad it so that the last entry is "base + 3 or more")
+    while b.hist.len() < usize::from(base) + 3 {
+        b.hist.push(0);
+    }
+    let rest = b.unvisited();
+    b.hist.push(rest);
+    b.done += rest;
     b.finish()
 }
 
@@ -976,6 +1020,25 @@ mod tests {
         assert_eq!(t.hist, hist);
         for i in 0..g.0 {
             assert_eq!(t.get(i) as u32, dist[i] % 3);
+        }
+    }
+
+    /// Codes without the count of the rest: the same codes as [`saturating`], and a
+    /// histogram whose last entry counts the distances beyond `base + 2`.
+    #[test]
+    fn saturating_codes_match_reference() {
+        let g = Chords(300_007);
+        let (dist, hist) = reference(&g);
+        for base in [2u8, 6, 7] {
+            let t = saturating_codes(&g, g.0, &[0], base, "chords", false);
+            let b = usize::from(base);
+            let mut want = hist[..=b + 2].to_vec();
+            want.push(hist[b + 3..].iter().sum());
+            assert_eq!(t.hist, want, "base {base}");
+            for i in 0..g.0 {
+                let code = dist[i].saturating_sub(base as u32).min(3);
+                assert_eq!(t.get(i) as u32, code, "base {base} index {i}");
+            }
         }
     }
 

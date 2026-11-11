@@ -54,6 +54,7 @@ pub mod cube;
 pub mod fast;
 pub mod geometry;
 pub mod info;
+pub mod light;
 pub mod mem;
 pub mod notation;
 pub mod optimal;

@@ -18,6 +18,9 @@ use std::path::{Path, PathBuf};
     Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Serialize, serde::Deserialize,
 )]
 pub enum Tier {
+    /// ~42 MB: two small A-centre/edge tables read through relabellings (for low-memory
+    /// devices: about 1.5x the nodes of small)
+    Tiny,
     /// ~135 MB: edge triples without chirality, 288-fold symmetry
     Small,
     /// ~1.0 GB: full edge coset, 288-fold symmetry
@@ -120,7 +123,96 @@ pub trait AeIndex: Send + Sync + 'static {
             prefetch_at(tab, out[i] >> 5);
         }
     }
+    /// Whether the search reads this index through its keys ([`AeIndex::keys_batch_pf`],
+    /// [`AeIndex::resolve`], [`AeIndex::value`]) instead of decoding table entries mod 3 (only
+    /// [`crate::light::AeLight`]). A constant, so that each kind of index gets its own code
+    /// and the search compiles for the other indices exactly as without the hooks.
+    const DIRECT: bool = false;
+    /// The keys the search reads with [`AeIndex::value`], of a batch of positions (`tab`: the
+    /// table's words): for a table of distances mod 3, the indices
+    /// ([`AeIndex::index_batch_fast_pf`]); [`crate::light::AeLight`]'s keys are the bounds.
+    /// The search compares the bounds with `cut` (`usize::MAX`: it needs them exactly): a
+    /// key's bound may be any lower bound that is above `cut` exactly when the full bound
+    /// is (so [`crate::light::AeLight`] can skip lookups).
+    #[inline(always)]
+    fn keys_batch_pf<const N: usize>(
+        &self,
+        f: &FastTables,
+        xs: &[Fc],
+        out: &mut [usize],
+        tab: &[u64],
+        _cut: usize,
+    ) {
+        self.index_batch_fast_pf::<N>(f, xs, out, tab);
+    }
+    /// [`AeIndex::keys_batch_pf`] over the positions `xs[i]` for `i` in `sel` (as
+    /// [`AeIndex::index_sel_pf`]).
+    #[inline(always)]
+    fn keys_sel_pf<const N: usize>(
+        &self,
+        f: &FastTables,
+        xs: &[Fc; N],
+        sel: &[u8],
+        out: &mut [usize; N],
+        tab: &[u64],
+        _cut: usize,
+    ) {
+        self.index_sel_pf::<N>(f, xs, sel, out, tab);
+    }
+    /// Make the keys `keys[i]` of the positions `xs[i]`, `i` in the first `count` of `sel`,
+    /// from [`AeIndex::keys_batch_pf`] or [`AeIndex::keys_sel_pf`] (with this `cut`), ready
+    /// for [`AeIndex::value`]: a no-op for tables of distances mod 3, whose keys are their
+    /// indices. ([`crate::light::AeLight`] reads its first lookups here, which the keys
+    /// prefetched, and makes the others that matter.) (`sel` and `count` are apart so that the
+    /// no-op leaves no bounds check behind.)
+    #[inline(always)]
+    fn resolve<const N: usize>(
+        &self,
+        _f: &FastTables,
+        _xs: &[Fc; N],
+        _sel: &[u8],
+        _count: usize,
+        _keys: &mut [usize; N],
+        _tab: &[u64],
+        _cut: usize,
+    ) {
+    }
+    /// The bound of a position from its key and its parent's bound `parent`: for a table of
+    /// distances mod 3 the exact distance, decoded from the entry and the parent's distance
+    /// (one move changes it by at most one).
+    #[inline(always)]
+    fn value(&self, ae: &Table2, parent: u8, key: usize) -> u8 {
+        decode(parent, ae.get(key))
+    }
+    /// The bound of a position where it does not come from walking down the table (`None`
+    /// for tables of distances mod 3, whose exact distance is walked).
+    fn bound(&self, _f: &FastTables, _x: &Fc, _ae: &Table2) -> Option<u8> {
+        None
+    }
+    /// The table in the metric of `moves`.
+    fn build(&self, moves: MoveSet, verbose: bool) -> Table2
+    where
+        Self: Sized,
+    {
+        build_ae(self, moves, verbose)
+    }
+    /// Whether a table that is not walked ([`AeIndex::bound`]) is one of this index (checks
+    /// of its own; tables of distances mod 3 are walked instead).
+    fn check_table(&self, _ae: &Table2, _moves: MoveSet) -> bool {
+        true
+    }
 }
+
+/// The indices 0..32 (all children of a node, for [`AeIndex::resolve`]).
+pub const ALL_IDS: [u8; 32] = {
+    let mut a = [0u8; 32];
+    let mut i = 0;
+    while i < 32 {
+        a[i] = i as u8;
+        i += 1;
+    }
+    a
+};
 
 /// Hint that `p` will be read soon.
 #[inline(always)]
@@ -179,9 +271,9 @@ pub struct AeSym {
     pub chiral: bool,
     /// symmetry pairs (other than the identity) fixing each class representative
     pub stab: Vec<Vec<(u8, u8)>>,
-    /// the symmetry and move tables, held here so that the per-entry methods read no
+    /// the edge symmetry and move tables, held here so that the per-entry methods read no
     /// `OnceLock` (see [`AeGraph`])
-    s: &'static Syms,
+    s: &'static EdgeSyms,
     mt: &'static MoveTables,
 }
 
@@ -210,7 +302,7 @@ impl AeSym {
             cls,
             chiral,
             stab,
-            s,
+            s: edge_syms(),
             mt: move_tables(),
         }
     }
@@ -343,7 +435,7 @@ impl AeIndex for AeSym {
 pub struct AeRelabel {
     pub cls: AClasses,
     /// as in [`AeSym`]
-    s: &'static Syms,
+    s: &'static EdgeSyms,
     mt: &'static MoveTables,
 }
 
@@ -355,7 +447,7 @@ impl AeRelabel {
             .collect();
         AeRelabel {
             cls: AClasses::new(&pairs),
-            s: syms(),
+            s: edge_syms(),
             mt: move_tables(),
         }
     }
@@ -885,12 +977,15 @@ pub fn table_dir(dir: Option<&Path>) -> PathBuf {
 pub const AE_TRIPLES_FILE: &str = "ae-sym288-triples";
 pub const AE_CHIRAL_FILE: &str = "ae-sym288-chiral";
 pub const AE_RELABEL_FILE: &str = "ae-relabel12-chiral";
+/// The tiny tier's pair and split tables, in one file ([`crate::light`]).
+pub const AE_LIGHT_FILE: &str = "ae-pair48-split96";
 pub const CB_FILE: &str = "cb-sym24";
 pub const CBE_FILE: &str = "cbe";
 
 /// Entries of the tables (the sizes of the indices, as the file headers give them), so that
 /// table files can be judged without building the indices (`tier_entries_match_the_indices`
 /// checks them).
+pub const AE_LIGHT_ENTRIES: u64 = 149_041_200;
 pub const AE_TRIPLES_ENTRIES: u64 = 515_961_600;
 pub const AE_CHIRAL_ENTRIES: u64 = 4_127_692_800;
 pub const AE_RELABEL_ENTRIES: u64 = 91_069_440_000;
@@ -903,10 +998,17 @@ pub fn cbs_file() -> String {
 
 impl Tier {
     /// The tiers, smallest first.
-    pub const ALL: [Tier; 4] = [Tier::Small, Tier::Medium, Tier::Large, Tier::Huge];
+    pub const ALL: [Tier; 5] = [
+        Tier::Tiny,
+        Tier::Small,
+        Tier::Medium,
+        Tier::Large,
+        Tier::Huge,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
+            Tier::Tiny => "tiny",
             Tier::Small => "small",
             Tier::Medium => "medium",
             Tier::Large => "large",
@@ -923,6 +1025,7 @@ impl Tier {
             entries,
         };
         let ae = match self {
+            Tier::Tiny => file(AE_LIGHT_FILE, AE_LIGHT_ENTRIES),
             Tier::Small => file(AE_TRIPLES_FILE, AE_TRIPLES_ENTRIES),
             Tier::Medium | Tier::Large => file(AE_CHIRAL_FILE, AE_CHIRAL_ENTRIES),
             Tier::Huge => file(AE_RELABEL_FILE, AE_RELABEL_ENTRIES),
@@ -977,7 +1080,7 @@ fn load_or_build(
 impl<I: AeIndex> Tables<I> {
     /// Build all tables in memory without touching the disk.
     pub fn generate(ae_ix: I, moves: MoveSet, verbose: bool) -> Tables<I> {
-        let ae = build_ae(&ae_ix, moves, verbose);
+        let ae = ae_ix.build(moves, verbose);
         let cb = CbTable {
             tab: CbTable::build(moves, verbose),
             attach: CbTable::attach_targets(),
@@ -1060,7 +1163,7 @@ impl<I: AeIndex> Tables<I> {
         }
         crate::preflight::check_plan(&plan)?;
         let ae = load_or_build(&ae_path, ae_ix.size(), verbose, || {
-            build_ae(&ae_ix, moves, verbose)
+            ae_ix.build(moves, verbose)
         })?;
         let cbt = load_or_build(&cb_path, N_CB, verbose, || CbTable::build(moves, verbose))?;
         let cb = CbTable {
@@ -1155,9 +1258,12 @@ impl<I: AeIndex> Tables<I> {
     pub fn check_walks(&self, ae_path: &Path, cb_path: &Path) -> std::io::Result<()> {
         use rand::SeedableRng;
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0x7ab1e);
-        for _ in 0..8 {
+        for i in 0..8 {
             let x = fast().of(&Cube::random(&mut rng));
-            let ((_, ae_ok), (_, cb_ok)) = self.walks(&x);
+            let ((_, mut ae_ok), (_, cb_ok)) = self.walks(&x);
+            if i == 0 && self.ae_ix.bound(fast(), &x, &self.ae).is_some() {
+                ae_ok = self.ae_ix.check_table(&self.ae, self.moves);
+            }
             for (ok, path) in [(ae_ok, ae_path), (cb_ok, cb_path)] {
                 if !ok {
                     return Err(std::io::Error::new(
@@ -1231,7 +1337,10 @@ impl<I: AeIndex> Tables<I> {
                     d += 1;
                 }
             };
-        let ha = walk(&ae_ix, &self.ae, &|y| self.ae_targets.contains(&ae_ix(y)));
+        let ha = match self.ae_ix.bound(f, x, &self.ae) {
+            Some(h) => (h, true),
+            None => walk(&ae_ix, &self.ae, &|y| self.ae_targets.contains(&ae_ix(y))),
+        };
         let hc = walk(&cb_ix, &self.cb.tab, &|y| {
             self.cb.attach[y.c as usize] == f.b_rank(y)
         });
@@ -1262,6 +1371,7 @@ mod tests {
         assert_eq!(chiral.size() as u64, AE_CHIRAL_ENTRIES);
         assert_eq!(relabel.size() as u64, AE_RELABEL_ENTRIES);
         assert_eq!(crate::cbe::CbeIndex::new().size() as u64, CBE_ENTRIES);
+        assert_eq!(crate::light::AeLight::new().size() as u64, AE_LIGHT_ENTRIES);
         let names = |t: Tier, slice: bool| -> Vec<String> {
             t.files(MoveSet {
                 slice,
@@ -1271,6 +1381,10 @@ mod tests {
             .map(|f| f.name)
             .collect()
         };
+        assert_eq!(
+            names(Tier::Tiny, false),
+            ["ae-pair48-split96.prun", "cb-sym24.prun"]
+        );
         assert_eq!(
             names(Tier::Small, false),
             ["ae-sym288-triples.prun", "cb-sym24.prun"]
