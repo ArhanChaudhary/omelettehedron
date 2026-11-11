@@ -36,7 +36,9 @@ two-phase solver; the optimal solver's files start with `opt-`. Before generatin
 space and free memory are checked for all tables of the tier (`--force` skips the check);
 `--min-free-memory GB` leaves that much memory to the rest of the machine (added to the check,
 and the large tier's 21 GB table stops generating, writing nothing, if the free memory falls
-below it). Face turns only (no `--moves`).
+below it). `--moves slice` adds the slice turns (each counts one move), with tables of their own
+in that metric (`*-slice.prun`; small and medium tiers: the large tier is face turns only);
+`--moves wide` only changes the output, as for the two-phase solver.
 
 ## Search
 
@@ -344,6 +346,48 @@ nodes are: 92% of the children have 9 or 10 moves left and fewer than 0.01% at m
 set: 1,700 of 1.5e8), so exact checks near the leaves (for example one move left: one of the 16
 neighbours of solved) cannot change the node count measurably; not done.
 
+**Slice turns (`--moves slice`, `optimal/slice`).** 24 internal moves (the slices are the middle
+layers of the four axes, turned like the back face; they move no corner) with the slice metric's
+canonical order (`cube::allowed_after`: on an axis only X Xw and X' Xw'). Every table of the
+tiers is a distance in the metric of the move set, so the slice metric has its own files
+(`opt-*-slice.prun`, and the two-phase A-centre/edge tables `ae-sym288-*-slice.prun`); the
+symmetry reductions hold, as every symmetry maps slices to slices. The search is compiled once
+per number of moves (16 or 24), so the face metric runs the same code. The symmetric start
+still keeps the first optimal solution: the canonical form of a two-move element of an axis
+starts with its single turn, the smallest move index of the axis, so the reordering at the end
+of a task's prefix only makes the prefix smaller. Tests: the brute force in the slice metric on
+1 and 8 threads (scrambles of face, wide and slice turns; the solutions use slices and are never
+longer than in the face metric), the two-phase solver's optimal mode with slices, consistency of
+the slice tables, the symmetric start on symmetric positions of the slice metric.
+
+Slice-metric tables (entries; max, mean): corners x centres 18,849,600 (10, 7.52), edges
+239,500,800 (9, 7.17), A-centre/edge triples to `H_A` 515,961,600 (11, 8.83). Small tier, one
+thread, 10 x 15-move face-turn scrambles (seed 1717): mean optimal length 13.6 with slices
+(14.5 without), the same lengths as the two-phase solver's optimal mode with slices on all ten,
+1,297,054,007 nodes (96x the face metric's 13,456,478: about 18 children per node instead of
+13, and shallower tables), 1.34 lookups per node (the face-metric lookup order is also within
+0.1% of the best one here, by the pruning statistics of a 13-move set). Medium tier with slices
+(corners x edges in the slice metric: 9,580,032,000 entries, max 11, mean 9.27; generated in 47
+minutes on the busy machine): 139,550,571 nodes on the same set (0.108x the small tier, 120x
+the face metric's 1,162,092), same lengths, 1.37 lookups per node. On the 17-move set (medium,
+one thread): mean optimal length 15.5 (16.5 in face turns), 47,025,092,761 nodes (318x the face
+metric's 147,723,722; two positions of 17 slice-metric moves take 1.7e10 and 2.8e10), 1.38
+lookups per node.
+
+What the slices cost face turns: the search is compiled once per move count, and with 16
+moves it applies face moves only (`OptMoves::apply_n`), reading the face rows of the corner
+table (the first 32 KB; the slice rows, a slice keeping the corner id, are a second block), so
+the face metric has no branch on the move kind and the same table footprint as before.
+Face-metric time against main (4c96995), medium tier, quiet machine, interleaved rounds: 48
+threads, 19-move set 0.999x (0.999, 0.997, 0.999); 1 thread, 17-move set 1.015x (1.016,
+1.016, 0.999) and in six more rounds 1.031x (1.009 to 1.058); same nodes. Earlier layouts: a
+branch in the corner move 1.083x / 1.059x (1T / 48T), one 64-byte row of 32 moves per corner
+1.012x / 1.024x, the two blocks without `apply_n` 1.025x / 1.024x. With main's round 3 merged
+in (main 7b93c60, three rounds): 1 thread 1.007x (0.966, 1.003, 1.024), 48 threads 1.001x
+(1.010, 0.995, 0.996): at parity. (The earlier 1T residue came with identical `dfs` machine
+code, so it was code placement, which every merge shifts.) Stacked on `optimal/r3-aepre`:
+1.015x (1.017, 1.001, 1.018) / 1.004x (1.000, 1.010, 1.004) against it.
+
 ## Optimisation round 2: a bound for the nodes with 9 to 11 moves left
 
 **Estimate before building.** With medium + AE, the expanded nodes of the 13-move set (10
@@ -450,11 +494,90 @@ is weakest where the optimum is reached early: on the
 random position of length 20 the two-phase solver has its 20 within 0.5 s and only has to
 exclude 19 (7.9e9 nodes), while IDA* must finish the whole depth-19 iteration (4.5e10).
 
+## Optimisation round 3: the cost per node
+
+**Profile** (perf with task-clock sampling, the VM has no hardware counters; 1 thread, 17-move
+set, main 4c96995). Over 90% of the time is in `dfs` (everything is inlined into it). The
+largest single cost is the stall on the table read: 36.5% of the medium tier's `dfs` samples
+and 44% of the large tier's sit on the instruction after the table load, although every
+entry is prefetched before it is read (a stage computed all its children's indices and
+prefetched them right before reading them). Then 6.3% on the A-centre/edge index's u32
+symmetry-class table (1.5 MB, misses the 1 MB L2), 3.6% (medium) / 10% (large) on the
+prefetch instructions themselves (line fill buffers full); the rest is index arithmetic,
+thinly spread, and move application (the shuffles) is 2-4%.
+
+Changes (`optimal/r3-prefetch`), each with the same tree, nodes and lookups:
+
+* **Next-stage prefetch:** a child that passes stage k gets its stage-k+1 index computed and its
+  entry prefetched at once, inside stage k's read loop, so the miss overlaps the rest of stage
+  k as well.
+* **Sibling pipeline:** before the search descends into a surviving child, the next surviving
+  child's children are generated and their first-stage entries prefetched (two frames per
+  level), so those misses overlap the current child's subtree. A node's children are counted
+  when the search enters it.
+
+Time against main 4c96995 (quiet machine, bench lock, three rounds with the order rotating;
+1 thread on the 17-move set, 48 threads on the 19-move set):
+
+| variant | medium 1T | medium 48T | large 1T | large 48T |
+|---|---|---|---|---|
+| next-stage prefetch | 0.976, 0.982 | 0.996, 0.986 | 0.772, 0.815 | 0.821, 0.835 |
+| sibling pipeline | 0.953 | 0.940 | 0.890 | 0.973 |
+| **both** | **0.928** | **0.945** | **0.818** | **0.875** |
+| AE class-entry prefetch pass (`neg/optimal-r3-aeclass`) | 1.104 | 1.120 | 1.007 | 1.009 |
+
+(Two numbers: two sessions.) The large tier gains most from the next-stage prefetch (1.36
+lookups per node after the first stage, against 0.51 for medium), the medium tier from the
+pipeline (its first stage is most of its lookups). The AE prefetch pass computes the
+A-centre rank of every child of a stage first and prefetches its class entry: the extra pass
+costs more than the stall it hides.
+
+**Piece positions from SIMD compares (`optimal/r3-masks`).** The profile after the prefetch
+changes put 15% of the medium tier's samples on the A-centre/edge chirality bits
+(`FcMaps::ebits`: an inverse permutation scattered into memory, then the parity of four
+position triples). It and the triple table's index (which also built an inverse permutation
+to find three pieces) now take each piece's position as a one-bit mask from a SIMD compare
+(`fast::label_mask`); comparing two masks compares the positions, so a parity is three mask
+comparisons. Against round 3: medium 0.885x (1T) / 0.885x (48T), large 0.907x / 0.925x; same
+nodes.
+
+**The first stage's A-centre/edge class entries prefetched while the children are generated
+(`optimal/r3-aepre`).** The A-centre/edge index first reads a u32 symmetry-class entry (1.5
+MB table, misses L2; 9.6% of the medium tier's samples after the prefetch changes) and only
+then knows the table entry. When the sibling pipeline generates a node's children, it now
+also computes each child's A-centre rank for the first stage (`Bounds::pre`) and prefetches
+its class entry; the first stage's indices finish from that rank (`Bounds::index_with`), with
+a whole sibling subtree of slack. (Doing this as an extra pass before every stage was slower,
+`neg/optimal-r3-aeclass`.) On top of the SIMD positions: medium 0.898x (1T) / 0.919x (48T),
+large 0.946x / 0.941x; same nodes.
+
+**Per-node lookup order (`neg/optimal-r3-dynorder`, not merged).** A child's value is at most
+one above its parent's, so lookup `k` can prune a child only if `h[k] + 1 > budget`. Reading
+those that cannot prune last (they are needed only for the survivors' exact values), and then
+also the lookups at the node's limit (`h[k] == budget + 1`) first: lookups per node 1.51 ->
+1.48 -> 1.46 (medium, 17-move set), 2.36 -> 2.24 -> 2.15 (large), same nodes, but the time is
+mixed (medium 1.002x / 1.008x and 0.993x / 0.987x at 1T / 48T; large 1.008x / 0.961x and
+1.029x / 0.959x): the static order is close to the best on average, and the per-node order
+costs about what it saves.
+
+**Duplicates.** Canonical move sequences against distinct positions from solved: identical up
+to depth 4, 0.2% duplicates at depth 5, 0.6% at depth 6. A transposition table would cost a
+memory access per node for very little; not pursued.
+
+**The hard positions with the large tier** (48 threads, `-l 19`, quiet machine): nodes of the
+depth-19 iteration, large against medium: tri_adj+edge_opp 2.10e7 / 2.32e8 (0.090x),
+tri_adj+edge_adj 5.19e7 / 6.20e8 (0.084x), tri_adj-[Uf_Fu;Db_Bd] 1.88e8 / 2.24e9 (0.084x),
+tri_adj+[UB_FD,NL_MR] 6.59e7 / 6.68e8 (0.099x), edge_hard 8.84e9 / 1.44e10 (0.61x, its corners
+are solved). With about 14.5 times more nodes per iteration and 4.4e8 nodes/s, finishing depth
+22 would take about 150 s / 360 s / 1,300 s / 450 s for the four 23-move positions and the
+whole depth 23 at most 2,100 / 5,200 / 19,000 / 6,600 s; the two-phase solver proved them in
+8,866 / 11,878 / 10,942 / 8,397 s.
+
 ## Missing (v0)
 
 * Timings: the machine was busy with long two-phase proofs, so only node counts are measured.
-* Moves other than face turns (`--moves slice`); printing improvements (`-p`) has no use here
-  (the first solution is optimal); resuming a proof from a known lower bound.
+* Printing improvements (`-p`) has no use here (the first solution is optimal); resuming a
+  proof from a known lower bound.
 * Lanes / micro-threading and huge-page tuning: not done.
 
 ## Next optimisations (ranked)

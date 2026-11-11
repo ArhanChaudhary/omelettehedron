@@ -10,10 +10,10 @@
 //!   the reduction, so no second position is carried.
 
 use super::sym::*;
+use crate::coord::triple_pieces;
 use crate::coord::{corners, mset, N_CORNER, N_MSET};
-use crate::coord::{parity3, triple_pieces};
 use crate::cube::*;
-use crate::fast::{fast, masks, mset_labels, shuffle, FastTables, Fc};
+use crate::fast::{fast, label_mask, masks, mset_labels, shuffle, FastTables, Fc};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -68,14 +68,21 @@ impl Pos {
     }
 }
 
-/// Move tables of the 16 face-metric moves.
+/// Move tables of the internal moves: the 16 face-metric moves and the 8 slice turns
+/// (`N_MOVES..MAX_MOVES`, see [`crate::cube::MoveSet`]).
 pub struct OptMoves {
-    /// gather shuffles: `new[p] = old[src[p]]` (lanes 12..16 select zero)
-    shuf_e: [[u8; 16]; N_MOVES],
-    shuf_a: [[u8; 16]; N_MOVES],
-    shuf_b: [[u8; 16]; N_MOVES],
-    /// corner id after each move, padded to 1024 ids so that `& 1023` replaces bounds checks
-    corner: Box<[[u16; N_MOVES]; 1024]>,
+    /// gather shuffles: `new[p] = old[src[p]]` (lanes 12..16 select zero), padded to 32 moves
+    /// so that `& 31` replaces bounds checks
+    shuf_e: [[u8; 16]; 32],
+    shuf_a: [[u8; 16]; 32],
+    shuf_b: [[u8; 16]; 32],
+    /// corner id after each move: rows 0..1024 the face turns (16 columns, the first 32 KB,
+    /// all that the face metric reads), rows 1024..2048 the slices (a slice moves no corner:
+    /// the same id; 16 columns, the padding moves too); row `(c & 1023) | ((m & 16) << 6)`,
+    /// column `m & 15`, so no branch on the move kind and no bounds check (with a branch,
+    /// face-turn searches took 1.03-1.08x the time; with one 64-byte row of 32 moves per id,
+    /// 1.01-1.02x)
+    corner: Box<[[u16; 16]; 2048]>,
 }
 
 fn gather(src: &[u8; 12]) -> [u8; 16] {
@@ -88,8 +95,8 @@ impl OptMoves {
     fn new() -> OptMoves {
         let d = defs();
         let cs = corners();
-        #[allow(clippy::large_stack_arrays)] // 32 KB, once at startup
-        let mut corner = Box::new([[0u16; N_MOVES]; 1024]);
+        #[allow(clippy::large_stack_arrays)] // 64 KB, once at startup
+        let mut corner = Box::new([[0u16; 16]; 2048]);
         for (id, &(cp, co)) in cs.id_to_state.iter().enumerate() {
             let cube = Cube {
                 cp,
@@ -97,47 +104,67 @@ impl OptMoves {
                 ..Cube::solved()
             };
             corner[id] = std::array::from_fn(|m| cs.id(&cube.apply(m)));
+            corner[1024 + id] = [id as u16; 16];
         }
+        // (moves 24..32 are padding: the identity)
+        let id: [u8; 12] = std::array::from_fn(|p| p as u8);
+        let src = |m: usize, f: fn(&Cube) -> [u8; 12]| -> [u8; 16] {
+            gather(&if m < MAX_MOVES { f(&d.moves[m]) } else { id })
+        };
         OptMoves {
-            shuf_e: std::array::from_fn(|m| gather(&d.moves[m].ep)),
-            shuf_a: std::array::from_fn(|m| gather(&d.moves[m].xa)),
-            shuf_b: std::array::from_fn(|m| gather(&d.moves[m].xb)),
+            shuf_e: std::array::from_fn(|m| src(m, |c| c.ep)),
+            shuf_a: std::array::from_fn(|m| src(m, |c| c.xa)),
+            shuf_b: std::array::from_fn(|m| src(m, |c| c.xb)),
             corner,
         }
     }
 
-    /// Apply move `m` (`m < N_MOVES`).
+    /// Apply move `m` (`m < MAX_MOVES`).
     #[inline(always)]
     pub fn apply(&self, p: &Pos, m: usize) -> Pos {
-        let m = m & 15;
+        let m = m & 31;
         Pos {
             ep: shuffle(&p.ep, &self.shuf_e[m]),
             xa: shuffle(&p.xa, &self.shuf_a[m]),
             xb: shuffle(&p.xb, &self.shuf_b[m]),
-            c: self.corner[p.c as usize & 1023][m],
+            c: self.corner(p.c, m),
+        }
+    }
+
+    /// [`OptMoves::apply`] in a search over `N` moves: with the 16 face turns only (`N <=
+    /// N_MOVES`, known when compiling), the face rows directly, so the face metric runs the
+    /// same code as without slice support.
+    #[inline(always)]
+    pub fn apply_n<const N: usize>(&self, p: &Pos, m: usize) -> Pos {
+        if N <= N_MOVES {
+            let m = m & 15;
+            Pos {
+                ep: shuffle(&p.ep, &self.shuf_e[m]),
+                xa: shuffle(&p.xa, &self.shuf_a[m]),
+                xb: shuffle(&p.xb, &self.shuf_b[m]),
+                c: self.corner[p.c as usize & 1023][m],
+            }
+        } else {
+            self.apply(p, m)
         }
     }
 
     /// Apply move `m` to the edge permutation only.
     #[inline(always)]
     pub fn apply_ep(&self, ep: &[u8; 16], m: usize) -> [u8; 16] {
-        shuffle(ep, &self.shuf_e[m & 15])
+        shuffle(ep, &self.shuf_e[m & 31])
     }
 
-    /// Corner id after move `m`.
+    /// Corner id after move `m` (a slice moves no corner).
     #[inline(always)]
     pub fn corner(&self, c: u16, m: usize) -> u16 {
-        self.corner[c as usize & 1023][m & 15]
+        self.corner[(c as usize & 1023) | ((m & 16) << 6)][m & 15]
     }
 
     /// Apply move `m` to the corners and B-centres only.
     #[inline(always)]
     pub fn apply_cb(&self, c: u16, xb: &[u8; 16], m: usize) -> (u16, [u8; 16]) {
-        let m = m & 15;
-        (
-            self.corner[c as usize & 1023][m],
-            shuffle(xb, &self.shuf_b[m]),
-        )
+        (self.corner(c, m), shuffle(xb, &self.shuf_b[m & 31]))
     }
 }
 
@@ -527,16 +554,15 @@ impl FcMaps {
 
     /// Chirality bits of an edge permutation (bit t: the parity of the positions of A-triple
     /// t's pieces, as `coord::edge_chirality`).
+    /// (Each piece's position as a one-bit mask from a SIMD compare: comparing the masks
+    /// compares the positions, with no inverse permutation in memory; it was 4-5% of the
+    /// search's samples as a scatter loop.)
     #[inline(always)]
     fn ebits(&self, ep: &[u8; 16]) -> u8 {
-        let mut pos = [0u8; 16];
-        for p in 0..12 {
-            pos[usize::from(ep[p] & 15)] = p as u8;
-        }
         let mut bits = 0;
         for t in 0..4 {
-            let [a, b, c] = self.tp[t];
-            bits |= parity3(pos[a as usize], pos[b as usize], pos[c as usize]) << t;
+            let [a, b, c] = self.tp[t].map(|e| label_mask(ep, e));
+            bits |= u8::from((a > b) ^ (a > c) ^ (b > c)) << t;
         }
         bits
     }
@@ -558,6 +584,17 @@ impl FcMaps {
             e: self.labels(&p.ep),
             c: p.c,
             ebits: self.ebits(&p.ep),
+        }
+    }
+
+    /// The A-centres of the position (`swap == false`) or of its `SWAP_AB` conjugate, as in
+    /// [`FcMaps::fc`] and [`FcMaps::fc_swap`].
+    #[inline(always)]
+    pub fn a_of(&self, p: &Pos, swap: bool) -> [u8; 16] {
+        if swap {
+            shuffle(&shuffle(&self.a_relab, &p.xb), &self.a_gath)
+        } else {
+            p.xa
         }
     }
 
@@ -625,7 +662,8 @@ mod tests {
             let c = Cube::random(&mut rng);
             let p = Pos::of(&c);
             assert_eq!(p.to_cube(), c);
-            for m in 0..N_MOVES {
+            // (the slices too)
+            for m in 0..MAX_MOVES {
                 assert_eq!(mt.apply(&p, m), Pos::of(&c.apply(m)));
             }
         }

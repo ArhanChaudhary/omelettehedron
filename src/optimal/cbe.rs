@@ -25,7 +25,7 @@ use super::coords::{opt_moves, OptMoves, Pos};
 use super::sym::*;
 use crate::coord::{triple_pieces, N_CORNER, N_MSET};
 use crate::cube::N_MOVES;
-use crate::fast::{fast, masks, mset_labels, shuffle, FastTables};
+use crate::fast::{fast, label_mask, masks, mset_labels, shuffle, FastTables};
 use crate::prune::{bfs_until, Graph, Table2};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -221,13 +221,10 @@ impl CbeIndex {
         let (cl, s, t) = self.kt[p.c as usize & 1023][k & 7];
         let (s, t) = (usize::from(s), usize::from(t));
         let x = if k < 4 { &p.xb } else { &p.xa };
-        let mut at = [0u8; 16];
-        for q in 0..12 {
-            at[usize::from(p.ep[q] & 15)] = q as u8;
-        }
         let src = &self.src[s & 63];
         let ep = &self.epos[t & 63];
-        let tri = [0, 1, 2].map(|j| ep[usize::from(at[usize::from(src[j] & 15)] & 15)]);
+        // (each piece's position from a SIMD compare, not an inverse permutation)
+        let tri = src.map(|e| ep[label_mask(&p.ep, e).trailing_zeros() as usize & 15]);
         Self::entry(cl, self.row(x, s, t), tri)
     }
 
