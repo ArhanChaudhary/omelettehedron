@@ -28,6 +28,16 @@ pub enum Tier {
     Huge,
 }
 
+/// The tables of a tier (see [`Tables::plan`]), with their sizes in memory.
+pub fn tier_plan(dir: &Path, tier: Tier, moves: MoveSet) -> Vec<crate::preflight::Planned> {
+    match tier {
+        Tier::Small => Tables::plan(dir, &AeSym::new(false), false, moves),
+        Tier::Medium => Tables::plan(dir, &AeSym::new(true), false, moves),
+        Tier::Large => Tables::plan(dir, &AeSym::new(true), true, moves),
+        Tier::Huge => Tables::plan(dir, &AeRelabel::new(), true, moves),
+    }
+}
+
 /// Index function of an AE table.
 pub trait AeIndex: Send + Sync + 'static {
     fn size(&self) -> usize;
@@ -941,6 +951,52 @@ impl<I: AeIndex> Tables<I> {
         Self::load_with(dir, ae_ix, false, moves, verbose)
     }
 
+    /// The tables [`Self::load_with`] reads or generates, with their sizes in memory (for the
+    /// checks of [`crate::preflight`]). 2 bits per entry.
+    /// (generation needs no memory beyond the tables themselves, except the 7.0 GB search
+    /// array of the 3.5 GB distance-to-solved table: the large tier peaks at 18.6 GB for
+    /// 11.6 GB of tables)
+    pub fn plan(
+        dir: &Path,
+        ae_ix: &I,
+        with_cbe: bool,
+        moves: MoveSet,
+    ) -> Vec<crate::preflight::Planned> {
+        let sfx = moves.table_suffix();
+        let ae_path = dir.join(format!("{}{sfx}.prun", ae_ix.name()));
+        let cb_path = dir.join(format!("cb-sym24{sfx}.prun"));
+        let cbe_path = dir.join(format!("cbe{sfx}.prun"));
+        let with_cbs = with_cbe && !moves.slice;
+        let cbs_path = dir.join(format!("cbe-solved{}.prun", crate::cbe::CBS_MIN));
+        let planned = |path: PathBuf, size: &dyn Fn() -> usize| {
+            let bytes =
+                std::fs::metadata(&path).map_or_else(|_| size().div_ceil(4) as u64, |m| m.len());
+            crate::preflight::Planned {
+                path,
+                bytes,
+                working_set: 0,
+            }
+        };
+        let mut plan = vec![
+            planned(ae_path, &|| ae_ix.size()),
+            planned(cb_path, &|| N_CB),
+        ];
+        if with_cbe {
+            plan.push(planned(cbe_path, &|| crate::cbe::CbeIndex::new().size()));
+        }
+        if with_cbs {
+            // (one bit per entry, made from a 2-bit breadth-first search array)
+            let n = || crate::cbe::CbeIndex::new().size();
+            let exists = std::fs::metadata(&cbs_path).is_ok();
+            let mut p = planned(cbs_path, &|| n().div_ceil(2));
+            if !exists {
+                p.working_set = n().div_ceil(4) as u64;
+            }
+            plan.push(p);
+        }
+        plan
+    }
+
     /// Load (generating if needed) the tables, optionally with the joint CBE table, in the
     /// metric of `moves` (with slices, the tables have their own files, `*-slice.prun`).
     ///
@@ -963,39 +1019,8 @@ impl<I: AeIndex> Tables<I> {
         let with_cbs = with_cbe && !moves.slice;
         let cbs_path = dir.join(format!("cbe-solved{}.prun", crate::cbe::CBS_MIN));
         // Check all tables of the tier before generating any (a table that exists is loaded:
-        // it only needs memory). 2 bits per entry.
-        // (generation needs no memory beyond the tables themselves, except the 7.0 GB search
-        // array of the 3.5 GB distance-to-solved table: the large tier peaks at 18.6 GB for
-        // 11.6 GB of tables)
-        let planned = |path: PathBuf, size: &dyn Fn() -> usize| {
-            let bytes =
-                std::fs::metadata(&path).map_or_else(|_| size().div_ceil(4) as u64, |m| m.len());
-            crate::preflight::Planned {
-                path,
-                bytes,
-                working_set: 0,
-            }
-        };
-        let mut plan = vec![
-            planned(ae_path.clone(), &|| ae_ix.size()),
-            planned(cb_path.clone(), &|| N_CB),
-        ];
-        if with_cbe {
-            plan.push(planned(cbe_path.clone(), &|| {
-                crate::cbe::CbeIndex::new().size()
-            }));
-        }
-        if with_cbs {
-            // (one bit per entry, made from a 2-bit breadth-first search array)
-            let n = || crate::cbe::CbeIndex::new().size();
-            let exists = std::fs::metadata(&cbs_path).is_ok();
-            let mut p = planned(cbs_path.clone(), &|| n().div_ceil(2));
-            if !exists {
-                p.working_set = n().div_ceil(4) as u64;
-            }
-            plan.push(p);
-        }
-        crate::preflight::check_plan(&plan)?;
+        // it only needs memory).
+        crate::preflight::check_plan(&Self::plan(dir, &ae_ix, with_cbe, moves))?;
         let ae = load_or_build(&ae_path, ae_ix.size(), verbose, || {
             build_ae(&ae_ix, moves, verbose)
         })?;

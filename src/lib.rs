@@ -47,6 +47,7 @@
 pub mod bench;
 pub mod cbe;
 pub mod cbsym;
+pub mod combined;
 pub mod coord;
 pub mod cube;
 pub mod fast;
@@ -56,6 +57,7 @@ pub mod notation;
 pub mod optimal;
 pub mod pattern;
 pub mod preflight;
+pub mod progress;
 pub mod prune;
 pub mod search;
 pub mod sym;

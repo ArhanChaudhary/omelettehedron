@@ -28,14 +28,16 @@
 
 use clap::{Parser, Subcommand};
 use omelettehedron::bench;
+use omelettehedron::combined::TwoPhaseMode;
 use omelettehedron::cube::{Cube, MoveSet};
 use omelettehedron::notation::{
     format_moves, invert_moves, parse_moves, scramble_to_cube, solves_pure, Frame, PhysMove,
 };
-use omelettehedron::optimal::search::{solve as opt_solve, Limits as OptLimits, Stop};
+use omelettehedron::optimal::search::{solve_watched as opt_solve, Limits as OptLimits, Stop};
 use omelettehedron::optimal::tables::{OptTables, OptTier};
 use omelettehedron::pattern;
-use omelettehedron::search::{solve, Limits, Report};
+use omelettehedron::progress::{Progress, Watch};
+use omelettehedron::search::{solve_watched, Limits, Report};
 use omelettehedron::tables::{table_dir, AeIndex, AeRelabel, AeSym, Tables, Tier};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -135,8 +137,8 @@ enum Cmd {
         #[arg(long, default_value_t = 1)]
         seed: u64,
         /// Resume a long optimal proof: no solution has fewer than this many moves, as an
-        /// earlier run of the same position logged ("pass N complete: no solution of at most N
-        /// moves" with `FTO_DEBUG=1` gives N + 1). The search finds a first solution, then starts
+        /// earlier run of the same position printed ("pass N done: no solution of at most N
+        /// moves" with `--progress` gives N + 1). The search finds a first solution, then starts
         /// its target-length passes here. A wrong value can give a wrong answer
         #[arg(long)]
         lower_bound: Option<usize>,
@@ -155,6 +157,8 @@ enum Cmd {
         usual: Option<String>,
         #[command(flatten)]
         tab: TableArgs,
+        #[command(flatten)]
+        prog: ProgressArgs,
     },
     /// Print the pattern a scramble makes (the input of `solve --pattern`)
     ///
@@ -204,6 +208,36 @@ enum Cmd {
         #[command(subcommand)]
         cmd: OptCmd,
     },
+    /// Solve with both solvers at once: the two-phase solver finds short solutions (upper
+    /// bounds on the optimal length), the optimal solver proves lower bounds. Prints each new
+    /// bound as it comes and stops when they meet (the solution is optimal) or at the time limit
+    Combined(CombinedArgs),
+}
+
+/// `--progress`: what a search is doing, on stderr while it runs.
+#[derive(clap::Args, Clone)]
+struct ProgressArgs {
+    /// Print what the search is doing to stderr while it runs: each iteration as it ends
+    /// (depth, nodes, nodes/s, best length, lower bound proven) and, during a long iteration, a
+    /// line every SECONDS (default 1; 0: none) with the nodes so far and the tasks started
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "1"
+    )]
+    progress: Option<f64>,
+}
+
+impl ProgressArgs {
+    /// The heartbeat interval, if progress is on.
+    fn every(&self) -> Result<Option<std::time::Duration>, Error> {
+        self.progress
+            .map(std::time::Duration::try_from_secs_f64)
+            .transpose()
+            .map_err(|e| format!("--progress: {e}").into())
+    }
 }
 
 /// Table options of the optimal solver.
@@ -295,6 +329,8 @@ enum OptCmd {
         inverse: bool,
         #[command(flatten)]
         tab: OptTableArgs,
+        #[command(flatten)]
+        prog: ProgressArgs,
     },
     /// Generate (or verify) the tables of a tier
     Gen {
@@ -429,16 +465,22 @@ fn run_solve<I: AeIndex>(
     print: Report,
     verbose: bool,
     input: Option<&PatternInput>,
+    progress: Option<std::time::Duration>,
 ) {
     for (cube, frame, label) in scrambles {
         if scrambles.len() > 1 || verbose {
             println!("# {label}");
         }
-        let o = solve(t, *cube, *frame, limits, print);
+        let prog = progress.map(|every| Progress::new(every, ""));
+        let watch = Watch {
+            progress: prog.as_ref(),
+            ..Watch::default()
+        };
+        let o = solve_watched(t, *cube, *frame, limits, print, &watch);
         if let (Some(pi), Some(sol)) = (input, &o.solution) {
             print_pattern_scramble(pi, sol);
         }
-        if verbose || print == Report::Improvements {
+        if verbose || print == Report::Improvements || progress.is_some() {
             eprintln!(
                 "length {} in {:.3}s, {} solutions, {:.3e} nodes{}",
                 o.length.map_or("-".into(), |l| l.to_string()),
@@ -594,8 +636,10 @@ fn run_optimal(cmd: OptCmd) -> Result<(), Error> {
             seed,
             inverse,
             tab,
+            prog,
         } => {
             let limits = stop.limits()?;
+            let every = prog.every()?;
             let positions = read_positions(&scramble, random, seed, inverse)?;
             let p = pool(tab.threads)?;
             p.install(|| {
@@ -605,7 +649,12 @@ fn run_optimal(cmd: OptCmd) -> Result<(), Error> {
                         if positions.len() > 1 || tab.verbose {
                             println!("# {label}");
                         }
-                        let o = opt_solve(&b, *cube, *frame, &limits, tab.verbose);
+                        let progress = every.map(|e| Progress::new(e, ""));
+                        let watch = Watch {
+                            progress: progress.as_ref(),
+                            ..Watch::default()
+                        };
+                        let o = opt_solve(&b, *cube, *frame, &limits, tab.verbose, &watch);
                         for s in &o.solutions {
                             println!("{}", format_moves(s));
                         }
@@ -625,7 +674,7 @@ fn run_optimal(cmd: OptCmd) -> Result<(), Error> {
                                     .into());
                             }
                         }
-                        if tab.verbose {
+                        if tab.verbose || every.is_some() {
                             eprintln!(
                                 "optimal solver: {} in {:.3}s, {} solution(s), {} nodes",
                                 o.length.map_or_else(
@@ -636,6 +685,8 @@ fn run_optimal(cmd: OptCmd) -> Result<(), Error> {
                                 o.solutions.len(),
                                 o.nodes
                             );
+                        }
+                        if tab.verbose {
                             if let (Ok(scr), Some(sol)) = (parse_moves(label), o.solutions.first())
                             {
                                 eprintln!(
@@ -742,7 +793,9 @@ fn run(cli: Cli) -> Result<(), Error> {
             pattern,
             usual,
             tab,
+            prog,
         } => {
+            let progress = prog.every()?;
             let mut limits =
                 bench::limits_with_time(stop.time, stop.max_length, stop.max_solutions)
                     .map_err(|e| format!("--time: {e}"))?;
@@ -798,7 +851,8 @@ fn run(cli: Cli) -> Result<(), Error> {
                     &limits,
                     print,
                     tab.verbose,
-                    input.as_ref()
+                    input.as_ref(),
+                    progress
                 ));
                 Ok(())
             })
@@ -875,5 +929,142 @@ fn run(cli: Cli) -> Result<(), Error> {
             })
         }
         Cmd::Optimal { cmd } => run_optimal(cmd),
+        Cmd::Combined(args) => run_combined(&args),
     }
+}
+
+/// `omelettehedron combined`: both solvers on each position at once.
+#[derive(clap::Args)]
+struct CombinedArgs {
+    /// Scramble in FTO notation (as for `solve`); without one, one scramble per line on stdin
+    scramble: Vec<String>,
+    /// Stop after this many seconds and print the best solution and the bounds proven
+    #[arg(short = 't', long)]
+    time: Option<f64>,
+    /// Tables of the two-phase solver (as for `solve --tier`)
+    #[arg(long, value_enum)]
+    tier: Tier,
+    /// Tables of the optimal solver (as for `optimal solve --tier`)
+    #[arg(long, value_enum)]
+    opt_tier: OptTier,
+    /// How the two-phase solver searches. improve: as under a time limit, each better solution
+    /// as soon as possible (the optimal solver proves the lower bounds). passes: its optimal
+    /// mode, target-length passes that start from the largest lower bound proven by either
+    #[arg(long, value_enum, default_value = "improve")]
+    two_phase: TwoPhaseMode,
+    /// Threads in all (default: all cores), split evenly between the two solvers
+    #[arg(short = 'j', long)]
+    threads: Option<usize>,
+    /// Threads of the two-phase solver (default: half of all)
+    #[arg(long)]
+    two_phase_threads: Option<usize>,
+    /// Threads of the optimal solver (default: the rest)
+    #[arg(long)]
+    optimal_threads: Option<usize>,
+    /// Directory for the tables of both solvers (default: $FTO_TABLES or ./tables)
+    #[allow(clippy::doc_markdown)] // shown verbatim by --help
+    #[arg(long)]
+    tables: Option<PathBuf>,
+    /// Move families allowed besides face turns, as for `solve --moves`
+    #[arg(long, value_enum, value_delimiter = ',')]
+    moves: Vec<Family>,
+    /// Solve this many seeded random positions instead of reading scrambles
+    #[arg(long)]
+    random: Option<usize>,
+    /// Seed of the random positions (`--random`)
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
+    /// Each given sequence is a solution: solve the position it solves
+    #[arg(long)]
+    inverse: bool,
+    /// Print table loading and the thread split to stderr
+    #[arg(short, long)]
+    verbose: bool,
+    /// Load or generate the tables even if the memory check says they do not fit
+    #[arg(long)]
+    force: bool,
+    /// Memory (GB) to leave to the rest of the machine (as for `optimal gen`)
+    #[arg(long, value_name = "GB", default_value_t = 0.0)]
+    min_free_memory: f64,
+    #[command(flatten)]
+    prog: ProgressArgs,
+}
+
+fn run_combined(a: &CombinedArgs) -> Result<(), Error> {
+    use omelettehedron::combined;
+    let every = a.prog.every()?;
+    let time = a
+        .time
+        .map(std::time::Duration::try_from_secs_f64)
+        .transpose()
+        .map_err(|e| format!("--time: {e}"))?;
+    let positions = read_positions(&a.scramble, a.random, a.seed, a.inverse)?;
+    // threads: split evenly unless given
+    let total = a.threads.unwrap_or_else(rayon::current_num_threads).max(2);
+    let n_tp = a.two_phase_threads.unwrap_or_else(|| {
+        a.optimal_threads
+            .map_or(total.div_ceil(2), |o| total.saturating_sub(o))
+            .max(1)
+    });
+    let n_opt = a
+        .optimal_threads
+        .unwrap_or_else(|| total.saturating_sub(n_tp).max(1));
+    let tab = TableArgs {
+        tier: a.tier,
+        tables: a.tables.clone(),
+        threads: Some(n_tp),
+        verbose: a.verbose,
+        force: a.force,
+        moves: a.moves.clone(),
+    };
+    let otab = OptTableArgs {
+        tier: a.opt_tier,
+        tables: a.tables.clone(),
+        threads: Some(n_opt),
+        verbose: a.verbose,
+        force: a.force,
+        min_free_memory: a.min_free_memory,
+        moves: a.moves.clone(),
+    };
+    // Both solvers' tables are held at once: check that they fit before loading either.
+    let dir = table_dir(a.tables.as_deref());
+    omelettehedron::preflight::set_force(a.force);
+    // (an `as` cast saturates: negative or NaN -> 0, too large -> u64::MAX)
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let floor = (a.min_free_memory * 1e9) as u64;
+    omelettehedron::preflight::set_memory_floor(floor);
+    let mut plan = omelettehedron::tables::tier_plan(&dir, a.tier, tab.move_set());
+    plan.extend(
+        OptTables::plan(&dir, a.opt_tier, otab.move_set()).map_err(|e| table_error(&dir, &e))?,
+    );
+    omelettehedron::preflight::check_memory(&plan).map_err(|e| table_error(&dir, &e))?;
+    if a.verbose {
+        eprintln!(
+            "two-phase solver: {n_tp} threads, tier {:?}; optimal solver: {n_opt} threads, tier \
+             {}; tables {:.1} GB in all",
+            a.tier,
+            a.opt_tier.name(),
+            plan.iter().map(|p| p.bytes).sum::<u64>() as f64 / 1e9
+        );
+    }
+    let (p_tp, p_opt) = (pool(Some(n_tp))?, pool(Some(n_opt))?);
+    let cfg = combined::Config {
+        time,
+        mode: a.two_phase,
+        progress: every,
+        print: true,
+    };
+    dispatch!(tab, |t, _name| {
+        let ot = load_opt(&otab)?;
+        opt_bounds!(ot, |b| {
+            for (cube, frame, label) in &positions {
+                if positions.len() > 1 || a.verbose {
+                    println!("# {label}");
+                }
+                let o = combined::solve(&t, &b, &p_tp, &p_opt, *cube, *frame, &cfg)?;
+                combined::print_outcome(&o);
+            }
+            Ok(())
+        })
+    })
 }

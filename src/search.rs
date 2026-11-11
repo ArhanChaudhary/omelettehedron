@@ -13,6 +13,7 @@ use crate::cube::*;
 use crate::fast::*;
 use crate::geometry::{transpose, Mat, IDENTITY};
 use crate::notation::*;
+use crate::progress::{rate, with_heartbeat, Bound, Watch};
 use crate::prune::decode;
 use crate::tables::*;
 use rayon::prelude::*;
@@ -142,7 +143,10 @@ struct Shared<'a, I: AeIndex, const N: usize> {
     /// phase-1 leaves reached on each side (most are solutions; the tables certify the rest
     /// only approximately, so each is checked in full)
     leaves: [AtomicU64; 2],
-    stop: AtomicBool,
+    /// the search's own flag, or one shared with other searches (`Watch::stop`)
+    stop: &'a AtomicBool,
+    /// progress lines and links to other searches
+    watch: Watch<'a>,
     best: Mutex<(Option<Vec<PhysMove>>, Vec<Event>)>,
     /// the side-1 move of each move (`SWAP_AB` conjugation), indexed `& 31`
     mb: [usize; 32],
@@ -424,6 +428,8 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                     if self.report == Report::Improvements {
                         println!("{:>9.3}s  {:>2}  {}", t, total, format_moves(&phys));
                     }
+                    self.watch.bound(Bound::Upper(&phys));
+                    self.watch.line(format_args!("best {total} moves"));
                     g.0 = Some(phys);
                     g.1.push(Event {
                         time: t,
@@ -1449,6 +1455,15 @@ fn task_nodes() -> u64 {
 /// Deepest level at which an iteration is split into parallel tasks.
 const MAX_SPLIT: usize = 4;
 
+/// A best length for progress lines (`-` before the first solution).
+fn length_text(len: usize) -> String {
+    if len == usize::MAX {
+        "-".into()
+    } else {
+        len.to_string()
+    }
+}
+
 /// Solve one position with the move set of the tables (`t.moves`). `frame` is the physical
 /// frame of the scrambled position.
 pub fn solve<I: AeIndex>(
@@ -1458,24 +1473,39 @@ pub fn solve<I: AeIndex>(
     limits: &Limits,
     report: Report,
 ) -> Outcome {
+    solve_watched(t, cube, frame, limits, report, &Watch::default())
+}
+
+/// [`solve`] with progress lines and links to other searches (see [`Watch`]): every better
+/// solution and every larger proven lower bound go to `watch.on_bound`.
+pub fn solve_watched<I: AeIndex>(
+    t: &Tables<I>,
+    cube: Cube,
+    frame: Frame,
+    limits: &Limits,
+    report: Report,
+    watch: &Watch,
+) -> Outcome {
     // The search is compiled once per move-set size, so the face metric runs the same code as
     // without slices.
     if t.moves.slice {
-        solve_n::<I, MAX_MOVES>(t, cube, frame, limits, report)
+        solve_n::<I, MAX_MOVES>(t, cube, frame, limits, report, watch)
     } else {
-        solve_n::<I, N_MOVES>(t, cube, frame, limits, report)
+        solve_n::<I, N_MOVES>(t, cube, frame, limits, report, watch)
     }
 }
 
-/// [`solve`] with `N` internal moves (`t.moves.n_moves()`).
+/// [`solve_watched`] with `N` internal moves (`t.moves.n_moves()`).
 fn solve_n<I: AeIndex, const N: usize>(
     t: &Tables<I>,
     cube: Cube,
     frame: Frame,
     limits: &Limits,
     report: Report,
+    watch: &Watch,
 ) -> Outcome {
     let start = Instant::now();
+    let own_stop = AtomicBool::new(false);
     let Some(cube_b) = cube.conjugate(&SWAP_AB) else {
         // not a valid position in the fixed frame: nothing to search
         return Outcome {
@@ -1533,7 +1563,8 @@ fn solve_n<I: AeIndex, const N: usize>(
         nodes: AtomicU64::new(0),
         nodes_both: AtomicU64::new(0),
         leaves: [AtomicU64::new(0), AtomicU64::new(0)],
-        stop: AtomicBool::new(false),
+        stop: watch.stop.unwrap_or(&own_stop),
+        watch: *watch,
         best: Mutex::new((None, vec![])),
         mb: swap_moves::<N>(),
         mv: [std::array::from_fn(|m| m), swap_moves::<N>()],
@@ -1563,6 +1594,8 @@ fn solve_n<I: AeIndex, const N: usize>(
     let mut node_stat: Vec<f32> = vec![];
     let mut prev_ids: Vec<(u32, u8)> = vec![];
     let mut prev_nodes: Option<u64> = None;
+    // time of the previous iteration (progress: no heartbeat after a short one)
+    let mut prev_dt: Option<f64> = None;
     // Target-length passes: only in optimal mode, when the best is at least this far above the
     // lower bound (0 = never). On one thread the best stays loose for long and the passes cut
     // the proof time (1T 17-move set 11.95 -> 5.27 s, 0.44x, when added). With 48 threads they
@@ -1580,12 +1613,27 @@ fn solve_n<I: AeIndex, const N: usize>(
     // ends in a class-B move is found earlier by the class-B side. It fails with slices: a
     // path can end in a slice, which is in neither class, so no side finds it earlier.
     let class_b_argument = !t.moves.slice;
-    let target_gap = if limits.is_optimal() && !full_proof() {
+    // (`Watch::improve`: as under a time limit, without one)
+    let target_gap = if limits.is_optimal() && !full_proof() && !watch.improve {
         env_usize("FTO_TARGET_GAP", 2)
     } else {
         0
     };
     let mut target: Option<usize> = None;
+    // Lower bounds: the largest reported to `watch` so far, and the one proven elsewhere
+    // (`Watch::lower`, read between iterations and, during a pass, between tasks).
+    let mut lb_said = 0;
+    let mut say_lower = |lb: usize| {
+        if lb > lb_said {
+            lb_said = lb;
+            watch.bound(Bound::Lower(lb));
+        }
+        lb_said
+    };
+    // (every solution has at least `lo` moves: its phase-1 part on side A does, unless it is
+    // empty, and then `lo` is 0)
+    say_lower(lo);
+    let ext_lower = || watch.lower.map_or(0, |l| l.load(Ordering::Relaxed));
     loop {
         // Optimality is proven one iteration before depth reaches the best length. The
         // iteration at depth best - 1 could only improve on the best with a leaf that is solved
@@ -1621,13 +1669,19 @@ fn solve_n<I: AeIndex, const N: usize>(
                         start.elapsed().as_secs_f64()
                     );
                 }
-                if sh.best_len.load(Ordering::Relaxed) <= t + 1 {
+                watch.line(format_args!(
+                    "pass {t} done: no solution of at most {t} moves ({:.3e} nodes in all)",
+                    sh.nodes.load(Ordering::Relaxed) as f64
+                ));
+                // (a lower bound proven elsewhere may be ahead)
+                let next = (t + 1).max(ext_lower());
+                if sh.best_len.load(Ordering::Relaxed) <= next {
                     optimal = true;
                     break;
                 }
-                target = Some(t + 1);
+                target = Some(next);
                 sh.prune_len.store(
-                    (t + 2).min(sh.best_len.load(Ordering::Relaxed)),
+                    (next + 1).min(sh.best_len.load(Ordering::Relaxed)),
                     Ordering::Relaxed,
                 );
                 depth = lo;
@@ -1641,10 +1695,17 @@ fn solve_n<I: AeIndex, const N: usize>(
             // (of at most `depth - 1` with slices)
             let lower = depth + usize::from(class_b_argument);
             let best_now = sh.best_len.load(Ordering::Relaxed);
-            // With a known lower bound (`Limits::lower_bound`), the passes wait for a first
-            // solution, so that the pass that proves its length optimal ends the search, and
-            // then start at the bound.
-            let known = limits.lower_bound.filter(|_| target_gap > 0);
+            // With a known lower bound (`Limits::lower_bound`, or one proven elsewhere that is
+            // ahead of this search's: `Watch::lower`), the passes wait for a first solution, so
+            // that the pass that proves its length optimal ends the search, and then start at
+            // the bound.
+            let ext = ext_lower();
+            let known = limits
+                .lower_bound
+                .into_iter()
+                .chain((ext > lower).then_some(ext))
+                .max()
+                .filter(|_| target_gap > 0);
             let start_passes = match known {
                 Some(_) => best_now < usize::MAX,
                 None => target_gap > 0 && depth > lo && best_now >= lower + target_gap,
@@ -1661,6 +1722,10 @@ fn solve_n<I: AeIndex, const N: usize>(
                 if std::env::var_os("FTO_DEBUG").is_some() {
                     eprintln!("  target-length passes from {t} (best {best_now})");
                 }
+                watch.line(format_args!(
+                    "target-length passes from {t} (best {})",
+                    length_text(best_now)
+                ));
                 depth = lo;
                 prev_nodes = None;
                 continue;
@@ -1671,6 +1736,7 @@ fn solve_n<I: AeIndex, const N: usize>(
             sh.proof_len
                 .store(if early { depth + 1 } else { 0 }, Ordering::Relaxed);
         }
+        let it_t0 = start.elapsed().as_secs_f64();
         // Small iterations run on this thread: waking the pool costs more than they do.
         let predicted = prev_nodes.map_or(if depth < 14 { 0 } else { u64::MAX }, |n| {
             n.saturating_mul(16)
@@ -1711,6 +1777,10 @@ fn solve_n<I: AeIndex, const N: usize>(
         let next = std::sync::atomic::AtomicUsize::new(0);
         let nodes_before = sh.nodes.load(Ordering::Relaxed);
         let tree_ref = &tree;
+        // A pass is left when a lower bound proven elsewhere passes its target (checked
+        // between tasks; see below).
+        let pass_floor = watch.lower.zip(target);
+        let passed = || pass_floor.is_some_and(|(l, t)| l.load(Ordering::Relaxed) > t);
         let worker = || {
             let mut path: Vec<usize> = Vec::with_capacity(64);
             // one frame per level below a task (tasks are at depth >= 0)
@@ -1719,7 +1789,7 @@ fn solve_n<I: AeIndex, const N: usize>(
             let mut ctr = Counter::default();
             loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
-                if i >= ids.len() || sh.stop.load(Ordering::Relaxed) || sh.time_up() {
+                if i >= ids.len() || sh.stop.load(Ordering::Relaxed) || sh.time_up() || passed() {
                     break;
                 }
                 let (id, sides) = ids[i];
@@ -1757,17 +1827,34 @@ fn solve_n<I: AeIndex, const N: usize>(
                     .fetch_add(ctr.shared - shared_before, Ordering::Relaxed);
             }
         };
-        if inline {
-            worker();
-        } else {
-            // Workers take tasks strictly in order from a shared counter.
-            rayon::scope(|scope| {
-                for _ in 0..threads.min(ids.len()) {
-                    scope.spawn(|_| worker());
-                }
-            });
-        }
+        let pass_name = target.map_or(String::new(), |t| format!("pass {t}, "));
+        // progress: a line every `Progress::every` while the iteration runs
+        let beat = || {
+            let n = sh.nodes.load(Ordering::Relaxed) - nodes_before;
+            let dt = start.elapsed().as_secs_f64() - it_t0;
+            format!(
+                "{pass_name}depth {depth}: {:.3e} nodes so far in {dt:.1} s ({}), {}/{} tasks \
+                 started",
+                n as f64,
+                rate(n, dt),
+                next.load(Ordering::Relaxed).min(ids.len()),
+                ids.len()
+            )
+        };
+        with_heartbeat(watch.progress, prev_dt, beat, || {
+            if inline {
+                worker();
+            } else {
+                // Workers take tasks strictly in order from a shared counter.
+                rayon::scope(|scope| {
+                    for _ in 0..threads.min(ids.len()) {
+                        scope.spawn(|_| worker());
+                    }
+                });
+            }
+        });
         prev_nodes = Some(sh.nodes.load(Ordering::Relaxed) - nodes_before);
+        prev_dt = Some(start.elapsed().as_secs_f64() - it_t0);
         for &(i, _) in &prev_ids {
             node_stat[i as usize] = 0.0;
         }
@@ -1788,6 +1875,32 @@ fn solve_n<I: AeIndex, const N: usize>(
                 start.elapsed().as_secs_f64()
             );
         }
+        // What the iteration proved, if it ran to its end (a stop or a pass left early cut it
+        // short; `stop` and the bound proven elsewhere never go back): without a pass, no
+        // solution of at most depth + 1 moves (of at most `depth` with slices, see above);
+        // the last depth of pass T, none of at most T. Solutions it found count: when they do
+        // not end the search (counting solutions, the full proof, slices), the bound is the
+        // best length.
+        let complete = !sh.stop.load(Ordering::Relaxed) && !passed();
+        let proves = match target {
+            _ if !complete => 0,
+            None => depth + 1 + usize::from(class_b_argument),
+            Some(t) if depth + 1 >= t + usize::from(!class_b_argument) => t + 1,
+            Some(_) => 0,
+        };
+        let lb_now = say_lower(proves.min(sh.best_len.load(Ordering::Relaxed)));
+        if let Some(p) = watch.progress {
+            let n = prev_nodes.unwrap_or(0);
+            let dt = start.elapsed().as_secs_f64() - it_t0;
+            p.line(format_args!(
+                "{pass_name}depth {depth} {} in {dt:.3} s: {:.3e} nodes ({}, {n_tasks} tasks); \
+                 best {}, lower bound {lb_now}",
+                if complete { "done" } else { "stopped" },
+                n as f64,
+                rate(n, dt),
+                length_text(sh.best_len.load(Ordering::Relaxed)),
+            ));
+        }
         if sh.proven.load(Ordering::Relaxed) {
             optimal = true;
             break;
@@ -1795,10 +1908,36 @@ fn solve_n<I: AeIndex, const N: usize>(
         if sh.stop.load(Ordering::Relaxed) || sh.time_up() {
             break;
         }
+        // A pass whose target a lower bound proven elsewhere has passed (`Watch::lower`) is
+        // left for a pass at that bound.
+        if let Some(t) = target {
+            let ext = ext_lower();
+            if ext > t {
+                watch.line(format_args!(
+                    "pass {t} left: no solution of at most {} moves is proven elsewhere",
+                    ext - 1
+                ));
+                if sh.best_len.load(Ordering::Relaxed) <= ext {
+                    optimal = true;
+                    break;
+                }
+                target = Some(ext);
+                sh.prune_len.store(
+                    (ext + 1).min(sh.best_len.load(Ordering::Relaxed)),
+                    Ordering::Relaxed,
+                );
+                depth = lo;
+                prev_nodes = None;
+                continue;
+            }
+        }
         depth += 1;
     }
     let (sol, events) = sh.best.into_inner().unwrap_or_else(PoisonError::into_inner);
     let length = sol.as_ref().map(Vec::len);
+    if let (true, Some(l)) = (optimal, length) {
+        say_lower(l);
+    }
     if report == Report::Best {
         if let Some(s) = &sol {
             println!("{}", format_moves(s));

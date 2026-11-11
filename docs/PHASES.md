@@ -199,7 +199,13 @@ optimisation.
     in the limit won (`neg/tlpasses`). A cancellation deadline (the WebAssembly demo's Stop
     button) is not a stopping rule and keeps them;
   * `--lower-bound L` resumes a long proof: the search finds a first solution, then starts its
-    passes at L (from a previous run's "pass L − 1 complete" log line);
+    passes at L (from a previous run's "pass L − 1 done" line of `--progress`);
+  * a lower bound proven elsewhere while the search runs (`progress::Watch::lower`: the optimal
+    solver's, in `omelettehedron combined --two-phase passes`) is used the same way, and a pass
+    whose target it passes is left (checked between tasks) for a pass at that bound. Every
+    completed phase-1 depth D outside a pass, and every completed pass T, is reported as a
+    lower bound (D + 2, with slices D + 1; T + 1; at most the best length, which counts when a
+    solution of that length does not end the search);
   * a *distance-to-solved bound* (large and huge tiers, face turns): the search only looks for
     solutions shorter than a known length (the best, or T + 1 in pass T), so a child whose
     distance to *solved* exceeds the moves left can go, wherever it is relative to `H_A` and
