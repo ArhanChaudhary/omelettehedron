@@ -1708,7 +1708,7 @@ fn solve_n<I: AeIndex, const N: usize>(
                 .filter(|_| target_gap > 0);
             let start_passes = match known {
                 Some(_) => best_now < usize::MAX,
-                None => target_gap > 0 && depth > lo && best_now >= lower + target_gap,
+                None => target_gap > 0 && depth > lo && best_now < usize::MAX && best_now >= lower + target_gap,
             };
             if start_passes {
                 let t = known.map_or(lower, |lb| lb.max(lower));
