@@ -1,5 +1,7 @@
 # omelettehedron 🥚
 
+**Live demo: https://omelettehedron.arhan.sh/**
+
 A fast two-phase solver for the face-turning octahedron (FTO), written in Rust.
 
 * **Phase 1** brings the puzzle into H_A, the positions that can be solved by turning
@@ -162,6 +164,12 @@ bun wasm/serve.mjs           # then open http://localhost:8000/
 bun wasm/test.mjs            # headless test in Bun (FTO_TABLES=DIR also compares the tables)
 bun wasm/bench.mjs [--threads N] [--tables DIR] [--count 10] [--seconds 5]
 ```
+
+The demo is deployed to GitHub Pages (https://omelettehedron.arhan.sh/) by
+`.github/workflows/pages.yml` on every push to the default branch: `scripts/build-pages.sh DIR`
+builds both modules and copies only the public files. Pages cannot send the cross-origin
+isolation headers, so the page registers `wasm/coi-sw.js`, a service worker that adds them, and
+reloads once; where a browser refuses, the demo runs on one thread.
 
 * `omelettehedron.wasm` (`wasm32-wasip1`) runs on one thread anywhere.
   `omelettehedron-threads.wasm` (`wasm32-wasip1-threads`) runs rayon's thread pool on
