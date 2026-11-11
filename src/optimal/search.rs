@@ -212,24 +212,28 @@ impl PruneStats {
     }
 }
 
-/// Scratch arrays of one node's children (one frame per depth, reused).
+/// Scratch arrays of one node's children: positions, indices, values and survivors (one frame
+/// per depth, reused).
 #[derive(Clone)]
-struct Scratch {
+struct Eval {
     ys: [Pos; N_MOVES],
     ms: [u8; N_MOVES],
     idx: [[usize; MAX_K]; N_MOVES],
     hs: [[u8; MAX_K]; N_MOVES],
+    /// each child's bound (the largest of its values read so far)
+    mx: [u8; N_MOVES],
     sel: [u8; N_MOVES],
 }
 
-impl Scratch {
+impl Eval {
     fn new() -> Self {
         let z = Pos::solved();
-        Scratch {
+        Eval {
             ys: [z; N_MOVES],
             ms: [0; N_MOVES],
             idx: [[0; MAX_K]; N_MOVES],
             hs: [[0; MAX_K]; N_MOVES],
+            mx: [0; N_MOVES],
             sel: [0; N_MOVES],
         }
     }
@@ -248,6 +252,9 @@ struct Shared<'a, B: Bounds> {
     nodes: AtomicU64,
     lookups: AtomicU64,
     stats: Mutex<PruneStats>,
+    /// read every lookup of every child and record which ones prune it (no early exit;
+    /// `FTO_OPT_PRUNE_STATS=1`)
+    prune_stats: bool,
     sols: Mutex<Vec<Vec<usize>>>,
     /// symmetric start: the symmetries (other than the identity) that fix the root, if the
     /// task levels are filtered (see [`Shared::dedup`]); empty otherwise
@@ -314,26 +321,87 @@ impl<B: Bounds> Shared<'_, B> {
             c.p = self.mt.apply(&t.p, m);
             out.push(c);
         }
-        ctr.nodes += out.len() as u64;
-        ctr.lookups += (out.len() * B::K) as u64;
-        ctr.stats.left(bound - g - 1, out.len());
-        let mut idx = [[0usize; MAX_K]; N_MOVES];
+        let n = out.len();
+        ctr.nodes += n as u64;
+        ctr.stats.left(bound - g - 1, n);
+        let mut ev = Eval::new();
         for (i, c) in out.iter().enumerate() {
-            for k in 0..B::K {
-                idx[i][k] = self.b.index(k, &c.p);
-                prefetch_at(&self.b.table(k).data, idx[i][k] >> 5);
-            }
+            ev.ys[i % N_MOVES] = c.p;
         }
-        for (i, c) in out.iter_mut().enumerate() {
-            let mut mask = 0;
-            for k in 0..B::K {
-                c.h[k] = decode(t.h[k], self.b.table(k).get(idx[i][k]));
-                mask |= usize::from(usize::from(c.h[k]) + g >= bound) << k;
-            }
-            ctr.stats.mask(mask);
+        let k = self.bound_children(&mut ev, n, t.h, bound - g - 1, ctr);
+        let alive: Vec<Task> = ev.sel[..k]
+            .iter()
+            .map(|&i| {
+                let i = usize::from(i) % N_MOVES;
+                let mut c = out[i];
+                c.h = ev.hs[i];
+                c
+            })
+            .collect();
+        alive
+    }
+
+    /// The bounds of children `ev.ys[..n]` (the parent's exact values `h`, `budget` moves left
+    /// after them): the tier's lookups in its order (`Bounds::ORDER`), each read only for the
+    /// children that every earlier one let through (early exit); each stage computes and
+    /// prefetches the indices of all those children before reading any value. Leaves the
+    /// survivors (in child order, so the search visits the same tree whatever the order) in
+    /// `ev.sel` and returns their number; a survivor has all its values in `ev.hs` and its
+    /// bound in `ev.mx`. With `FTO_OPT_PRUNE_STATS=1` every lookup is read for every child, to
+    /// record which ones prune it (see [`Outcome::prune_masks`]).
+    #[inline(always)]
+    fn bound_children(
+        &self,
+        ev: &mut Eval,
+        n: usize,
+        h: [u8; MAX_K],
+        budget: usize,
+        ctr: &mut Counter,
+    ) -> usize {
+        let mut alive = n;
+        for i in 0..n {
+            ev.sel[i % N_MOVES] = i as u8;
+            ev.mx[i % N_MOVES] = 0;
         }
-        out.retain(|c| usize::from(c.h.iter().copied().max().unwrap_or(0)) + g < bound);
-        out
+        for &k in B::ORDER.iter().take(B::K) {
+            let k = k % MAX_K;
+            ctr.lookups += alive as u64;
+            let tab = self.b.table(k);
+            for j in 0..alive {
+                let u = usize::from(ev.sel[j % N_MOVES]) % N_MOVES;
+                let ix = self.b.index(k, &ev.ys[u]);
+                ev.idx[u][k] = ix;
+                prefetch_at(&tab.data, ix >> 5);
+            }
+            let mut next = 0;
+            for j in 0..alive {
+                let i = ev.sel[j % N_MOVES];
+                let u = usize::from(i) % N_MOVES;
+                let v = decode(h[k], tab.get(ev.idx[u][k]));
+                ev.hs[u][k] = v;
+                ev.mx[u] = ev.mx[u].max(v);
+                ev.sel[next % N_MOVES] = i;
+                next += usize::from(self.prune_stats || usize::from(v) <= budget);
+            }
+            alive = next;
+        }
+        if self.prune_stats {
+            // every child read every lookup: record its pruning set, then keep the survivors
+            let mut next = 0;
+            for j in 0..alive {
+                let i = ev.sel[j % N_MOVES];
+                let u = usize::from(i) % N_MOVES;
+                let mut mask = 0;
+                for k in 0..B::K {
+                    mask |= usize::from(usize::from(ev.hs[u][k]) > budget) << k;
+                }
+                ctr.stats.mask(mask);
+                ev.sel[next % N_MOVES] = i;
+                next += usize::from(mask == 0);
+            }
+            alive = next;
+        }
+        alive
     }
 
     /// Tasks of an iteration with depth bound `bound`: the root expanded level by level (at
@@ -391,7 +459,7 @@ impl<B: Bounds> Shared<'_, B> {
         bound: usize,
         path: &mut Vec<u8>,
         ctr: &mut Counter,
-        frames: &mut [Scratch],
+        frames: &mut [Eval],
         stat: &mut f32,
     ) {
         let g = path.len();
@@ -433,33 +501,10 @@ impl<B: Bounds> Shared<'_, B> {
             }
             return;
         }
-        // all indices and prefetches first, then the values
-        ctr.lookups += (n * B::K) as u64;
-        for i in 0..n {
-            for k in 0..B::K {
-                let ix = self.b.index(k, &fr.ys[i % N_MOVES]);
-                fr.idx[i % N_MOVES][k] = ix;
-                prefetch_at(&self.b.table(k).data, ix >> 5);
-            }
-        }
-        let mut kk = 0;
-        for i in 0..n {
-            let u = i % N_MOVES;
-            let mut mx = 0;
-            let mut mask = 0;
-            for k in 0..B::K {
-                let v = decode(h[k], self.b.table(k).get(fr.idx[u][k]));
-                fr.hs[u][k] = v;
-                mx = mx.max(v);
-                mask |= usize::from(usize::from(v) > budget) << k;
-            }
-            ctr.stats.mask(mask);
-            let ok = usize::from(mx) <= budget;
-            if ok {
-                *stat += STAT_W[usize::from(mx) & 31];
-            }
-            fr.sel[kk % N_MOVES] = i as u8;
-            kk += usize::from(ok);
+        let kk = self.bound_children(fr, n, h, budget, ctr);
+        for j in 0..kk {
+            let u = usize::from(fr.sel[j % N_MOVES]) % N_MOVES;
+            *stat += STAT_W[usize::from(fr.mx[u]) & 31];
         }
         for j in 0..kk {
             let i = usize::from(fr.sel[j % N_MOVES]) % N_MOVES;
@@ -524,6 +569,7 @@ pub fn solve<B: Bounds>(
         nodes: AtomicU64::new(0),
         lookups: AtomicU64::new(0),
         stats: Mutex::new(PruneStats::default()),
+        prune_stats: std::env::var("FTO_OPT_PRUNE_STATS").is_ok_and(|v| v == "1"),
         sols: Mutex::new(vec![]),
         symmetries: if limits.max_solutions.is_none() && sym_start() {
             root_syms.clone()
@@ -598,7 +644,7 @@ pub fn solve<B: Bounds>(
         let next = AtomicUsize::new(0);
         let worker = || {
             let mut path: Vec<u8> = Vec::with_capacity(64);
-            let mut frames = vec![Scratch::new(); depth + 1];
+            let mut frames = vec![Eval::new(); depth + 1];
             let mut ctr = Counter::default();
             loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
