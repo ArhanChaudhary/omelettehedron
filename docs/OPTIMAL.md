@@ -369,7 +369,10 @@ thread, 10 x 15-move face-turn scrambles (seed 1717): mean optimal length 13.6 w
 0.1% of the best one here, by the pruning statistics of a 13-move set). Medium tier with slices
 (corners x edges in the slice metric: 9,580,032,000 entries, max 11, mean 9.27; generated in 47
 minutes on the busy machine): 139,550,571 nodes on the same set (0.108x the small tier, 120x
-the face metric's 1,162,092), same lengths, 1.37 lookups per node.
+the face metric's 1,162,092), same lengths, 1.37 lookups per node. On the 17-move set (medium,
+one thread): mean optimal length 15.5 (16.5 in face turns), 47,025,092,761 nodes (318x the face
+metric's 147,723,722; two positions of 17 slice-metric moves take 1.7e10 and 2.8e10), 1.38
+lookups per node.
 
 What the slices cost face turns: the search is compiled once per move count, and with 16
 moves it applies face moves only (`OptMoves::apply_n`), reading the face rows of the corner
