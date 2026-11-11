@@ -551,6 +551,28 @@ a whole sibling subtree of slack. (Doing this as an extra pass before every stag
 `neg/optimal-r3-aeclass`.) On top of the SIMD positions: medium 0.898x (1T) / 0.919x (48T),
 large 0.946x / 0.941x; same nodes.
 
+**Per-node lookup order (`neg/optimal-r3-dynorder`, not merged).** A child's value is at most
+one above its parent's, so lookup `k` can prune a child only if `h[k] + 1 > budget`. Reading
+those that cannot prune last (they are needed only for the survivors' exact values), and then
+also the lookups at the node's limit (`h[k] == budget + 1`) first: lookups per node 1.51 ->
+1.48 -> 1.46 (medium, 17-move set), 2.36 -> 2.24 -> 2.15 (large), same nodes, but the time is
+mixed (medium 1.002x / 1.008x and 0.993x / 0.987x at 1T / 48T; large 1.008x / 0.961x and
+1.029x / 0.959x): the static order is close to the best on average, and the per-node order
+costs about what it saves.
+
+**Duplicates.** Canonical move sequences against distinct positions from solved: identical up
+to depth 4, 0.2% duplicates at depth 5, 0.6% at depth 6. A transposition table would cost a
+memory access per node for very little; not pursued.
+
+**The hard positions with the large tier** (48 threads, `-l 19`, quiet machine): nodes of the
+depth-19 iteration, large against medium: tri_adj+edge_opp 2.10e7 / 2.32e8 (0.090x),
+tri_adj+edge_adj 5.19e7 / 6.20e8 (0.084x), tri_adj-[Uf_Fu;Db_Bd] 1.88e8 / 2.24e9 (0.084x),
+tri_adj+[UB_FD,NL_MR] 6.59e7 / 6.68e8 (0.099x), edge_hard 8.84e9 / 1.44e10 (0.61x, its corners
+are solved). With about 14.5 times more nodes per iteration and 4.4e8 nodes/s, finishing depth
+22 would take about 150 s / 360 s / 1,300 s / 450 s for the four 23-move positions and the
+whole depth 23 at most 2,100 / 5,200 / 19,000 / 6,600 s; the two-phase solver proved them in
+8,866 / 11,878 / 10,942 / 8,397 s.
+
 ## Missing (v0)
 
 * Timings: the machine was busy with long two-phase proofs, so only node counts are measured.
