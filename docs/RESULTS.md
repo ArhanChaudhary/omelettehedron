@@ -8,7 +8,7 @@ Measured on a 48-core AMD EPYC VM (94 GB RAM, no hardware performance counters),
 (loading takes 0.33 s with 48 threads). Positions are seeded random states unless stated
 otherwise; the numbers below are from the standard suites (`scripts/bench.sh`,
 `scripts/bench-opt.sh`, `scripts/bench-randopt.sh`): means of two interleaved runs of main
-5a2deed (14551aa for the 1-thread optimal row) unless stated otherwise.
+784a24a (7278262 for the 1-thread optimal row) unless stated otherwise.
 
 ## Two-phase solving (time limit)
 
@@ -24,7 +24,7 @@ Mean best length, 40 random positions (48 threads) / 20 (1 thread):
 | search speed | 1.71e9 nodes/s | 3.8e7 nodes/s |
 
 Since the merged traversal (`opt/merged`; a node alive in both variants now counts once), final
-main b0da038 of 2026-11-10 (single run of the same suites): first solution 22.98 moves @ 6.0 ms
+main 97452e0 of 2026-11-10 (single run of the same suites): first solution 22.98 moves @ 6.0 ms
 (48T) / 23.25 @ 0.17 s (1T); best after 0.1 s 21.75 / 22.70, after 1 s 21.525 / 22.35, after
 5 s 21.175 / 22.00 (two of the 40 positions reach their 5 s best later than before);
 1.52e9 / 3.54e7 nodes/s.
@@ -33,13 +33,13 @@ main b0da038 of 2026-11-10 (single run of the same suites): first solution 22.98
 
 | set | threads | time to prove (total) | mean optimal length |
 |---|---|---|---|
-| 10 x 19-move scrambles | 48 | 8.0 s (0.80 s per position, main b0da038; 12.5 s before `opt/merged`) | 18.1 |
+| 10 x 19-move scrambles | 48 | 8.0 s (0.80 s per position, main 97452e0; 12.5 s before `opt/merged`) | 18.1 |
 | 10 x 17-move scrambles | 1 | 2.9 s (0.29 s per position; target-length passes; 3.6 s before) | 16.5 |
 
-Random positions (48 threads). "Proof": main ddcb5ba with the merged traversal (mean of two
-runs); in brackets main 496b389 before it, and the morning of 2026-11-10 before the early proof
+Random positions (48 threads). "Proof": main a1f665d with the merged traversal (mean of two
+runs); in brackets main 66ac3cb before it, and the morning of 2026-11-10 before the early proof
 end and the sibling pipeline. The last column proves the same positions with
-`FTO_FULL_PROOF=1` (no early end, no target passes) on main ef10b90 (in brackets on 496b389,
+`FTO_FULL_PROOF=1` (no early end, no target passes) on main d970d72 (in brackets on 66ac3cb,
 before the merged traversal): the proven lengths agree.
 
 | seed | optimal | first solution | proof | full proof |
