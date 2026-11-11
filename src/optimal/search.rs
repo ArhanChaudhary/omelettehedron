@@ -91,15 +91,19 @@ pub struct Outcome {
     pub symmetries: usize,
 }
 
-/// Moves allowed after each move (index `N_MOVES`: no previous move), as bit masks.
-static ALLOWED: [u32; N_MOVES + 1] = {
-    let mut a = [0u32; N_MOVES + 1];
+/// Moves allowed after each move (index `MAX_MOVES`: no previous move) by
+/// [`allowed_after`], as bit masks over the moves of the move set: `[0]` face turns, `[1]` with
+/// slices.
+static ALLOWED: [[u32; MAX_MOVES + 1]; 2] = [allowed_masks(false), allowed_masks(true)];
+
+const fn allowed_masks(slice: bool) -> [u32; MAX_MOVES + 1] {
+    let n = if slice { MAX_MOVES } else { N_MOVES };
+    let mut a = [0u32; MAX_MOVES + 1];
     let mut last = 0;
-    while last <= N_MOVES {
-        let l = if last == N_MOVES { MAX_MOVES } else { last };
+    while last <= MAX_MOVES {
         let mut m = 0;
-        while m < N_MOVES {
-            if allowed_after(false, l, m) {
+        while m < n {
+            if allowed_after(slice, last, m) {
                 a[last] |= 1 << m;
             }
             m += 1;
@@ -107,7 +111,7 @@ static ALLOWED: [u32; N_MOVES + 1] = {
         last += 1;
     }
     a
-};
+}
 
 /// Weight 8^-h of a surviving child with bound h in a task's ordering statistic.
 const STAT_W: [f32; 32] = {
@@ -152,7 +156,7 @@ struct Task {
 impl Task {
     fn last(&self) -> usize {
         if self.len == 0 {
-            N_MOVES
+            MAX_MOVES
         } else {
             usize::from(self.path[usize::from(self.len) - 1])
         }
@@ -161,7 +165,9 @@ impl Task {
 
 /// Key of a move prefix (for the ordering statistics).
 fn key(path: &[u8]) -> u32 {
-    path.iter().rev().fold(0, |k, &m| k * 17 + u32::from(m) + 1)
+    path.iter()
+        .rev()
+        .fold(0, |k, &m| k * (MAX_MOVES as u32 + 1) + u32::from(m) + 1)
 }
 
 /// Per-worker counters.
@@ -215,35 +221,36 @@ impl PruneStats {
 /// Scratch arrays of one node's children: positions, indices, values and survivors (one frame
 /// per depth, reused).
 #[derive(Clone)]
-struct Eval {
-    ys: [Pos; N_MOVES],
-    ms: [u8; N_MOVES],
-    idx: [[usize; MAX_K]; N_MOVES],
-    hs: [[u8; MAX_K]; N_MOVES],
+struct Eval<const N: usize> {
+    ys: [Pos; N],
+    ms: [u8; N],
+    idx: [[usize; MAX_K]; N],
+    hs: [[u8; MAX_K]; N],
     /// each child's bound (the largest of its values read so far)
-    mx: [u8; N_MOVES],
+    mx: [u8; N],
     /// each child's [`Bounds::pre`] value of the first stage
-    pre: [u32; N_MOVES],
-    sel: [u8; N_MOVES],
+    pre: [u32; N],
+    sel: [u8; N],
 }
 
-impl Eval {
+impl<const N: usize> Eval<N> {
     fn new() -> Self {
         let z = Pos::solved();
         Eval {
-            ys: [z; N_MOVES],
-            ms: [0; N_MOVES],
-            idx: [[0; MAX_K]; N_MOVES],
-            hs: [[0; MAX_K]; N_MOVES],
-            mx: [0; N_MOVES],
-            pre: [0; N_MOVES],
-            sel: [0; N_MOVES],
+            ys: [z; N],
+            ms: [0; N],
+            idx: [[0; MAX_K]; N],
+            hs: [[0; MAX_K]; N],
+            mx: [0; N],
+            pre: [0; N],
+            sel: [0; N],
         }
     }
 }
 
-/// The state shared by the threads of one solve.
-struct Shared<'a, B: Bounds> {
+/// The state shared by the threads of one solve, with `N` internal moves (16, or 24 with
+/// slices).
+struct Shared<'a, B: Bounds, const N: usize> {
     b: &'a B,
     /// `opt_moves()`, read once (no `OnceLock` access per node)
     mt: &'static OptMoves,
@@ -264,7 +271,7 @@ struct Shared<'a, B: Bounds> {
     symmetries: Vec<usize>,
 }
 
-impl<B: Bounds> Shared<'_, B> {
+impl<B: Bounds, const N: usize> Shared<'_, B, N> {
     fn time_up(&self) -> bool {
         if self.limits.time.is_some_and(|t| self.start.elapsed() >= t) {
             self.stop.store(true, Ordering::Relaxed);
@@ -312,8 +319,8 @@ impl<B: Bounds> Shared<'_, B> {
     /// Children of task `t` (the moves allowed after its last move) that pass the bound, with
     /// their exact distances.
     fn expand(&self, t: &Task, bound: usize, ctr: &mut Counter) -> Vec<Task> {
-        let mut out = Vec::with_capacity(N_MOVES);
-        let mut moves = ALLOWED[t.last()];
+        let mut out = Vec::with_capacity(N);
+        let mut moves = ALLOWED[usize::from(N > N_MOVES)][t.last()];
         let g = usize::from(t.len);
         while moves != 0 {
             let m = moves.trailing_zeros() as usize;
@@ -321,21 +328,21 @@ impl<B: Bounds> Shared<'_, B> {
             let mut c = *t;
             c.path[g % MAX_SPLIT] = m as u8;
             c.len += 1;
-            c.p = self.mt.apply(&t.p, m);
+            c.p = self.mt.apply_n::<N>(&t.p, m);
             out.push(c);
         }
         let n = out.len();
         ctr.nodes += n as u64;
         ctr.stats.left(bound - g - 1, n);
-        let mut ev = Eval::new();
+        let mut ev = Eval::<N>::new();
         for (i, c) in out.iter().enumerate() {
-            ev.ys[i % N_MOVES] = c.p;
+            ev.ys[i % N] = c.p;
         }
         let k = self.bound_children(&mut ev, n, t.h, bound - g - 1, ctr, false);
         let alive: Vec<Task> = ev.sel[..k]
             .iter()
             .map(|&i| {
-                let i = usize::from(i) % N_MOVES;
+                let i = usize::from(i) % N;
                 let mut c = out[i];
                 c.h = ev.hs[i];
                 c
@@ -355,7 +362,7 @@ impl<B: Bounds> Shared<'_, B> {
     #[inline(always)]
     fn bound_children(
         &self,
-        ev: &mut Eval,
+        ev: &mut Eval<N>,
         n: usize,
         h: [u8; MAX_K],
         budget: usize,
@@ -364,8 +371,8 @@ impl<B: Bounds> Shared<'_, B> {
     ) -> usize {
         let mut alive = n;
         for i in 0..n {
-            ev.sel[i % N_MOVES] = i as u8;
-            ev.mx[i % N_MOVES] = 0;
+            ev.sel[i % N] = i as u8;
+            ev.mx[i % N] = 0;
         }
         if !ready {
             self.first_stage(ev, n, false);
@@ -380,12 +387,12 @@ impl<B: Bounds> Shared<'_, B> {
             let nk = order.get(s + 1).map(|&x| x % MAX_K);
             let mut next = 0;
             for j in 0..alive {
-                let i = ev.sel[j % N_MOVES];
-                let u = usize::from(i) % N_MOVES;
+                let i = ev.sel[j % N];
+                let u = usize::from(i) % N;
                 let v = decode(h[k], tab.get(ev.idx[u][k]));
                 ev.hs[u][k] = v;
                 ev.mx[u] = ev.mx[u].max(v);
-                ev.sel[next % N_MOVES] = i;
+                ev.sel[next % N] = i;
                 let keep = self.prune_stats || usize::from(v) <= budget;
                 if let (true, Some(nk)) = (keep, nk) {
                     let ix = self.b.index(nk, &ev.ys[u]);
@@ -400,14 +407,14 @@ impl<B: Bounds> Shared<'_, B> {
             // every child read every lookup: record its pruning set, then keep the survivors
             let mut next = 0;
             for j in 0..alive {
-                let i = ev.sel[j % N_MOVES];
-                let u = usize::from(i) % N_MOVES;
+                let i = ev.sel[j % N];
+                let u = usize::from(i) % N;
                 let mut mask = 0;
                 for k in 0..B::K {
                     mask |= usize::from(usize::from(ev.hs[u][k]) > budget) << k;
                 }
                 ctr.stats.mask(mask);
-                ev.sel[next % N_MOVES] = i;
+                ev.sel[next % N] = i;
                 next += usize::from(mask == 0);
             }
             alive = next;
@@ -419,21 +426,21 @@ impl<B: Bounds> Shared<'_, B> {
     /// prefetched.
     /// (`have_pre`: `ev.pre` holds the children's [`Bounds::pre`] values of this lookup.)
     #[inline(always)]
-    fn first_stage(&self, ev: &mut Eval, n: usize, have_pre: bool) {
+    fn first_stage(&self, ev: &mut Eval<N>, n: usize, have_pre: bool) {
         let Some(&k) = B::ORDER.first() else {
             return;
         };
         let k = k % MAX_K;
         let tab = self.b.table(k);
         for u in 0..n {
-            let y = &ev.ys[u % N_MOVES];
+            let y = &ev.ys[u % N];
             let pre = if have_pre {
-                ev.pre[u % N_MOVES]
+                ev.pre[u % N]
             } else {
                 self.b.pre(k, y)
             };
             let ix = self.b.index_with(k, y, pre);
-            ev.idx[u % N_MOVES][k] = ix;
+            ev.idx[u % N][k] = ix;
             prefetch_at(&tab.data, ix >> 5);
         }
     }
@@ -489,8 +496,8 @@ impl<B: Bounds> Shared<'_, B> {
     /// counted when the search enters it ([`Shared::enter`]), so the counts do not depend on
     /// how early its frame was prepared.
     #[inline(always)]
-    fn prepare(&self, p: &Pos, last: usize, budget: usize, fr: &mut Eval) -> usize {
-        let mut moves = ALLOWED[last.min(N_MOVES)];
+    fn prepare(&self, p: &Pos, last: usize, budget: usize, fr: &mut Eval<N>) -> usize {
+        let mut moves = ALLOWED[usize::from(N > N_MOVES)][last.min(MAX_MOVES)];
         let mut n = 0;
         // (with lookups left, the first stage's Bounds::pre in the same loop: it prefetches
         // what the first-stage index reads first)
@@ -498,12 +505,12 @@ impl<B: Bounds> Shared<'_, B> {
         while moves != 0 {
             let m = moves.trailing_zeros() as usize;
             moves &= moves - 1;
-            let y = self.mt.apply(p, m);
+            let y = self.mt.apply_n::<N>(p, m);
             if budget > 0 {
-                fr.pre[n % N_MOVES] = self.b.pre(k0, &y);
+                fr.pre[n % N] = self.b.pre(k0, &y);
             }
-            fr.ys[n % N_MOVES] = y;
-            fr.ms[n % N_MOVES] = m as u8;
+            fr.ys[n % N] = y;
+            fr.ms[n % N] = m as u8;
             n += 1;
         }
         if budget > 0 {
@@ -522,7 +529,7 @@ impl<B: Bounds> Shared<'_, B> {
         bound: usize,
         path: &mut Vec<u8>,
         ctr: &mut Counter,
-        frames: &mut [[Eval; 2]],
+        frames: &mut [[Eval<N>; 2]],
         stat: &mut f32,
     ) {
         let g = path.len();
@@ -553,7 +560,7 @@ impl<B: Bounds> Shared<'_, B> {
         bound: usize,
         path: &mut Vec<u8>,
         ctr: &mut Counter,
-        frames: &mut [[Eval; 2]],
+        frames: &mut [[Eval<N>; 2]],
         slot: usize,
         stat: &mut f32,
     ) {
@@ -574,8 +581,8 @@ impl<B: Bounds> Shared<'_, B> {
             // The children are leaves: every table is 0 exactly at the solved state, so only a
             // solved child can pass; it is recognised without lookups.
             for i in 0..n {
-                if fr.ys[i % N_MOVES] == self.solved {
-                    path.push(fr.ms[i % N_MOVES]);
+                if fr.ys[i % N] == self.solved {
+                    path.push(fr.ms[i % N]);
                     self.found(path, ctr);
                     path.pop();
                 }
@@ -584,14 +591,14 @@ impl<B: Bounds> Shared<'_, B> {
         }
         let kk = self.bound_children(fr, n, h, budget, ctr, true);
         for j in 0..kk {
-            let u = usize::from(fr.sel[j % N_MOVES]) % N_MOVES;
+            let u = usize::from(fr.sel[j % N]) % N;
             *stat += STAT_W[usize::from(fr.mx[u]) & 31];
         }
         if kk == 0 {
             return;
         }
         // the survivors, at depth g + 1 < bound: their children have budget - 1 moves left
-        let child = |j: usize| usize::from(fr.sel[j % N_MOVES]) % N_MOVES;
+        let child = |j: usize| usize::from(fr.sel[j % N]) % N;
         let Some((cpair, _)) = rest.split_first_mut() else {
             debug_assert!(false, "out of search frames");
             return;
@@ -630,10 +637,27 @@ impl<B: Bounds> Shared<'_, B> {
     }
 }
 
-/// Solve one position optimally with the lower bounds `b`. `frame` is the physical frame of the
-/// scrambled position (for the physical moves of the solutions). With `verbose`, each
-/// iteration is reported on stderr.
+/// Solve one position optimally with the lower bounds `b`, in the metric of their move set
+/// (`b.moves()`: face turns, or with slices). `frame` is the physical frame of the scrambled
+/// position (for the physical moves of the solutions). With `verbose`, each iteration is
+/// reported on stderr.
 pub fn solve<B: Bounds>(
+    b: &B,
+    cube: Cube,
+    frame: Frame,
+    limits: &Limits,
+    verbose: bool,
+) -> Outcome {
+    // (compiled once per number of moves, so the face metric runs the same code as before)
+    if b.moves().slice {
+        solve_n::<B, MAX_MOVES>(b, cube, frame, limits, verbose)
+    } else {
+        solve_n::<B, N_MOVES>(b, cube, frame, limits, verbose)
+    }
+}
+
+/// [`solve`] with `N` internal moves (`b.moves().n_moves()`).
+fn solve_n<B: Bounds, const N: usize>(
     b: &B,
     cube: Cube,
     frame: Frame,
@@ -668,7 +692,7 @@ pub fn solve<B: Bounds>(
             .collect()
     };
     out.symmetries = root_syms.len() + 1;
-    let sh = Shared {
+    let sh = Shared::<B, N> {
         b,
         mt: opt_moves(),
         solved: Pos::solved(),
@@ -754,7 +778,7 @@ pub fn solve<B: Bounds>(
         let next = AtomicUsize::new(0);
         let worker = || {
             let mut path: Vec<u8> = Vec::with_capacity(64);
-            let mut frames = vec![[Eval::new(), Eval::new()]; depth + 1];
+            let mut frames = vec![[Eval::<N>::new(), Eval::<N>::new()]; depth + 1];
             let mut ctr = Counter::default();
             loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
@@ -847,7 +871,7 @@ pub fn solve<B: Bounds>(
     out.solutions = out
         .internal
         .iter()
-        .map(|s| solution_to_physical(frame, s, false))
+        .map(|s| solution_to_physical(frame, s, b.moves().wide))
         .collect();
     out.nodes = sh.nodes.load(Ordering::Relaxed);
     out.lookups = sh.lookups.load(Ordering::Relaxed);
@@ -868,10 +892,14 @@ mod tests {
 
     #[test]
     fn move_masks_match_rules() {
-        for last in 0..=N_MOVES {
-            for m in 0..N_MOVES {
-                let l = if last == N_MOVES { usize::MAX } else { last };
-                assert_eq!(ALLOWED[last] >> m & 1 == 1, allowed_after(false, l, m));
+        for slice in [false, true] {
+            let n = if slice { MAX_MOVES } else { N_MOVES };
+            for last in (0..n).chain([MAX_MOVES]) {
+                for m in 0..MAX_MOVES {
+                    let l = if last == MAX_MOVES { usize::MAX } else { last };
+                    let want = m < n && allowed_after(slice, l, m);
+                    assert_eq!(ALLOWED[usize::from(slice)][last] >> m & 1 == 1, want);
+                }
             }
         }
     }
@@ -881,11 +909,11 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for len in 0..=MAX_SPLIT {
             let mut path = [0u8; MAX_SPLIT];
-            for x in 0..16usize.pow(len as u32) {
+            for x in 0..MAX_MOVES.pow(len as u32) {
                 let mut y = x;
                 for p in path.iter_mut().take(len) {
-                    *p = (y % 16) as u8;
-                    y /= 16;
+                    *p = (y % MAX_MOVES) as u8;
+                    y /= MAX_MOVES;
                 }
                 assert!(seen.insert(key(&path[..len])));
             }

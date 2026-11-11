@@ -36,7 +36,9 @@ two-phase solver; the optimal solver's files start with `opt-`. Before generatin
 space and free memory are checked for all tables of the tier (`--force` skips the check);
 `--min-free-memory GB` leaves that much memory to the rest of the machine (added to the check,
 and the large tier's 21 GB table stops generating, writing nothing, if the free memory falls
-below it). Face turns only (no `--moves`).
+below it). `--moves slice` adds the slice turns (each counts one move), with tables of their own
+in that metric (`*-slice.prun`; small and medium tiers: the large tier is face turns only);
+`--moves wide` only changes the output, as for the two-phase solver.
 
 ## Search
 
@@ -344,6 +346,48 @@ nodes are: 92% of the children have 9 or 10 moves left and fewer than 0.01% at m
 set: 1,700 of 1.5e8), so exact checks near the leaves (for example one move left: one of the 16
 neighbours of solved) cannot change the node count measurably; not done.
 
+**Slice turns (`--moves slice`, `optimal/slice`).** 24 internal moves (the slices are the middle
+layers of the four axes, turned like the back face; they move no corner) with the slice metric's
+canonical order (`cube::allowed_after`: on an axis only X Xw and X' Xw'). Every table of the
+tiers is a distance in the metric of the move set, so the slice metric has its own files
+(`opt-*-slice.prun`, and the two-phase A-centre/edge tables `ae-sym288-*-slice.prun`); the
+symmetry reductions hold, as every symmetry maps slices to slices. The search is compiled once
+per number of moves (16 or 24), so the face metric runs the same code. The symmetric start
+still keeps the first optimal solution: the canonical form of a two-move element of an axis
+starts with its single turn, the smallest move index of the axis, so the reordering at the end
+of a task's prefix only makes the prefix smaller. Tests: the brute force in the slice metric on
+1 and 8 threads (scrambles of face, wide and slice turns; the solutions use slices and are never
+longer than in the face metric), the two-phase solver's optimal mode with slices, consistency of
+the slice tables, the symmetric start on symmetric positions of the slice metric.
+
+Slice-metric tables (entries; max, mean): corners x centres 18,849,600 (10, 7.52), edges
+239,500,800 (9, 7.17), A-centre/edge triples to `H_A` 515,961,600 (11, 8.83). Small tier, one
+thread, 10 x 15-move face-turn scrambles (seed 1717): mean optimal length 13.6 with slices
+(14.5 without), the same lengths as the two-phase solver's optimal mode with slices on all ten,
+1,297,054,007 nodes (96x the face metric's 13,456,478: about 18 children per node instead of
+13, and shallower tables), 1.34 lookups per node (the face-metric lookup order is also within
+0.1% of the best one here, by the pruning statistics of a 13-move set). Medium tier with slices
+(corners x edges in the slice metric: 9,580,032,000 entries, max 11, mean 9.27; generated in 47
+minutes on the busy machine): 139,550,571 nodes on the same set (0.108x the small tier, 120x
+the face metric's 1,162,092), same lengths, 1.37 lookups per node. On the 17-move set (medium,
+one thread): mean optimal length 15.5 (16.5 in face turns), 47,025,092,761 nodes (318x the face
+metric's 147,723,722; two positions of 17 slice-metric moves take 1.7e10 and 2.8e10), 1.38
+lookups per node.
+
+What the slices cost face turns: the search is compiled once per move count, and with 16
+moves it applies face moves only (`OptMoves::apply_n`), reading the face rows of the corner
+table (the first 32 KB; the slice rows, a slice keeping the corner id, are a second block), so
+the face metric has no branch on the move kind and the same table footprint as before.
+Face-metric time against main (4c96995), medium tier, quiet machine, interleaved rounds: 48
+threads, 19-move set 0.999x (0.999, 0.997, 0.999); 1 thread, 17-move set 1.015x (1.016,
+1.016, 0.999) and in six more rounds 1.031x (1.009 to 1.058); same nodes. Earlier layouts: a
+branch in the corner move 1.083x / 1.059x (1T / 48T), one 64-byte row of 32 moves per corner
+1.012x / 1.024x, the two blocks without `apply_n` 1.025x / 1.024x. With main's round 3 merged
+in (main 7b93c60, three rounds): 1 thread 1.007x (0.966, 1.003, 1.024), 48 threads 1.001x
+(1.010, 0.995, 0.996): at parity. (The earlier 1T residue came with identical `dfs` machine
+code, so it was code placement, which every merge shifts.) Stacked on `optimal/r3-aepre`:
+1.015x (1.017, 1.001, 1.018) / 1.004x (1.000, 1.010, 1.004) against it.
+
 ## Optimisation round 2: a bound for the nodes with 9 to 11 moves left
 
 **Estimate before building.** With medium + AE, the expanded nodes of the 13-move set (10
@@ -510,8 +554,8 @@ large 0.946x / 0.941x; same nodes.
 ## Missing (v0)
 
 * Timings: the machine was busy with long two-phase proofs, so only node counts are measured.
-* Moves other than face turns (`--moves slice`); printing improvements (`-p`) has no use here
-  (the first solution is optimal); resuming a proof from a known lower bound.
+* Printing improvements (`-p`) has no use here (the first solution is optimal); resuming a
+  proof from a known lower bound.
 * Lanes / micro-threading and huge-page tuning: not done.
 
 ## Next optimisations (ranked)

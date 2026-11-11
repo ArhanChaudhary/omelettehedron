@@ -245,6 +245,7 @@ corner 6-flip in half a second, against ten minutes for the two-phase solver.
 target/release/omelettehedron optimal solve --tier medium "U R' BL F D B' L BR"
 target/release/omelettehedron optimal solve --tier medium -n 10 -v "..."   # up to 10 optimal solutions
 target/release/omelettehedron optimal bench --tier medium -N 10 --scramble-len 17 --seed 1717 -j 1
+target/release/omelettehedron optimal solve --tier medium --moves slice "..."  # slice turns allowed
 ```
 
 | `optimal --tier` | Memory | Tables |
@@ -395,5 +396,6 @@ The tests cover:
   counts, solutions checked on the sticker model, move families, improvement events, and
   optimal lengths independent of the thread count.
 * the optimal solver (`tests/optimal.rs`): optimal lengths against the brute force and against
-  the two-phase solver's optimal mode, `-n` against brute-force enumeration of all optimal
-  solutions, the other stopping rules, deterministic node counts and table consistency.
+  the two-phase solver's optimal mode, with and without slice turns, `-n` against brute-force
+  enumeration of all optimal solutions, the other stopping rules, deterministic node counts and
+  table consistency.
