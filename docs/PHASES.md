@@ -136,7 +136,9 @@ The condition splits into two almost independent parts. Both are tabulated:
 The phase-1 heuristic is the maximum of the loaded tables. Table tiers, for
 low-RAM machines up to large ones:
 
-* **tiny** (~10 MB): A-colouring, edge triples, CB
+* **tiny** (~10 MB): A-colouring, edge triples, CB (as built: 42 MB, the A-centres x two of
+  the four edge triples, read through relabellings for all six pairs, with a 0.9 MB fallback
+  and CB; see the README and [RESULTS.md](RESULTS.md#tiny-tier))
 * **small** (~150 MB): A-colouring × edge triples (4.7 × 10⁸ entries)
 * **medium** (~1–2 GB, default): the full AE table (3.8 × 10⁹ entries)
 * **large / huge** (5–40 GB): AE plus joint tables of CB with part of AE (e.g.
