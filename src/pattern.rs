@@ -949,6 +949,51 @@ mod tests {
     }
 
     #[test]
+    fn any_input_gives_a_position_or_an_error() {
+        // no input panics: random letters (few, so the counts sometimes pass), and right
+        // patterns with stickers swapped or overwritten. A pattern that reads is shown by its
+        // position, every error names stickers that exist, and its message is not empty.
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(17);
+        let (mut ok, mut errors) = (0, 0);
+        for t in 0..3000 {
+            let p: [char; STICKERS] = if t % 3 == 0 {
+                let k = rng.gen_range(1..10);
+                std::array::from_fn(|_| (b'a' + rng.gen_range(0..k)) as char)
+            } else {
+                let m: Vec<PhysMove> = (0..rng.gen_range(0..20))
+                    .map(|_| PhysMove::face(rng.gen_range(0..8), rng.gen_bool(0.5)))
+                    .collect();
+                let mut p = of_moves(&m);
+                for _ in 0..rng.gen_range(0..4) {
+                    let (i, j) = (rng.gen_range(0..STICKERS), rng.gen_range(0..STICKERS));
+                    if t % 3 == 1 {
+                        p.swap(i, j);
+                    } else {
+                        p[i] = p[j];
+                    }
+                }
+                p
+            };
+            match position(&p) {
+                Ok(c) => {
+                    assert!(same_up_to_colours(&p, &c), "{}", format(&p));
+                    ok += 1;
+                }
+                Err(e) => {
+                    assert!(e.stickers().iter().all(|&i| i < STICKERS), "{e:?}");
+                    assert!(!e.to_string().is_empty());
+                    errors += 1;
+                }
+            }
+            let m: Vec<PhysMove> = (0..rng.gen_range(0..6))
+                .map(|_| PhysMove::face(rng.gen_range(0..8), rng.gen_bool(0.5)))
+                .collect();
+            let _ = scramble(&p, &m, Some(&['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']));
+        }
+        assert!(ok > 500 && errors > 500, "{ok} read, {errors} errors");
+    }
+
+    #[test]
     fn piece_names() {
         let d = defs();
         let p = Piece::new(Kind::Corner, &d.corner_slots[0]);
