@@ -34,7 +34,8 @@ omelettehedron optimal bench --tier medium -N 10 --scramble-len 17 --seed 1717 -
 `--tier` is required. `--tables DIR` / `$FTO_TABLES` / `./tables` hold the tables, as for the
 two-phase solver; the optimal solver's files start with `opt-`. Before generating, the disk
 space and free memory are checked for all tables of the tier (`--force` skips the check).
-Face turns only (no `--moves`).
+`--moves slice` adds the slice turns (each counts one move), with tables of their own in that
+metric (`*-slice.prun`); `--moves wide` only changes the output, as for the two-phase solver.
 
 ## Search
 
@@ -310,11 +311,33 @@ nodes are: 92% of the children have 9 or 10 moves left and fewer than 0.01% at m
 set: 1,700 of 1.5e8), so exact checks near the leaves (for example one move left: one of the 16
 neighbours of solved) cannot change the node count measurably; not done.
 
+**Slice turns (`--moves slice`, `optimal/slice`).** 24 internal moves (the slices are the middle
+layers of the four axes, turned like the back face; they move no corner) with the slice metric's
+canonical order (`cube::allowed_after`: on an axis only X Xw and X' Xw'). Every table of the
+tiers is a distance in the metric of the move set, so the slice metric has its own files
+(`opt-*-slice.prun`, and the two-phase A-centre/edge tables `ae-sym288-*-slice.prun`); the
+symmetry reductions hold, as every symmetry maps slices to slices. The search is compiled once
+per number of moves (16 or 24), so the face metric runs the same code. The symmetric start
+still keeps the first optimal solution: the canonical form of a two-move element of an axis
+starts with its single turn, the smallest move index of the axis, so the reordering at the end
+of a task's prefix only makes the prefix smaller. Tests: the brute force in the slice metric on
+1 and 8 threads (scrambles of face, wide and slice turns; the solutions use slices and are never
+longer than in the face metric), the two-phase solver's optimal mode with slices, consistency of
+the slice tables, the symmetric start on symmetric positions of the slice metric.
+
+Slice-metric tables (entries; max, mean): corners x centres 18,849,600 (10, 7.52), edges
+239,500,800 (9, 7.17), A-centre/edge triples to `H_A` 515,961,600 (11, 8.83). Small tier, one
+thread, 10 x 15-move face-turn scrambles (seed 1717): mean optimal length 13.6 with slices
+(14.5 without), the same lengths as the two-phase solver's optimal mode with slices on all ten,
+1,297,054,007 nodes (96x the face metric's 13,456,478: about 18 children per node instead of
+13, and shallower tables), 1.34 lookups per node (the face-metric lookup order is also within
+0.1% of the best one here, by the pruning statistics of a 13-move set).
+
 ## Missing (v0)
 
 * Timings: the machine was busy with long two-phase proofs, so only node counts are measured.
-* Moves other than face turns (`--moves slice`); printing improvements (`-p`) has no use here
-  (the first solution is optimal); resuming a proof from a known lower bound.
+* Printing improvements (`-p`) has no use here (the first solution is optimal); resuming a
+  proof from a known lower bound.
 * Lanes / micro-threading and huge-page tuning: not done.
 
 ## Next optimisations (ranked)
