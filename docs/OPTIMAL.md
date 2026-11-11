@@ -488,6 +488,15 @@ pipeline (its first stage is most of its lookups). The AE prefetch pass computes
 A-centre rank of every child of a stage first and prefetches its class entry: the extra pass
 costs more than the stall it hides.
 
+**Piece positions from SIMD compares (`optimal/r3-masks`).** The profile after the prefetch
+changes put 15% of the medium tier's samples on the A-centre/edge chirality bits
+(`FcMaps::ebits`: an inverse permutation scattered into memory, then the parity of four
+position triples). It and the triple table's index (which also built an inverse permutation
+to find three pieces) now take each piece's position as a one-bit mask from a SIMD compare
+(`fast::label_mask`); comparing two masks compares the positions, so a parity is three mask
+comparisons. Against round 3: medium 0.885x (1T) / 0.885x (48T), large 0.907x / 0.925x; same
+nodes.
+
 ## Missing (v0)
 
 * Timings: the machine was busy with long two-phase proofs, so only node counts are measured.
