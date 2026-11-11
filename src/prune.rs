@@ -261,9 +261,21 @@ const LANES: usize = 16;
 /// Repeats the 2-bit pattern 01 over a word (the low bit of every entry).
 const LOW: u64 = 0x5555_5555_5555_5555;
 
+/// EXPERIMENT (exp/wasm-plainload): plain load of a table word in the wasm threads build.
+#[inline(always)]
+fn ld(w: &AtomicU64) -> u64 {
+    #[cfg(target_family = "wasm")]
+    // SAFETY: experiment only (a racy plain read; see the branch notes)
+    unsafe {
+        std::ptr::read_volatile(w.as_ptr())
+    }
+    #[cfg(not(target_family = "wasm"))]
+    w.load(Ordering::Relaxed)
+}
+
 #[inline(always)]
 fn get(tab: &[AtomicU64], i: usize) -> u8 {
-    ((tab[i >> 5].load(Ordering::Relaxed) >> ((i & 31) << 1)) & 3) as u8
+    ((ld(&tab[i >> 5]) >> ((i & 31) << 1)) & 3) as u8
 }
 
 /// Set entry `i` to `v` if it is unvisited (3). Returns whether this call set it.
@@ -276,7 +288,7 @@ fn get(tab: &[AtomicU64], i: usize) -> u8 {
 fn set_if_empty(tab: &[AtomicU64], i: usize, v: u8) -> bool {
     let w = &tab[i >> 5];
     let sh = (i & 31) << 1;
-    if (w.load(Ordering::Relaxed) >> sh) & 3 != 3 {
+    if (ld(w) >> sh) & 3 != 3 {
         return false;
     }
     let prev = w.fetch_and(!(u64::from(3 ^ v) << sh), Ordering::Relaxed);
@@ -350,7 +362,7 @@ impl Iterator for Scan<'_> {
             if self.w >= self.end {
                 return None;
             }
-            let x = !(self.tab[self.w].load(Ordering::Relaxed) ^ self.pat);
+            let x = !(ld(&self.tab[self.w]) ^ self.pat);
             self.bits = x & (x >> 1) & LOW;
             self.base = self.w << 5;
             self.w += 1;
