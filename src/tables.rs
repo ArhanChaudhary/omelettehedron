@@ -1265,16 +1265,117 @@ mod tests {
         }
     }
 
+    /// The medium index has 4,127,692,800 entries, below 2^32, so 32-bit targets (WebAssembly)
+    /// can use it. Every index is `class * N_ECOSET + edge rank * 8 + chirality bits`, a sum of
+    /// products that are each at most the index itself, so it never overflows a 32-bit
+    /// `usize`. Checked here on the host: recomputed in u32 with every step checked, the
+    /// indices of random positions and of all their neighbours agree with the 64-bit ones, by
+    /// every path the solver and the generator take (`index`, `index_batch`, `index_fast`,
+    /// `entry_parts`, `decode`, `equivalents`).
+    #[test]
+    fn medium_index_fits_32_bits() {
+        let ix = AeSym::new(true);
+        let classes = u32::try_from(ix.cls.rep.len()).unwrap();
+        let stride = u32::try_from(N_ECOSET).unwrap();
+        assert_eq!(classes.checked_mul(stride), Some(4_127_692_800));
+        assert_eq!(ix.size(), 4_127_692_800);
+        // u32 arithmetic, every step checked
+        let index32 = |c: u32, e: u32, b: u8| -> usize {
+            let i = c
+                .checked_mul(stride)
+                .and_then(|p| p.checked_add(e.checked_mul(8)?))
+                .and_then(|p| p.checked_add(u32::from(b & 7)))
+                .filter(|&i| (i as usize) < ix.size())
+                .unwrap();
+            i as usize
+        };
+        let f = fast();
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0x3232);
+        let (mut eq, mut top) = (vec![], 0);
+        for _ in 0..20_000 {
+            let x = f.of(&Cube::random(&mut rng));
+            let em = masks(&x.e);
+            let ys: Vec<Fc> = (0..N_MOVES).map(|m| f.apply_m(&x, &em, m)).collect();
+            let coords: Vec<Coords> = ys.iter().map(|y| fast_to_coords(f, y)).collect();
+            let mut batch = vec![0; N_MOVES];
+            ix.index_batch(&coords, &mut batch);
+            for ((y, cy), &bi) in ys.iter().zip(&coords).zip(&batch) {
+                let v = *ix.class_entry(f.a_rank(y));
+                let (g, t) = ((v >> 16 & 0xff) as usize, (v >> 24) as usize);
+                let (e, b) = f.sym_e(y, &masks(&y.e), g, t);
+                let i = index32(v & 0xffff, e, b);
+                assert_eq!(ix.index_fast(f, y, f.a_rank(y)), i);
+                assert_eq!(ix.index(cy), i);
+                assert_eq!(bi, i);
+                let (base, gp, flips) = ix.entry_parts(f, y, v).unwrap();
+                assert_eq!(base + (f.relab(gp, y.ebits ^ flips) & 7) as usize, i);
+                // decode, and the indices of the same position by the class's stabiliser
+                let (a, e2, b2) = ix.decode(i);
+                assert_eq!(a, ix.cls.rep[(v & 0xffff) as usize]);
+                assert_eq!(index32(v & 0xffff, e2, b2), i);
+                eq.clear();
+                ix.equivalents(i, &mut eq);
+                for &j in &eq {
+                    let (a3, e3, b3) = ix.decode(j);
+                    assert_eq!(a3, a);
+                    assert_eq!(index32(v & 0xffff, e3, b3), j);
+                }
+                top = top.max(i);
+            }
+        }
+        // (the random positions reach the top of the index range)
+        assert!(top > ix.size() - ix.size() / 100, "{top}");
+    }
+
+    /// The coordinates of a fast-coordinate position (through its cube-independent ranks).
+    fn fast_to_coords(f: &FastTables, y: &Fc) -> Coords {
+        Coords {
+            c: y.c,
+            a: f.a_rank(y),
+            b: f.b_rank(y),
+            e: f.e_rank(y),
+            ebits: y.ebits,
+        }
+    }
+
+    /// The medium index of positions reached by seeded random move sequences (with only
+    /// target-independent arithmetic, so the same on every target), condensed into a hash
+    /// recorded on x86-64: on a 32-bit target (`scripts/check.sh` runs the library tests on
+    /// wasm32) the same value shows that its 32-bit `usize` gives the same indices.
+    #[test]
+    fn medium_index_fingerprint() {
+        let ix = AeSym::new(true);
+        let f = fast();
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0x0e66);
+        let mut h = 0xcbf2_9ce4_8422_2325_u64;
+        let mut hash = |i: usize| h = (h ^ i as u64).wrapping_mul(0x0100_0000_01b3);
+        for _ in 0..4096 {
+            let mut cube = Cube::solved();
+            for _ in 0..40 {
+                cube = cube.apply((rand::RngCore::next_u64(&mut rng) % N_MOVES as u64) as usize);
+            }
+            let x = f.of(&cube);
+            let em = masks(&x.e);
+            for m in 0..N_MOVES {
+                let y = f.apply_m(&x, &em, m);
+                hash(ix.index_fast(f, &y, f.a_rank(&y)));
+            }
+            hash(ix.index(&Coords::of(&cube)));
+        }
+        assert_eq!(h, 0x869f_8b6a_6288_3942);
+    }
+
     #[test]
     fn ae_graph_steps_match_index() {
         check_graph::<_, N_MOVES>(&AeSym::new(false));
         check_graph::<_, MAX_MOVES>(&AeSym::new(false));
-        // (the larger indices need 64-bit sizes: 4.1e9 and 9.1e10 entries)
+        // (the medium index, 4.13e9 entries, fits 32-bit targets too; the huge one, 9.1e10
+        // entries, needs 64-bit sizes)
+        check_graph::<_, N_MOVES>(&AeSym::new(true));
+        check_graph::<_, MAX_MOVES>(&AeSym::new(true));
         #[cfg(target_pointer_width = "64")]
         {
-            check_graph::<_, N_MOVES>(&AeSym::new(true));
             check_graph::<_, N_MOVES>(&AeRelabel::new());
-            check_graph::<_, MAX_MOVES>(&AeSym::new(true));
             check_graph::<_, MAX_MOVES>(&AeRelabel::new());
         }
     }

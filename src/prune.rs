@@ -179,7 +179,8 @@ fn read_and_hash(
             let bytes = unsafe {
                 std::slice::from_raw_parts_mut(g[lo..hi].as_mut_ptr().cast::<u8>(), (hi - lo) * 8)
             };
-            read_at(file, bytes, offset + ((c0 * CK + lo) * 8) as u64)?;
+            // (a u64 product: the byte offset of a table over 4 GB exceeds 32 bits)
+            read_at(file, bytes, offset + (c0 * CK + lo) as u64 * 8)?;
         }
         if full {
             // four independent chains: the multiply latency is shared

@@ -260,11 +260,14 @@ macro_rules! dispatch {
         let dir = table_dir($tab.tables.as_deref());
         let moves = $tab.move_set();
         omelettehedron::preflight::set_force($tab.force);
-        // The larger tiers' indices exceed 2^32 entries (and their tables 4 GB): 32-bit
-        // targets such as WebAssembly support the small tier only.
-        if cfg!(target_pointer_width = "32") && !matches!($tab.tier, Tier::Small) {
+        // The large tier needs 8 GB and the huge tier's index has 9.1e10 entries: 32-bit
+        // targets such as WebAssembly (4 GB) support the small and medium tiers (the medium
+        // index has 4.13e9 entries, below 2^32).
+        if cfg!(target_pointer_width = "32") && matches!($tab.tier, Tier::Large | Tier::Huge) {
             return Err(
-                "only --tier small is supported on 32-bit targets such as WebAssembly".into(),
+                "only --tier small and medium are supported on 32-bit targets such as \
+                        WebAssembly"
+                    .into(),
             );
         }
         match $tab.tier {

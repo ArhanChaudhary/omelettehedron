@@ -6,6 +6,11 @@
 //   solver.solve("U R' BL F D B' L BR");        // optimal: { solution, length, optimal, ... }
 //   solver.solve(scramble, { seconds: 5 });     // the best solution found in 5 s
 //
+// Two sets of tables (`TIERS`, the native tiers of the same names): small (134 MB) and
+// medium (1.04 GB; fewer positions to search, so faster solves). The single-thread module
+// takes either; the threads build comes in two modules, one per set (`wasmFile`), since its
+// memory is fixed (see wasm/build.rs).
+//
 // The module is built for WASI (wasm32-wasip1, or wasm32-wasip1-threads for several
 // threads): this file provides the few WASI functions it imports (clock, console output,
 // random numbers, sleep), and for the threads build the `thread-spawn` of wasi-threads with a
@@ -327,6 +332,30 @@ async function startWorker(module, memory, control, slot, channel) {
   return worker;
 }
 
+/**
+ * The sets of tables: the module's number for each, its two files (the native `gen --tier`
+ * files) and the threads module with room for it.
+ */
+export const TIERS = {
+  small: { code: 0, ae: 'ae-sym288-triples.prun', cb: 'cb-sym24.prun', threadsWasm: 'omelettehedron-threads.wasm' },
+  medium: { code: 1, ae: 'ae-sym288-chiral.prun', cb: 'cb-sym24.prun', threadsWasm: 'omelettehedron-threads-medium.wasm' },
+};
+
+/** The module file (in `dist/`) for the tables `tier` on `threads` threads (> 1: a threads build). */
+export function wasmFile(tier = 'small', threads = 1) {
+  const t = TIERS[tier];
+  if (!t) throw new Error(`omelettehedron: no tables called ${tier} (small or medium)`);
+  return threads > 1 ? t.threadsWasm : 'omelettehedron.wasm';
+}
+
+/** `source` as a Blob, if it is one or (Bun) a local file; else undefined. */
+async function blobOf(source) {
+  if (typeof Blob !== 'undefined' && source instanceof Blob) return source;
+  const file = localFile(source);
+  if (file && !(await file.exists())) throw new Error(`${source}: no such file`);
+  return file;
+}
+
 /** A random 32-bit seed. */
 const randomSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
 
@@ -391,7 +420,7 @@ export class FtoSolver {
     this.workers = workers;
     /** Threads the solver uses (1 for the single-thread build). */
     this.threads = 1;
-    /** `{ ae_bytes, cb_bytes, seconds }` of the tables, or null before there are any. */
+    /** `{ tier, ae_bytes, cb_bytes, seconds }` of the tables, or null before there are any. */
     this.tables = null;
   }
 
@@ -436,28 +465,43 @@ export class FtoSolver {
   }
 
   /**
-   * Generate the small tier's tables in memory (~30 s natively on one core; more threads:
-   * faster). Progress lines go to stderr (`onLine(2, line)`). Returns `{ ae_bytes, cb_bytes,
-   * seconds }`.
+   * Generate the tables of `tier` ('small' or 'medium', see `TIERS`) in memory: natively on
+   * one core ~30 s for small and ~3 min for medium; more threads: faster. The threads module
+   * must be the one for the tier (`wasmFile`). Progress lines go to stderr (`onLine(2,
+   * line)`). Returns `{ tier, ae_bytes, cb_bytes, seconds }`.
    */
-  generate() {
+  generate({ tier = 'small' } = {}) {
+    const t = TIERS[tier];
+    if (!t) throw new Error(`omelettehedron: no tables called ${tier} (small or medium)`);
     this.tables = null;
-    this.tables = this.call('fto_generate');
+    this.tables = this.call('fto_generate', t.code);
     return this.tables;
   }
 
   /**
-   * Load the two table files (`ae-sym288-triples.prun` and `cb-sym24.prun`, from the native
-   * `gen --tier small` or `exportTables`): each a path (Bun), URL, Blob or bytes. Their
-   * checksums are checked. Returns `{ ae_bytes, cb_bytes, seconds }`.
+   * Load the two table files of a tier (`TIERS[tier].ae` and `cb-sym24.prun`, from the native
+   * `gen --tier small` or `--tier medium`, or from `exportTables`): each a path (Bun), URL,
+   * Blob or bytes. The tier is that of the first file; the checksums are checked. Blobs and
+   * Bun's files are copied into the module in pieces (no second whole copy in JavaScript's
+   * memory). Returns `{ tier, ae_bytes, cb_bytes, seconds }`.
    */
   async loadTables(ae, cb) {
     this.tables = null;
     for (const [which, source] of [ae, cb].entries()) {
-      const bytes = await readSource(source);
-      const ptr = this.exports.fto_table_buffer(which, bytes.length) >>> 0;
-      if (ptr === 0) throw new Error(`omelettehedron: no room for a ${bytes.length}-byte table file`);
-      new Uint8Array(this.memory.buffer, ptr, bytes.length).set(bytes);
+      const blob = await blobOf(source);
+      const bytes = blob ? null : await readSource(source);
+      const len = blob ? blob.size : bytes.length;
+      const ptr = this.exports.fto_table_buffer(which, len) >>> 0;
+      if (ptr === 0) throw new Error(`omelettehedron: no room for a ${len}-byte table file`);
+      if (bytes) {
+        new Uint8Array(this.memory.buffer, ptr, len).set(bytes);
+        continue;
+      }
+      const piece = 1 << 24;
+      for (let at = 0; at < len; at += piece) {
+        const part = new Uint8Array(await blob.slice(at, Math.min(len, at + piece)).arrayBuffer());
+        new Uint8Array(this.memory.buffer, ptr + at, part.length).set(part);
+      }
     }
     this.tables = this.call('fto_load');
     return this.tables;

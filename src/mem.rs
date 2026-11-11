@@ -87,14 +87,17 @@ fn map_1g(_bytes: usize) -> Option<(NonNull<u8>, usize)> {
 }
 
 /// Layout of a buffer of `len` elements of `T`, rounded up to whole huge pages and aligned to
-/// them. A size beyond the address space is handled like a failed allocation (the process
-/// aborts, as for any allocation the system cannot satisfy).
-fn huge_layout<T>(len: usize) -> Layout {
-    let layout = len
-        .checked_mul(std::mem::size_of::<T>())
+/// them; `None` if the size is beyond the address space.
+fn try_huge_layout<T>(len: usize) -> Option<Layout> {
+    len.checked_mul(std::mem::size_of::<T>())
         .and_then(|b| b.max(1).checked_next_multiple_of(HUGE))
-        .and_then(|b| Layout::from_size_align(b, HUGE.max(std::mem::align_of::<T>())).ok());
-    let Some(layout) = layout else {
+        .and_then(|b| Layout::from_size_align(b, HUGE.max(std::mem::align_of::<T>())).ok())
+}
+
+/// [`try_huge_layout`]; a size beyond the address space is handled like a failed allocation
+/// (the process aborts, as for any allocation the system cannot satisfy).
+fn huge_layout<T>(len: usize) -> Layout {
+    let Some(layout) = try_huge_layout::<T>(len) else {
         eprintln!(
             "error: cannot allocate {len} elements of {} bytes",
             std::mem::size_of::<T>()
@@ -146,27 +149,46 @@ impl<T: Copy> HugeBuf<T> {
     /// for `T`); the caller overwrites all of it. Skips the zeroing pass of [`Self::zeroed`].
     pub fn for_overwrite(len: usize) -> HugeBuf<T> {
         let layout = huge_layout::<T>(len);
+        Self::alloc_for_overwrite(len, layout)
+            .unwrap_or_else(|| std::alloc::handle_alloc_error(layout))
+    }
+
+    /// [`Self::for_overwrite`], or `None` if the memory cannot be allocated (where the system
+    /// reports that, e.g. WebAssembly's fixed or full memory) instead of aborting.
+    pub fn try_for_overwrite(len: usize) -> Option<HugeBuf<T>> {
+        Self::alloc_for_overwrite(len, try_huge_layout::<T>(len)?)
+    }
+
+    /// A buffer of `len` elements with `layout` (their huge-page layout), contents unspecified.
+    fn alloc_for_overwrite(len: usize, layout: Layout) -> Option<HugeBuf<T>> {
         let bytes = layout.size();
         if let Some((p, mapped)) = map_1g(bytes) {
-            return HugeBuf {
+            return Some(HugeBuf {
                 ptr: p.cast::<T>(),
                 len,
                 layout: None,
                 mapped,
-            };
+            });
         }
         // SAFETY: layout has non-zero size
         let p = unsafe { alloc(layout) };
-        let Some(ptr) = NonNull::new(p.cast::<T>()) else {
-            std::alloc::handle_alloc_error(layout)
-        };
+        let ptr = NonNull::new(p.cast::<T>())?;
         advise_huge(p, bytes);
-        HugeBuf {
+        Some(HugeBuf {
             ptr,
             len,
             layout: Some(layout),
             mapped: 0,
-        }
+        })
+    }
+
+    /// Remove the first `n` elements (all of them if there are fewer), moving the rest to the
+    /// front; the memory stays allocated. (The WebAssembly module reads a table file into one
+    /// buffer and removes its header this way, without a second copy of the table.)
+    pub fn drop_front(&mut self, n: usize) {
+        let n = n.min(self.len);
+        self.copy_within(n.., 0);
+        self.len -= n;
     }
 
     /// Copy a slice into a new huge-page buffer.
@@ -226,5 +248,20 @@ mod tests {
         assert!(w.iter().all(|&x| x == 7));
         let e: HugeBuf<u8> = HugeBuf::zeroed(0);
         assert!(e.is_empty());
+    }
+
+    #[test]
+    fn huge_buf_try_and_drop_front() {
+        let mut b: HugeBuf<u64> = HugeBuf::try_for_overwrite(1000).unwrap();
+        for (i, x) in b.iter_mut().enumerate() {
+            *x = i as u64;
+        }
+        b.drop_front(3);
+        assert_eq!(b.len(), 997);
+        assert!(b.iter().enumerate().all(|(i, &x)| x == i as u64 + 3));
+        b.drop_front(5000);
+        assert!(b.is_empty());
+        // (a size beyond the address space is refused, not aborted on)
+        assert!(HugeBuf::<u64>::try_for_overwrite(usize::MAX / 4).is_none());
     }
 }
