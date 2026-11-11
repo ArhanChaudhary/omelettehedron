@@ -84,7 +84,57 @@ pub fn run<I: AeIndex>(
         None => random_positions(n, seed),
     };
     let mut results = vec![];
+    // (estimate experiment: FTO_EST_PAR=k solves k positions at once, each on one thread;
+    // FTO_EST_POS=i,j,... solves only those positions)
+    #[cfg(feature = "est")]
+    let sel: Vec<usize> = std::env::var("FTO_EST_POS").map_or_else(
+        |_| (0..positions.len()).collect(),
+        |v| v.split(',').filter_map(|x| x.parse().ok()).collect(),
+    );
+    #[cfg(feature = "est")]
+    let outs: Vec<Option<crate::search::Outcome>> = {
+        let picked: Vec<Cube> = sel.iter().filter_map(|&i| positions.get(i).copied()).collect();
+        use rayon::prelude::*;
+        let k: usize = std::env::var("FTO_EST_PAR")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+        let one = |c: &Cube| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .map_or_else(
+                    |_| solve(tables, *c, Frame::identity(), limits, Report::Quiet),
+                    |p| p.install(|| solve(tables, *c, Frame::identity(), limits, Report::Quiet)),
+                )
+        };
+        let v: Vec<crate::search::Outcome> = if k > 1 {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(k)
+                .build()
+                .map_or_else(
+                    |_| picked.iter().map(one).collect(),
+                    |p| p.install(|| picked.par_iter().map(one).collect()),
+                )
+        } else {
+            picked
+                .iter()
+                .map(|c| solve(tables, *c, Frame::identity(), limits, Report::Quiet))
+                .collect()
+        };
+        v.into_iter().map(Some).collect()
+    };
     for (i, c) in positions.iter().enumerate() {
+        #[cfg(feature = "est")]
+        let o = {
+            let _ = c;
+            let Some(j) = sel.iter().position(|&x| x == i) else {
+                continue;
+            };
+            let Some(o) = outs[j].clone() else { continue };
+            o
+        };
+        #[cfg(not(feature = "est"))]
         let o = solve(tables, *c, Frame::identity(), limits, Report::Quiet);
         let events: Vec<(f64, usize)> = o.events.iter().map(|e| (e.time, e.length)).collect();
         let r = ScrambleResult {

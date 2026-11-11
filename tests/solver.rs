@@ -538,6 +538,34 @@ fn optimal_matches_brute_force_many() {
     }
 }
 
+/// The large tier (with the distance-to-solved table that optimal mode prunes against) gives
+/// the brute force's optimal lengths, on 1 and 4 threads. Needs the large tier's tables on disk
+/// (`FTO_TABLES`; `omelettehedron gen --tier large`).
+#[test]
+#[ignore = "needs the large tier's tables on disk"]
+fn large_tier_optimal_matches_brute_force() {
+    let dir = table_dir(None);
+    let t = Tables::load_with(&dir, AeSym::new(true), true, MoveSet::FACE, false).unwrap();
+    assert!(t.cbs.is_some());
+    let mitm = Mitm::new(MoveSet::FACE);
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(2029);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    for i in 0..300 {
+        let scr = random_scramble(&mut rng, 6 + i % 7);
+        let (c, fr) = scramble_to_cube(&scr);
+        let Some(truth) = mitm.distance(&c) else {
+            continue;
+        };
+        let o = pool.install(|| solve(&t, c, fr, &Limits::default(), Report::Quiet));
+        assert!(o.optimal);
+        assert_eq!(o.length, Some(truth), "scramble {}", format_moves(&scr));
+        check_solution(&scr, o.solution.as_ref().unwrap());
+        let o = solve_one_thread(&t, c, fr);
+        assert!(o.optimal);
+        assert_eq!(o.length, Some(truth), "1T, scramble {}", format_moves(&scr));
+    }
+}
+
 /// Optimal lengths with slices against meet-in-the-middle distances on many positions, from
 /// scrambles of all layer kinds (release builds: `cargo test --release -- --ignored`).
 #[test]

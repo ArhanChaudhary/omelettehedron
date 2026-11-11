@@ -150,6 +150,13 @@ struct Shared<'a, I: AeIndex, const N: usize> {
     mv: [[usize; 32]; 2],
     /// largest CB distance (8): with at least this many moves left CB cannot prune
     cb_max: u8,
+    /// the distance-to-solved table and the joint table (for its index), in optimal mode
+    /// (see `finish`)
+    cbs: Option<(&'a crate::cbe::CbsTable, &'a crate::cbe::CbeTable)>,
+    #[cfg(feature = "est")]
+    est: Option<&'static crate::cbe::est::Est>,
+    #[cfg(feature = "est")]
+    est_tot: Mutex<crate::cbe::est::Totals>,
 }
 
 /// A node of the top levels of the search tree (see [`Shared::tasks`]).
@@ -179,6 +186,8 @@ struct Counter {
     /// native nodes/s 1.01x / 1.02x (48T / 1T), optimal 0.99x / 0.96x time.
     stop: bool,
     prune_len: usize,
+    #[cfg(feature = "est")]
+    est: crate::cbe::est::EstCtr,
 }
 
 /// Internal move on the SWAP_AB-conjugated position matching each move (indexed `& 31`).
@@ -498,6 +507,10 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             0
         };
         self.stage2_any::<B>(kind, r, x, ha, hc, [NO_CB; 2], budget, lim, fr);
+        #[cfg(feature = "est")]
+        if let Some(e) = self.est {
+            ctr.est.set(g, e.all_mask());
+        }
         self.finish_any::<B>(kind, r, x, path, bound, ctr, stat, fr, frames);
     }
 
@@ -829,6 +842,15 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         fr: &mut Scratch<N>,
         frames: &mut [[Scratch<N>; 3]],
     ) {
+        #[cfg(feature = "est")]
+        if self.est.is_some() {
+            let my = ctr.est.get(path.len());
+            for c in 0..crate::cbe::est::MAX_C {
+                if my >> c & 1 == 1 {
+                    ctr.est.t.nodes[c] += fr.n as u64;
+                }
+            }
+        }
         if ctr.stop {
             return;
         }
@@ -1035,6 +1057,68 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             }
             n = k;
         }
+        // Distance-to-solved bound (optimal mode, large and huge tiers): a solution through a
+        // child at depth g+1 has at least g+1+d moves, d its distance to solved, so a child is
+        // dropped (on both sides) when one of the eight joint-index projections of its two
+        // positions (four triples per side) is at least `CBS_MIN` from solved and fewer moves
+        // are left. The search's other bounds keep almost no child with fewer than
+        // `CBS_MIN` - 1 moves left, and at `CBS_MIN` - 1 this cuts about 96% of the children
+        // that pass them (1T nodes 0.775x / 0.803x on the 17 / 19-move sets; time 0.843x /
+        // 0.874x at 1T / 48T, opt/tosolved, measured with the equivalent 2-bit codes).
+        if B && n > 0 && budget > 0 {
+            if let Some((cbs, cbe)) = self.cbs {
+                let lim = ctr.prune_len.saturating_sub(g + 2);
+                if lim < usize::from(crate::cbe::CBS_MIN) {
+                    for &i in &sel[..n] {
+                        let u = usize::from(i) % N;
+                        for s in 0..2 {
+                            cbs.prefetch_all(&cbe.ix, f, &ys[s][u], &mut ci[s][u]);
+                        }
+                    }
+                    let mut k = 0;
+                    for j in 0..n {
+                        let i = sel[j];
+                        let u = usize::from(i) % N;
+                        let ok = !(cbs.any_far(&ci[0][u]) || cbs.any_far(&ci[1][u]));
+                        if !ok {
+                            live[u] = 0;
+                        }
+                        sel[k % N] = i;
+                        k += usize::from(ok);
+                    }
+                    n = k;
+                }
+            }
+        }
+        #[cfg(feature = "est")]
+        let mut est_mask = [0u8; N];
+        #[cfg(feature = "est")]
+        if let Some(e) = self.est {
+            let my = ctr.est.get(g);
+            let l = ctr.prune_len.saturating_sub(g + 2);
+            for &i in &sel[..n] {
+                let u = usize::from(i) % N;
+                est_mask[u] = if B && budget > 0 && my & !1 != 0 {
+                    let p = e.prune_mask(my, &ys[r][u], &ys[1 - r][u], l, &mut ctr.est);
+                    // cross-check with the to-solved table: its bits against the exact decider
+                    if let (Some(cbs), Some(cbe)) = (&self.t.cbs, &self.t.cbe) {
+                        if l < usize::from(crate::cbe::CBS_MIN) {
+                            let mut a = [0usize; 4];
+                            let mut b = [0usize; 4];
+                            cbs.prefetch_all(&cbe.ix, f, &ys[r][u], &mut a);
+                            cbs.prefetch_all(&cbe.ix, f, &ys[1 - r][u], &mut b);
+                            let far = cbs.any_far(&a) || cbs.any_far(&b);
+                            let want = e.any_beyond(&ys[r][u], &ys[1 - r][u], crate::cbe::CBS_MIN - 1);
+                            ctr.est.t.compared += 1;
+                            ctr.est.t.mismatch += u64::from(far != want);
+                        }
+                    }
+                    my & !p
+                } else {
+                    my
+                };
+            }
+        }
         // Ordering statistic of the task: how close its subtree gets to the phase-1 targets.
         for &i in &sel[..n] {
             let i = usize::from(i) % N;
@@ -1136,6 +1220,10 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                 self.stage2_any::<B>(kind(i), slots(i).0, xs(i), ha, hc, pd, cb, clim, f1);
             }
             let i = child(j);
+            #[cfg(feature = "est")]
+            if self.est.is_some() {
+                ctr.est.set(g + 1, est_mask[i]);
+            }
             path.push(ms[i] as usize);
             let r = slots(i).0;
             self.finish_any::<B>(kind(i), r, xs(i), path, bound, ctr, stat, f0, frames);
@@ -1431,6 +1519,20 @@ fn solve_n<I: AeIndex, const N: usize>(
         mb: swap_moves::<N>(),
         mv: [std::array::from_fn(|m| m), swap_moves::<N>()],
         cb_max: (t.cb.tab.hist.len() - 1) as u8,
+        cbs: match (&t.cbs, &t.cbe) {
+            (Some(s), Some(e)) if limits.is_optimal() && std::env::var_os("FTO_NO_CBS").is_none() => {
+                Some((s, e))
+            }
+            _ => None,
+        },
+        #[cfg(feature = "est")]
+        est: if limits.is_optimal() && !t.moves.slice {
+            crate::cbe::est::est()
+        } else {
+            None
+        },
+        #[cfg(feature = "est")]
+        est_tot: Mutex::new(crate::cbe::est::Totals::default()),
     };
     let lo = (0..2)
         .map(|s| sh.root.h_ae[s].max(sh.root.h_cb[s]) as usize)
@@ -1628,6 +1730,13 @@ fn solve_n<I: AeIndex, const N: usize>(
                 sh.nodes_both
                     .fetch_add(ctr.shared - shared_before, Ordering::Relaxed);
             }
+            #[cfg(feature = "est")]
+            if sh.est.is_some() {
+                sh.est_tot
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .add(&ctr.est.t);
+            }
         };
         if inline {
             worker();
@@ -1668,6 +1777,10 @@ fn solve_n<I: AeIndex, const N: usize>(
             break;
         }
         depth += 1;
+    }
+    #[cfg(feature = "est")]
+    if let Some(e) = sh.est {
+        e.report(&sh.est_tot.lock().unwrap_or_else(PoisonError::into_inner));
     }
     let (sol, events) = sh.best.into_inner().unwrap_or_else(PoisonError::into_inner);
     let length = sol.as_ref().map(Vec::len);

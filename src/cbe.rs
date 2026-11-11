@@ -25,6 +25,9 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
 
+#[cfg(feature = "est")]
+pub mod est;
+
 /// 220 position sets x 1 chirality bit
 pub const N_E1: usize = 440;
 pub const N_ROW: usize = N_MSET * N_E1;
@@ -511,6 +514,169 @@ impl CbeTable {
     }
 }
 
+/// Distance to the SOLVED projection on the CBE index (corners, B-centre colouring, and the
+/// position set and chirality of one A-face's edge triple; the same index and symmetries as
+/// [`CbeTable`], read through [`CbeTable::ix`]), one bit per entry: whether the distance is at
+/// least [`CBS_MIN`]. The distance to solved is invariant under the class-preserving symmetries,
+/// the re-fixing rotations and `SWAP_AB`, so one table serves all four A-triples of both sides,
+/// eight lookups per position: a lower bound for optimal mode (see `search.rs`).
+///
+/// One bit is all the search uses: its existing bounds leave almost no node with fewer than 10
+/// moves left for the whole solution, and reading the table where 11 or more are left cost more
+/// than it saved (measured with 2-bit codes of distances 9 to 12: reading it with at most 11
+/// moves left 0.900x / 0.933x time at 1T / 48T, at most 10 left 0.843x / 0.874x).
+pub struct CbsTable {
+    pub bits: HugeBuf<u64>,
+    /// numbers of entries at each distance
+    pub hist: Vec<u64>,
+}
+
+/// The bit of an entry of [`CbsTable`] is set if its distance to solved is at least this.
+pub const CBS_MIN: u8 = 11;
+
+impl CbsTable {
+    /// Whether entry `i` is at least [`CBS_MIN`] moves from solved.
+    #[inline(always)]
+    pub fn far(&self, i: usize) -> bool {
+        (self.bits[i >> 6] >> (i & 63)) & 1 == 1
+    }
+
+    /// The indices of the solved projection (with its equivalents).
+    pub fn targets(ix: &CbeIndex) -> Vec<usize> {
+        let f = fast();
+        let x = f.of(&Cube::solved());
+        let mut v = vec![ix.index(f, &x, &masks(&x.e), 0)];
+        ix.equivalents(f, v[0], &mut v);
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// The table (face turns only): saturating 2-bit codes from a breadth-first search (code
+    /// 2 or 3 = distance at least `CBS_MIN`), packed into bits. Peak memory: 1.5 times the
+    /// table's 2-bit size (7.0 + 3.5 GB).
+    pub fn build(ix: &CbeIndex, verbose: bool) -> CbsTable {
+        let g = CbeGraph::<N_MOVES>::new(ix);
+        let t = saturating(
+            &g,
+            ix.size(),
+            &Self::targets(ix),
+            CBS_MIN - 2,
+            "cbe-solved",
+            verbose,
+        );
+        let mut bits = HugeBuf::<u64>::for_overwrite(ix.size().div_ceil(64));
+        let codes = &t.data;
+        bits.par_iter_mut().enumerate().for_each(|(w, b)| {
+            // the high bits of the 2-bit codes of entries 64w .. 64w + 64
+            let half = |j: usize| -> u64 {
+                let x = codes.get(2 * w + j).copied().unwrap_or(0) >> 1 & 0x5555_5555_5555_5555;
+                unspread(x)
+            };
+            *b = half(0) | half(1) << 32;
+        });
+        // (entries past the end hold code 3 in the BFS array: clear their bits)
+        let n = ix.size();
+        if n % 64 != 0 {
+            if let Some(last) = bits.last_mut() {
+                *last &= (1u64 << (n % 64)) - 1;
+            }
+        }
+        CbsTable {
+            bits,
+            hist: t.hist,
+        }
+    }
+
+    /// Number of 2-bit slots the file header records (the bits are stored as a 2-bit table of
+    /// half as many entries, so that [`Table2`]'s file format and checksum apply).
+    fn slots(ix: &CbeIndex) -> usize {
+        ix.size().div_ceil(2)
+    }
+
+    /// # Errors
+    ///
+    /// If the file cannot be written.
+    pub fn save(&self, ix: &CbeIndex, path: &Path) -> std::io::Result<()> {
+        save_words(path, Self::slots(ix), &self.hist, &self.bits)
+    }
+
+    /// # Errors
+    ///
+    /// If the file cannot be read or does not hold a table of the expected size.
+    pub fn load(ix: &CbeIndex, path: &Path) -> std::io::Result<CbsTable> {
+        let t = Table2::load(path, Self::slots(ix))?;
+        Ok(CbsTable {
+            bits: t.data,
+            hist: t.hist,
+        })
+    }
+
+    /// The four triple indices of `x` (into `out`), each word prefetched.
+    #[inline(always)]
+    pub fn prefetch_all(&self, ix: &CbeIndex, f: &FastTables, x: &Fc, out: &mut [usize; 4]) {
+        let em = masks(&x.e);
+        for k in 0..4 {
+            out[k] = ix.index(f, x, &em, k);
+            prefetch_at(&self.bits, out[k] >> 6);
+        }
+    }
+
+    /// Whether some of the four triples (indices `idx`) is at least [`CBS_MIN`] from solved.
+    #[inline(always)]
+    pub fn any_far(&self, idx: &[usize; 4]) -> bool {
+        idx.iter().any(|&i| self.far(i))
+    }
+
+    /// Check that the bits fit this layout: positions up to `CBS_MIN - 2` random moves from
+    /// solved and all their neighbours are within `CBS_MIN - 1` (bit clear), and about the
+    /// fraction of random positions given by the histogram is at least `CBS_MIN` away. `false`
+    /// if a check fails (a file made for another layout).
+    pub fn check_walks(&self, ix: &CbeIndex) -> bool {
+        use rand::{Rng, SeedableRng};
+        let f = fast();
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0x50_1ed);
+        let any_far = |x: &Fc| -> bool {
+            let em = masks(&x.e);
+            (0..4).any(|k| self.far(ix.index(f, x, &em, k)))
+        };
+        for _ in 0..16 {
+            let mut x = f.of(&Cube::solved());
+            for _ in 0..rng.gen_range(0..=CBS_MIN - 2) {
+                x = f.apply(&x, &masks(&x.e), rng.gen_range(0..N_MOVES));
+            }
+            let em = masks(&x.e);
+            if any_far(&x) || (0..N_MOVES).any(|m| any_far(&f.apply(&x, &em, m))) {
+                return false;
+            }
+        }
+        let total: u64 = self.hist.iter().sum();
+        let far: u64 = self.hist.iter().skip(usize::from(CBS_MIN)).sum();
+        if total == 0 {
+            return false;
+        }
+        let want = far as f64 / total as f64;
+        let samples = 4000;
+        let got = (0..samples)
+            .filter(|_| {
+                let x = f.of(&Cube::random(&mut rng));
+                self.far(ix.index(f, &x, &masks(&x.e), rng.gen_range(0..4)))
+            })
+            .count() as f64
+            / f64::from(samples);
+        (got - want).abs() < 0.05
+    }
+}
+
+/// The even bits of `x` (bits 0, 2, .., 62; the odd bits must be clear) packed into bits 0..32.
+fn unspread(mut x: u64) -> u64 {
+    x = (x | x >> 1) & 0x3333_3333_3333_3333;
+    x = (x | x >> 2) & 0x0f0f_0f0f_0f0f_0f0f;
+    x = (x | x >> 4) & 0x00ff_00ff_00ff_00ff;
+    x = (x | x >> 8) & 0x0000_ffff_0000_ffff;
+    (x | x >> 16) & 0x0000_0000_ffff_ffff
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,5 +754,94 @@ mod tests {
                 assert_eq!(fy.c, conj_renorm_corner(x.c, m).unwrap().0);
             }
         }
+    }
+
+    /// `unspread` packs the even bits.
+    #[test]
+    fn unspread_packs_even_bits() {
+        use rand::Rng;
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(5);
+        for _ in 0..1000 {
+            let x: u64 = rng.gen::<u64>() & 0x5555_5555_5555_5555;
+            let want = (0..32).fold(0u64, |a, j| a | (x >> (2 * j) & 1) << j);
+            assert_eq!(unspread(x), want);
+        }
+    }
+
+    /// Exact distances to the solved projection within `r` moves (breadth-first, on the
+    /// table's indices, equivalents included).
+    fn solved_ball(ix: &CbeIndex, r: u8) -> HashMap<usize, u8> {
+        let g = CbeGraph::<N_MOVES>::new(ix);
+        let f = fast();
+        let mut d: HashMap<usize, u8> = CbsTable::targets(ix).into_iter().map(|i| (i, 0)).collect();
+        let mut front: Vec<usize> = d.keys().copied().collect();
+        for k in 1..=r {
+            let mut next = vec![];
+            let mut cache = None;
+            for &i in &front {
+                let nd = g.node(i, &mut cache);
+                for m in 0..N_MOVES {
+                    let j = g.step(&nd, m);
+                    if !d.contains_key(&j) {
+                        let mut v = vec![j];
+                        ix.equivalents(f, j, &mut v);
+                        for e in v {
+                            if d.insert(e, k).is_none() {
+                                next.push(e);
+                            }
+                        }
+                    }
+                }
+            }
+            front = next;
+        }
+        d
+    }
+
+    /// Whether the projection of triple `k` of `x` is within `t` moves of solved, from a ball of
+    /// radius `r` and a search over canonical sequences above it.
+    fn within(ix: &CbeIndex, ball: &HashMap<usize, u8>, r: u8, x: &Fc, k: usize, t: u8, last: usize) -> bool {
+        let f = fast();
+        let em = masks(&x.e);
+        if let Some(&d) = ball.get(&ix.index(f, x, &em, k)) {
+            return d <= t;
+        }
+        t > r
+            && (0..N_MOVES).any(|m| {
+                allowed_after(false, last, m) && within(ix, ball, r, &f.apply(x, &em, m), k, t - 1, m)
+            })
+    }
+
+    /// The distance-to-solved bits equal exact distances found by search (positions a random
+    /// walk of 8 to 14 moves from solved, all four triples). Needs the table
+    /// (`FTO_TABLES` holding `cbe-solved11.prun`, 3.5 GB).
+    #[test]
+    #[ignore = "needs the 3.5 GB distance-to-solved table in FTO_TABLES"]
+    fn to_solved_codes_match_search() {
+        use rand::Rng;
+        let ix = CbeIndex::new();
+        let dir = crate::tables::table_dir(None);
+        let t = CbsTable::load(&ix, &dir.join(format!("cbe-solved{CBS_MIN}.prun"))).unwrap();
+        assert!(t.check_walks(&ix));
+        let r = 7;
+        let ball = solved_ball(&ix, r);
+        let f = fast();
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(47);
+        let mut seen = [0u32; 2];
+        for _ in 0..60 {
+            let mut x = f.of(&Cube::solved());
+            for _ in 0..rng.gen_range(8..=14) {
+                x = f.apply(&x, &masks(&x.e), rng.gen_range(0..N_MOVES));
+            }
+            let em = masks(&x.e);
+            for k in 0..4 {
+                let far = t.far(ix.index(f, &x, &em, k));
+                let want = !within(&ix, &ball, r, &x, k, CBS_MIN - 1, usize::MAX);
+                assert_eq!(far, want, "triple {k}");
+                seen[usize::from(far)] += 1;
+            }
+        }
+        // (both values occur)
+        assert!(seen.iter().all(|&n| n > 0), "{seen:?}");
     }
 }

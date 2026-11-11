@@ -8,6 +8,8 @@ license = "MIT"
 [features]
 # Use the portable scalar code instead of SIMD (to test that path on any machine).
 scalar = []
+# Experiment: estimate of a CBE-to-solved bound in the two-phase optimal mode (FTO_EST=1).
+est = []
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
