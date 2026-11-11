@@ -246,7 +246,8 @@ tier, more where it finds the optimum early), but the optimal solver's large tie
 corner 6-flip in half a second, against ten minutes for the two-phase solver. For the hardest
 positions (deep, symmetric, or with the edges and centres nearly solved), `optimal solve --tier
 large` can prove optimality much faster than the two-phase solver: it proves the 23-move
-tri_adj+edge_opp in 4.5 minutes, against 2.5 hours.
+tri_adj+edge_opp in 4.5 minutes, against 2.5 hours, and all four 23-move positions of
+`bench/hard.tsv` in 45 minutes, against 11 hours.
 
 ```sh
 target/release/omelettehedron optimal solve --tier medium "U R' BL F D B' L BR"
