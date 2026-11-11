@@ -76,9 +76,10 @@ pub struct OptMoves {
     shuf_e: [[u8; 16]; 32],
     shuf_a: [[u8; 16]; 32],
     shuf_b: [[u8; 16]; 32],
-    /// corner id after each face-metric move (slices move no corner), padded to 1024 ids so
-    /// that `& 1023` replaces bounds checks
-    corner: Box<[[u16; N_MOVES]; 1024]>,
+    /// corner id after each move (a slice moves no corner: the same id), padded to 32 moves
+    /// and 1024 ids so that `& 31` and `& 1023` replace bounds checks; no branch on the move
+    /// kind in the hot path (with one, face-turn searches took 1.03-1.08x the time)
+    corner: Box<[[u16; 32]; 1024]>,
 }
 
 fn gather(src: &[u8; 12]) -> [u8; 16] {
@@ -91,15 +92,21 @@ impl OptMoves {
     fn new() -> OptMoves {
         let d = defs();
         let cs = corners();
-        #[allow(clippy::large_stack_arrays)] // 32 KB, once at startup
-        let mut corner = Box::new([[0u16; N_MOVES]; 1024]);
+        #[allow(clippy::large_stack_arrays)] // 64 KB, once at startup
+        let mut corner = Box::new([[0u16; 32]; 1024]);
         for (id, &(cp, co)) in cs.id_to_state.iter().enumerate() {
             let cube = Cube {
                 cp,
                 co,
                 ..Cube::solved()
             };
-            corner[id] = std::array::from_fn(|m| cs.id(&cube.apply(m)));
+            corner[id] = std::array::from_fn(|m| {
+                if m < N_MOVES {
+                    cs.id(&cube.apply(m))
+                } else {
+                    id as u16
+                }
+            });
         }
         // (moves 24..32 are padding: the identity)
         let id: [u8; 12] = std::array::from_fn(|p| p as u8);
@@ -135,12 +142,7 @@ impl OptMoves {
     /// Corner id after move `m` (a slice moves no corner).
     #[inline(always)]
     pub fn corner(&self, c: u16, m: usize) -> u16 {
-        let moved = self.corner[c as usize & 1023][m & 15];
-        if m < N_MOVES {
-            moved
-        } else {
-            c
-        }
+        self.corner[c as usize & 1023][m & 31]
     }
 
     /// Apply move `m` to the corners and B-centres only.
