@@ -126,8 +126,8 @@ pub trait AeIndex: Send + Sync + 'static {
 #[inline(always)]
 pub fn prefetch<T>(p: &T) {
     // WebAssembly has no prefetch, but a load whose value is dropped starts the cache miss
-    // just the same while execution runs on (egg-solver measured +45-53% in V8 and wasmtime;
-    // src/prefetch.rs there). `p` is a reference, so the byte is always readable.
+    // just the same while execution runs on. `p` is a reference, so the byte is always
+    // readable.
     #[cfg(target_arch = "wasm32")]
     // SAFETY: `p` is a valid reference, so its first byte can be read
     unsafe {

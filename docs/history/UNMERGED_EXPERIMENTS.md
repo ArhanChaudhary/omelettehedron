@@ -21,8 +21,8 @@ scrambles / 1 thread, 17-move scrambles).
 
 | Experiment | Date | Summary |
 |---|---|---|
-| <a id="ref-neg-lanes"></a>`neg/lanes` | 2026-11-10 | Lane-interleaved phase-1 search (egg-solver's lanes): slower; the search is compute-bound (~110 cycles per child). 48T nodes/s 0.94x, first solution 2.70x; optimal 1.07x |
-| <a id="ref-neg-sibling"></a>`neg/sibling` | 2026-11-10 | Sibling pruning in the AE stage (egg-solver): slower, it exposes a second DRAM latency. Nodes/s 0.95x (48T and 1T) |
+| <a id="ref-neg-lanes"></a>`neg/lanes` | 2026-11-10 | Lane-interleaved phase-1 search (several paths advanced in turn): slower; the search is compute-bound (~110 cycles per child). 48T nodes/s 0.94x, first solution 2.70x; optimal 1.07x |
+| <a id="ref-neg-sibling"></a>`neg/sibling` | 2026-11-10 | Sibling pruning in the AE stage: slower, it exposes a second DRAM latency. Nodes/s 0.95x (48T and 1T) |
 | <a id="ref-neg-direct"></a>`neg/direct` | 2026-11-10 | Direct distance-to-solved bound (edge permutation 12!/2 + corners, from a competing solver's design): prunes nothing beyond max(distance to H_A, distance to H_B). Optimal 1.10x / 1.12x, nodes/s 0.91x |
 | <a id="ref-neg-bcbe"></a>`neg/bcbe` | 2026-11-10 | Joint corner/B-centre/edge-triple table also on the class-B side: neutral (optimal 1.02x / 1.00x) |
 | <a id="ref-neg-childorder2"></a>`neg/childorder2` | 2026-11-10 | Children visited in order of their smallest exact bound: neutral (optimal 1.01x / 1.00x; 48T first solution 1.04x) |

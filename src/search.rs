@@ -1567,8 +1567,8 @@ fn solve_n<I: AeIndex, const N: usize>(
         };
         let mut ids = sh.tasks(&mut tree, depth, threads, want);
         // Order the tasks by the statistics of the same prefixes in the previous iteration, so
-        // that the most promising subtrees are searched first (egg-solver's job ordering;
-        // 48T 5 s mean length -0.225 moves, 1T optimal 0.69x time when added, opt/order).
+        // that the most promising subtrees are searched first (48T 5 s mean length -0.225
+        // moves, 1T optimal 0.69x time when added, opt/order).
         node_stat.resize(tree.nodes.len(), 0.0);
         if !prev_ids.is_empty() {
             ids.sort_by(|a, b| node_stat[b.0 as usize].total_cmp(&node_stat[a.0 as usize]));

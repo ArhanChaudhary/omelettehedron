@@ -1,6 +1,6 @@
 # Deploy the browser demo (wasm/) to GitHub Pages on every push to the default branch.
-# Adapted from egg-solver's workflow. The custom domain (omelettehedron.arhan.sh) is set in the
-# repository's Pages settings; Pages source: GitHub Actions.
+# The custom domain (omelettehedron.arhan.sh) is set in the repository's Pages settings; Pages
+# source: GitHub Actions.
 name: GitHub Pages
 
 on:

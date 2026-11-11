@@ -246,8 +246,8 @@ pub trait Graph: Sync {
 
 /// A level runs forward if frontier * `MOVES` < unvisited * `FORWARD_RATIO`. A forward step
 /// makes all neighbours of each frontier entry; a backward step makes those of each unvisited
-/// entry up to the first frontier hit (6.3 per entry on average at CBE depth 8). The rule is
-/// egg-solver's, re-checked on the levels nearest the boundary (48 threads, opt/gen): AE
+/// entry up to the first frontier hit (6.3 per entry on average at CBE depth 8). The ratio was
+/// checked on the levels nearest the boundary (48 threads, opt/gen): AE
 /// medium depth 11 (ratio 3.4) forward 4.7 s vs backward 5.4 s, CBE depth 8 (ratio 6.6)
 /// backward 15.3 s vs forward 20.6 s; small-tier AE depth 10 (2.4) and CB depth 6 (3.0)
 /// differ by at most 0.1 s either way.
