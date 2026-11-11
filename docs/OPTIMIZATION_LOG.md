@@ -89,3 +89,16 @@ Rejected: AE equivalents with the cache-resident symmetry transform (and `Mset::
 labels) instead of the 35 MB tables of `Syms::apply_e`: medium 6.58 -> 7.29 s at 48T (the
 unchanged CBE table was 6% slower in the same run too), 167.0 -> 216.7 s at 1T (AE depth 11
 118.5 -> 164.0 s).
+
+## Optimal solver
+
+The separate optimal solver (`src/optimal/`, [OPTIMAL.md](OPTIMAL.md)), branch `optimal/v0`.
+Measured by node counts on one thread (deterministic) while the machine was busy; timings
+follow when it is free.
+
+| Change | Branch | Result (nodes, 10 x 15-move scrambles, seed 1717) | Merged |
+|---|---|---|---|
+| v0: IDA* to solved; corners x centres (both orbits, one table) + edge permutation (small tier) | `optimal/v0` | 8.73e7 per position | (branch) |
+| Corners x edges table, 48 symmetries (medium tier) | `optimal/v0` | 2.87e6 (0.033x) | (branch) |
+| Symmetric start (keep the first task of each class of conjugate positions) | `optimal/v0` | random scrambles unchanged (no symmetry); hard positions with 48 / 24 / 16 / 8 symmetries 0.021x / 0.042x / 0.063x / 0.125x nodes (iterations to 15, 1 thread) | (branch) |
+| Experiment: the two-phase solver's AE-to-`H_A` table on the position and its `SWAP_AB` conjugate, added to medium | (not committed) | 1.16e5 (0.040x medium); 17-move set 1.48e7 per position (0.038x medium) | no (needs a decision: it reuses a two-phase table) |

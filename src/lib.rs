@@ -42,7 +42,8 @@
     clippy::too_many_arguments,
     clippy::new_without_default
 )]
-//! Two-phase solver for the face-turning octahedron.
+//! Solvers for the face-turning octahedron: the two-phase solver (`search`, `tables`, ...) and the
+//! separate optimal solver (`optimal`, single-phase IDA* to the solved state).
 pub mod bench;
 pub mod cbe;
 pub mod cbsym;
@@ -52,6 +53,7 @@ pub mod fast;
 pub mod geometry;
 pub mod mem;
 pub mod notation;
+pub mod optimal;
 pub mod pattern;
 pub mod preflight;
 pub mod prune;

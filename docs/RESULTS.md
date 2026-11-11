@@ -139,3 +139,21 @@ an idle machine):
 
 With the medium tier the module needs about 9-11 times fewer nodes; a node costs about twice
 as much in WebAssembly (natively the same), so proofs take about a fifth of the time there.
+
+## Optimal solver (v0)
+
+The separate optimal solver (`omelettehedron optimal`, single-phase IDA* to the solved state;
+[OPTIMAL.md](OPTIMAL.md)). Node counts only (one thread unless noted; the machine was busy, so
+no timings yet). Same optimal lengths as the two-phase solver's optimal mode.
+
+| set | tier | mean optimal length | mean nodes per position |
+|---|---|---|---|
+| 10 x 15-move scrambles, seed 1717 | small | 14.5 | 8.73e7 |
+| 10 x 15-move scrambles, seed 1717 | medium | 14.5 | 2.87e6 |
+| 10 x 17-move scrambles, seed 1717 | medium | 16.5 | 3.85e8 |
+| 10 x 19-move scrambles, seed 1919 (48 threads) | medium | 18.1 | 3.76e10 |
+
+Hard positions (`bench/hard.tsv`; 48 threads beside the two-phase proofs, medium tier,
+symmetric start): `pure_corn_6flip` proven optimal at 20 in 232 s (3.05e10 nodes; the
+two-phase solver: 661 s with `--lower-bound 19`). The others reach lower bounds 19-20 in 300 s
+(details in [OPTIMAL.md](OPTIMAL.md#symmetric-start-on-the-hard-positions)).
