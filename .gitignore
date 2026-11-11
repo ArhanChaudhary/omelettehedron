@@ -1,6 +1,7 @@
 /target
 /bench-results/*.json
 /bench-results/*.txt
+/bench-results/quick/
 /tables
 *.bin
 *.prune
