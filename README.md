@@ -219,8 +219,10 @@ target/release/omelettehedron bench --tier large -N 40 -t 5       # 40 seeded ra
 target/release/omelettehedron bench --tier large -N 20 -t 5 -j 1  # single-threaded
 scripts/bench.sh <label> <tier>                 # the standard set used during optimisation
 scripts/bench-opt.sh <label> <tier>             # optimal mode: time to prove optimality
+scripts/bench-optimal.sh <label> <tier>         # the optimal solver: 17-move (1 thread), 19-move sets
 scripts/bench-randopt.sh <label> <tier>         # optimal mode on random positions (slow)
 scripts/compare.py <before> <after>             # markdown comparison of two runs
+scripts/compare-optimal.py <before> <after>     # the same for scripts/bench-optimal.sh runs
 ```
 
 `bench` reports these figures:
