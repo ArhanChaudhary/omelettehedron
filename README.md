@@ -383,6 +383,13 @@ cargo test --release -- --ignored   # the slow ones: 400-position brute force, s
 scripts/check.sh      # fmt, clippy (pedantic, -D warnings), tests, no runtime asserts
 ```
 
+`FTO_CHECK_FAST=1 scripts/check.sh` (host tests, clippy, fmt; minutes) is the check for routine
+changes, plus the WebAssembly demo test (`scripts/build-wasm.sh`, `bun wasm/test.mjs`) when a
+change touches the demo, since every push to `main` redeploys it. The full `scripts/check.sh`
+adds the backend matrix (the scalar fallback, aarch64 under qemu, wasm32 under bun's WASI and
+the demo module; about an hour) and runs before each release, a version tag on a commit that
+passed it (v0.1.0 is the first).
+
 Non-test code does not panic: `unwrap`, `expect`, `panic!` and friends are denied by clippy,
 and `scripts/check.sh` rejects runtime `assert!` outside `#[cfg(test)]` code.
 
