@@ -116,9 +116,17 @@ async function solveCases(w, label, cases, exactNodes) {
     check(r.optimal, `${label}: ${scramble} not proven optimal`);
     if (length !== null) check(r.length === length, `${label}: ${scramble}: length ${r.length}, native ${length}`);
     if (exactNodes && nodes !== null) check(r.nodes === nodes, `${label}: ${scramble}: ${r.nodes} nodes, native ${nodes}`);
-    const improvements = w.lines.filter((l) => l.fd === 1).map((l) => parseImprovement(l.line));
+    const out = w.lines.filter((l) => l.fd === 1).map((l) => l.line);
+    const improvements = out.map(parseImprovement).filter(Boolean);
     check(improvements.length > 0 && improvements.at(-1)?.solution === r.solution,
       `${label}: ${scramble}: improvements ${JSON.stringify(improvements)} do not end in ${r.solution}`);
+    // proven lower bounds (`<s>s  lower <n>`) never exceed the optimum
+    const lowers = out.map((l) => /^\s*[\d.]+s\s+lower\s+(\d+)\s*$/.exec(l)).filter(Boolean).map((m) => Number(m[1]));
+    check(lowers.every((n) => n <= r.length), `${label}: ${scramble}: lower bounds ${lowers} above ${r.length}`);
+    // keep improving (no time limit): better and better solutions, ending proven optimal
+    const k = await w.call('solve', { scramble, seconds: -1 });
+    check(k.optimal && k.length === r.length && k.verified,
+      `${label}: ${scramble}: keep improving gave ${JSON.stringify(k)}, optimal mode ${r.length}`);
     console.log(`${label}: ${scramble}: ${r.length} moves (${r.optimal ? 'optimal' : 'not optimal'}), `
       + `${r.nodes} nodes, ${(r.seconds * 1000).toFixed(1)} ms: ${r.solution}`);
   }

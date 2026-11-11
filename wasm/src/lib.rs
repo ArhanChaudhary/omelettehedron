@@ -42,8 +42,9 @@ use omelettehedron::notation::{
     PhysMove,
 };
 use omelettehedron::pattern::{self, PatternError};
+use omelettehedron::progress::{Bound, Watch};
 use omelettehedron::prune::{checksum, Table2};
-use omelettehedron::search::{solve, Limits, Report};
+use omelettehedron::search::{solve, solve_watched, Limits, Report};
 use omelettehedron::tables::{ae_targets, AeIndex, AeSym, CbTable, Phase2, Tables, Tier, N_CB};
 use serde_json::json;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -469,6 +470,53 @@ fn solves(scramble: &[PhysMove], solution: &[PhysMove]) -> bool {
     is_solved_physical(&apply_physical(&scrambled, solution))
 }
 
+/// The limits of a page solve. `seconds` > 0: a time limit (a stopping rule); 0: optimal mode;
+/// < 0: the improving search with no time limit (`Limits::improve`: each better solution as it
+/// is found, until the last is proven optimal). Every solve can be cancelled (by moving the
+/// clock past `NO_LIMIT`) without changing the search.
+fn page_limits(seconds: f64, max_length: u32) -> Result<Limits, String> {
+    let time = if seconds > 0.0 {
+        Some(Duration::try_from_secs_f64(seconds).map_err(|e| format!("time limit: {e}"))?)
+    } else {
+        None
+    };
+    Ok(Limits {
+        time,
+        max_length: (max_length > 0).then_some(max_length as usize),
+        cancel_after: Some(NO_LIMIT),
+        improve: seconds < 0.0,
+        ..Limits::default()
+    })
+}
+
+/// A page solve. With `live`, stdout gets each better solution (`<seconds>s  <length>  <moves>`,
+/// printed by the search) and each larger proven lower bound (`<seconds>s  lower <n>`: no
+/// solution has fewer moves), so that the page can show the search's progress.
+fn page_solve(
+    t: &Tables<AeSym>,
+    cube: omelettehedron::cube::Cube,
+    frame: Frame,
+    limits: &Limits,
+    live: bool,
+) -> omelettehedron::search::Outcome {
+    let start = Instant::now();
+    let lower = |b: Bound| {
+        if let Bound::Lower(n) = b {
+            println!("{:>9.3}s  lower {n}", start.elapsed().as_secs_f64());
+        }
+    };
+    let watch = Watch {
+        on_bound: live.then_some(&lower as &(dyn Fn(Bound) + Sync)),
+        ..Watch::default()
+    };
+    let report = if live {
+        Report::Improvements
+    } else {
+        Report::Quiet
+    };
+    solve_watched(t, cube, frame, limits, report, &watch)
+}
+
 /// Solve a scramble (FTO notation, e.g. `U R' BL F`). `seconds` > 0: stop after that time;
 /// 0: run until the solution is proven optimal. `max_length` > 0: stop at the first solution
 /// of at most that many moves. `improvements` != 0: print each better solution to stdout as
@@ -494,26 +542,9 @@ pub unsafe extern "C" fn fto_solve(
         let moves = parse_moves(text?)?;
         ensure_pool(state, 1)?;
         let t = tables(state)?;
-        // A time limit is a stopping rule; without one the solve is cancellable (by moving
-        // the clock past `NO_LIMIT`) but searches exactly as an optimal solve.
-        let time = if seconds > 0.0 {
-            Some(Duration::try_from_secs_f64(seconds).map_err(|e| format!("time limit: {e}"))?)
-        } else {
-            None
-        };
-        let limits = Limits {
-            time,
-            max_length: (max_length > 0).then_some(max_length as usize),
-            cancel_after: Some(NO_LIMIT),
-            ..Limits::default()
-        };
+        let limits = page_limits(seconds, max_length)?;
         let (cube, frame) = scramble_to_cube(&moves);
-        let report = if improvements == 0 {
-            Report::Quiet
-        } else {
-            Report::Improvements
-        };
-        let o = solve(t, cube, frame, &limits, report);
+        let o = page_solve(t, cube, frame, &limits, improvements != 0);
         let events: Vec<(f64, usize)> = o.events.iter().map(|e| (e.time, e.length)).collect();
         Ok(json!({
             "solution": o.solution.as_deref().map(format_moves),
@@ -687,23 +718,8 @@ pub unsafe extern "C" fn fto_solve_pattern(
         };
         ensure_pool(state, 1)?;
         let t = tables(state)?;
-        let time = if seconds > 0.0 {
-            Some(Duration::try_from_secs_f64(seconds).map_err(|e| format!("time limit: {e}"))?)
-        } else {
-            None
-        };
-        let limits = Limits {
-            time,
-            max_length: (max_length > 0).then_some(max_length as usize),
-            cancel_after: Some(NO_LIMIT),
-            ..Limits::default()
-        };
-        let report = if improvements == 0 {
-            Report::Quiet
-        } else {
-            Report::Improvements
-        };
-        let o = solve(t, cube, Frame::identity(), &limits, report);
+        let limits = page_limits(seconds, max_length)?;
+        let o = page_solve(t, cube, Frame::identity(), &limits, improvements != 0);
         let events: Vec<(f64, usize)> = o.events.iter().map(|e| (e.time, e.length)).collect();
         let scramble = o
             .solution
