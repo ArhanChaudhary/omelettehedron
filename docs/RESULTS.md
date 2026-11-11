@@ -97,8 +97,8 @@ scrambles, i.e. the inverse positions, which in the normal FTO need not have the
 |---|---|---|---|---|
 | tri_adj+edge_opp | 23 | 23 | 8,866 s (2.5 h, 1.4e13 nodes) | **23 in 266.5 s** (1.2e11 nodes) |
 | tri_adj+edge_adj | 23 | 23 | 11,877 s (3.3 h, 1.9e13 nodes) | **23 in 803.0 s** (4.0e11 nodes) |
-| tri_adj-[Uf_Fu;Db_Bd] | 23 | 23 | 10,942 s (3.0 h, 1.7e13 nodes) | |
-| tri_adj+[UB_FD,NL_MR] | 23 | 23 | 8,397 s (2.3 h, 1.3e13 nodes) | |
+| tri_adj-[Uf_Fu;Db_Bd] | 23 | 23 | 10,942 s (3.0 h, 1.7e13 nodes) | **23 in 1,155.1 s** (5.7e11 nodes) |
+| tri_adj+[UB_FD,NL_MR] | 23 | 23 | 8,397 s (2.3 h, 1.3e13 nodes) | **23 in 447.8 s** (2.1e11 nodes) |
 | edge_hard | 21 | 21 | 74 s (64.3 s with the distance-to-solved bound) | 21 in 344.7 s |
 | pure_corn_6flip | >= 24 (pure) | 20 | 661 s (`--lower-bound 19`, after an earlier run excluded 18); 117.2 s from scratch with the distance-to-solved bound | **20 in 0.48 s** |
 
@@ -132,7 +132,11 @@ the corner 6-flip 20 in 0.48 s (9.6e7 nodes), against 626.5 s for the two-phase 
 a lower bound, tri_adj+edge_adj 23 in 803.0 s (depth 22 complete at 345.1 s; the two-phase
 solver: 11,877 s; solution `B' D F' U' D R BR' D' U' F BL' D' L' F BL' D B' L BL U' L BL' U'`,
 checked on the sticker model), and edge_hard 21 in 344.7 s (its corners are solved, so the triple table adds
-little; the two-phase solver: 71-74 s). The other two 23-move positions are next. (Optimal
+little; the two-phase solver: 71-74 s). tri_adj+[UB_FD,NL_MR] 23 in 447.8 s (depth 22 complete at 439.3 s; solution `B D' R F D B' D' R'
+BR' R L' B BL BR' B' BL F B' BL' BR L B' BL'`), and tri_adj-[Uf_Fu;Db_Bd] 23 in 1,155.1 s (depth 22
+complete at 1,144.0 s; solution `BR U' BL L BL R BR B' U BL L' D B BL D' R' U BR' L' U' R' D R`;
+light one-thread work ran beside this proof). All four 23-move positions in 44.5 minutes, against
+11.1 hours for the two-phase solver; every solution checked on the sticker model. (Optimal
 solver times on the quiet machine, 48 threads; the two-phase proofs ran on the same machine.)
 
 ## Start-up
