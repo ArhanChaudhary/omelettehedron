@@ -124,3 +124,16 @@ Measured in Bun (JavaScriptCore) on the same machine; see the README's WebAssemb
 
 The modules are 0.55 MB each. Threads scale poorly in JavaScriptCore because its WebAssembly
 atomic loads are slow under contention.
+
+## Optimal solver (v0)
+
+The separate optimal solver (`omelettehedron optimal`, single-phase IDA* to the solved state;
+[OPTIMAL.md](OPTIMAL.md)). Node counts only (one thread unless noted; the machine was busy, so
+no timings yet). Same optimal lengths as the two-phase solver's optimal mode.
+
+| set | tier | mean optimal length | mean nodes per position |
+|---|---|---|---|
+| 10 x 15-move scrambles, seed 1717 | small | 14.5 | 8.73e7 |
+| 10 x 15-move scrambles, seed 1717 | medium | 14.5 | 2.87e6 |
+| 10 x 17-move scrambles, seed 1717 | medium | 16.5 | 3.85e8 |
+| 10 x 19-move scrambles, seed 1919 (48 threads) | medium | 18.1 | 3.76e10 |

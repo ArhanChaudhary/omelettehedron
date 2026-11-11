@@ -33,7 +33,8 @@ using AI.
 
 ## Overview
 
-A fast two-phase solver for the face-turning octahedron (FTO), written in Rust.
+A fast two-phase solver for the face-turning octahedron (FTO), written in Rust, and a separate
+[optimal solver](#optimal-solver) (single-phase IDA*).
 
 * **Phase 1** brings the puzzle into H_A, the positions that can be solved by turning
   only the four class-A faces U, F, BR and BL.
@@ -183,6 +184,31 @@ scripts/compare.py <before> <after>             # markdown comparison of two run
 * how many positions were proven optimal;
 * search speed in nodes per second.
 
+## Optimal solver
+
+`omelettehedron optimal` is a second, separate solver: a single-phase IDA* straight to the
+solved state with pattern databases of distances to solved (as in optimal Rubik's Cube
+solvers), in `src/optimal/`. It has its own tiers and tables (`opt-*.prun`) and its own
+benchmark; see [docs/OPTIMAL.md](docs/OPTIMAL.md). It is a first version (v0): the two-phase
+solver's optimal mode is much faster today.
+
+```sh
+target/release/omelettehedron optimal solve --tier medium "U R' BL F D B' L BR"
+target/release/omelettehedron optimal solve --tier medium -n 10 -v "..."   # up to 10 optimal solutions
+target/release/omelettehedron optimal bench --tier medium -N 10 --scramble-len 17 --seed 1717 -j 1
+```
+
+| `optimal --tier` | Memory | Tables |
+|---|---|---|
+| `small` | 65 MB | corners x centres (both orbits, 24 symmetries), edge permutation |
+| `medium` | 2.4 GB | corners x centres, corners x edges (48 symmetries) |
+
+Stopping rules: none (first optimal solution), `-n N` (up to N optimal solutions), `-t T`
+(time limit; prints the lower bound proven so far), `-l L` (give up above L moves). Positions
+that some of the octahedron's 48 symmetries fix (like most of `bench/hard.tsv`) are searched
+with a symmetric start (only one of each set of equivalent first moves is searched), which
+divides their node counts by about the number of symmetries.
+
 ## WebAssembly demo
 
 `wasm/` holds a browser demo: the solver as a WebAssembly module, a JavaScript wrapper and a
@@ -277,3 +303,6 @@ The tests cover:
 * randomised stress (ignored by default): every move set with random stopping rules and thread
   counts, solutions checked on the sticker model, move families, improvement events, and
   optimal lengths independent of the thread count.
+* the optimal solver (`tests/optimal.rs`): optimal lengths against the brute force and against
+  the two-phase solver's optimal mode, `-n` against brute-force enumeration of all optimal
+  solutions, the other stopping rules, deterministic node counts and table consistency.
