@@ -419,9 +419,9 @@ that some of the octahedron's 48 symmetries fix (like most of `bench/hard.tsv`) 
 with a symmetric start (only one of each set of equivalent first moves is searched), which
 divides their node counts by about the number of symmetries.
 
-`--start-depth D` starts the search at depth D instead of the position's lower bound. That
-first iteration finds any solution of at most D moves, shorter ones too, but a solution it
-finds is not proven optimal. With `-l D` it answers whether a position needs more than D moves
+`--start-depth D` skips the iterations below D: one iteration at D - 2 (cheap; it orders the
+next one's tasks), then D. They find any solution of at most their depth, shorter ones too,
+but a solution they find is not proven optimal. With `-l D` it answers whether a position needs more than D moves
 without the iterations below D: `--start-depth 23 -l 23` either finds a solution of at most 23
 moves or prints "no solution of at most 23 moves".
 

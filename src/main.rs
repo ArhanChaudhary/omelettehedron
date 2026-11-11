@@ -357,9 +357,9 @@ struct OptStopArgs {
     /// Give up if the optimum is longer than this many moves
     #[arg(short = 'l', long)]
     max_length: Option<usize>,
-    /// Start the search at this depth instead of the position's lower bound: the first
-    /// iteration finds any solution of at most this many moves, shorter ones too, but one it
-    /// finds is not proven optimal. With `-l` of the same value: whether the position needs
+    /// Skip the iterations below this depth (one two below it orders the tasks): the search
+    /// at this depth finds any solution of at most this many moves, shorter ones too, but one
+    /// it finds is not proven optimal. With `-l` of the same value: whether the position needs
     /// more than this many moves (e.g. `--start-depth 23 -l 23`: no solution of at most 23
     /// moves, or one), without the iterations below
     #[arg(long, value_name = "MOVES")]
