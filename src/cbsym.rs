@@ -27,6 +27,8 @@ pub struct CbSymIndex {
     /// per symmetry (padded to 32): B colour relabelling and B position gather
     bmap: [[u8; 16]; 32],
     bgather: [[u8; 16]; 32],
+    /// [`mset`], held here so that `decode` reads no `OnceLock` (see [`CbSymGraph`])
+    ms: &'static Mset,
 }
 
 /// The index, built once (about 0.1 s).
@@ -104,6 +106,7 @@ impl CbSymIndex {
             stab,
             bmap,
             bgather,
+            ms: mset(),
         }
     }
 
@@ -140,13 +143,18 @@ impl CbSymIndex {
             c: self.rep.get(i / N_MSET).copied().unwrap_or(0),
             ebits: 0,
         };
-        x.b[..12].copy_from_slice(&mset().unrank((i % N_MSET) as u32));
+        x.b[..12].copy_from_slice(&self.ms.unrank((i % N_MSET) as u32));
         x
     }
 
     /// The other indices of the position with index `i` (its class representative has a
     /// non-trivial stabiliser).
     pub fn equivalents(&self, i: usize, out: &mut Vec<usize>) {
+        self.equivalents_with(fast(), i, out);
+    }
+
+    /// [`Self::equivalents`] with the fast tables given.
+    pub fn equivalents_with(&self, f: &FastTables, i: usize, out: &mut Vec<usize>) {
         let cls = i / N_MSET;
         let Some(stab) = self.stab.get(cls) else {
             return;
@@ -154,7 +162,6 @@ impl CbSymIndex {
         if stab.is_empty() {
             return;
         }
-        let f = fast();
         let x = self.decode(i);
         for &(m, t) in stab {
             out.push(cls * N_MSET + self.row(f, &x.b, m as usize, t as usize));
@@ -164,22 +171,37 @@ impl CbSymIndex {
 
 /// Moves between reduced CB entries (for table generation), `N` moves (16, or 24 with the
 /// slices: the reduction stays valid, as every symmetry maps slices to slices).
-pub struct CbSymGraph<const N: usize>;
+///
+/// It holds the index and the fast tables instead of reading their `OnceLock`s per entry: such
+/// a read is an atomic load, cheap natively but slow with threads in WebAssembly on
+/// `JavaScriptCore` (Bun, Safari), where 2 threads made this table 6x slower than 1 (6
+/// threads: its generation 15.9 -> 0.5 s; opt/wasm-gen).
+pub struct CbSymGraph<const N: usize> {
+    ix: &'static CbSymIndex,
+    f: &'static FastTables,
+}
+
+impl<const N: usize> Default for CbSymGraph<N> {
+    fn default() -> Self {
+        let f = fast();
+        CbSymGraph { ix: f.cbsym, f }
+    }
+}
 
 impl<const N: usize> Graph for CbSymGraph<N> {
     const MOVES: usize = N;
     type Node = Fc;
     type Cache = ();
     fn node(&self, i: usize, (): &mut ()) -> Fc {
-        cbsym().decode(i)
+        self.ix.decode(i)
     }
     fn step(&self, x: &Fc, m: usize) -> usize {
-        let f = fast();
         // (the edge labels are all 0, so no chirality flips are needed)
-        cbsym().index(f, &f.apply_m(x, &[0xfff, 0, 0, 0], m))
+        self.ix
+            .index(self.f, &self.f.apply_m(x, &[0xfff, 0, 0, 0], m))
     }
     fn equivalents(&self, j: usize, out: &mut Vec<usize>) {
-        cbsym().equivalents(j, out);
+        self.ix.equivalents_with(self.f, j, out);
     }
 }
 
