@@ -267,19 +267,71 @@ impl fmt::Display for PatternError {
 
 impl std::error::Error for PatternError {}
 
+/// Whether a character of a pattern's text is a sticker (not a separator).
+fn is_sticker(c: char) -> bool {
+    !c.is_whitespace() && !matches!(c, '/' | ',' | '|')
+}
+
 /// Read a pattern: 72 colour characters in picture order. Whitespace, `/`, `,` and `|` are
 /// ignored, so faces and the two halves can be set apart.
 ///
 /// # Errors
 /// [`PatternError::Length`] if there are not 72 characters.
 pub fn parse(text: &str) -> Result<[char; STICKERS], PatternError> {
-    let v: Vec<char> = text
-        .chars()
-        .filter(|c| !c.is_whitespace() && !matches!(c, '/' | ',' | '|'))
-        .collect();
+    let v: Vec<char> = text.chars().filter(|&c| is_sticker(c)).collect();
     v.as_slice()
         .try_into()
         .map_err(|_| PatternError::Length(v.len()))
+}
+
+/// One pattern of a list ([`records`]): the line it starts on (from 1) and its text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Record {
+    pub line: usize,
+    pub text: String,
+}
+
+/// Split a list of patterns (`solve --patterns`) into records, for [`parse`]. A `#` starts a
+/// comment, to the end of its line. A pattern takes one line or several: lines are joined until
+/// they hold 72 stickers. A blank line ends a pattern early, and so does a line that would take
+/// it past 72 stickers (that line starts the next pattern), so a pattern with a sticker too
+/// few or too many is reported on its own and does not run into the next one. A line of more
+/// than 72 stickers is a pattern on its own.
+pub fn records(text: &str) -> Vec<Record> {
+    let mut out = vec![];
+    // the pattern being read: its first line, its text and its stickers so far
+    let mut cur: Option<(usize, String, usize)> = None;
+    let mut flush = |cur: &mut Option<(usize, String, usize)>| {
+        if let Some((line, text, _)) = cur.take() {
+            out.push(Record { line, text });
+        }
+    };
+    for (i, raw) in text.lines().enumerate() {
+        let line = raw.split('#').next().unwrap_or("");
+        let n = line.chars().filter(|&c| is_sticker(c)).count();
+        if raw.trim().is_empty() {
+            flush(&mut cur);
+            continue;
+        }
+        if n == 0 {
+            // a comment or separators only: neither part of a pattern nor the end of one
+            continue;
+        }
+        if cur.as_ref().is_some_and(|c| c.2 + n > STICKERS) {
+            flush(&mut cur);
+        }
+        let c = cur.get_or_insert_with(|| (i + 1, String::new(), 0));
+        if !c.1.is_empty() {
+            c.1.push(' ');
+        }
+        c.1.push_str(line.trim());
+        c.2 += n;
+        if c.2 >= STICKERS {
+            flush(&mut cur);
+        }
+    }
+    flush(&mut cur);
+    out
 }
 
 /// The pattern as text: faces of 9 in picture order, the front and back halves set apart.
@@ -296,6 +348,14 @@ pub fn of_moves(moves: &[PhysMove]) -> [char; STICKERS] {
     let after = apply_physical(&faces, moves);
     let pics = picture_stickers();
     std::array::from_fn(|i| DEFAULT_SYMBOLS[after[pics[i]] as usize])
+}
+
+/// The pattern of a position (in the frame of [`crate::cube`], held as the solver holds it),
+/// with the colour letters of [`DEFAULT_SYMBOLS`].
+pub fn of_cube(c: &Cube) -> [char; STICKERS] {
+    let st = c.to_stickers();
+    let pics = picture_stickers();
+    std::array::from_fn(|i| DEFAULT_SYMBOLS[st[pics[i]] as usize])
 }
 
 /// The distinct colours of a pattern in order of first appearance, and the pattern as their
@@ -1113,6 +1173,55 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 25);
+    }
+
+    #[test]
+    fn records_of_a_list() {
+        let p = format(&of_moves(&parse_moves("R U' BL F").unwrap()));
+        let q = format(&of_moves(&parse_moves("D B").unwrap()));
+        let (front, back) = p.split_once(" / ").unwrap();
+        let short = &q[1..];
+        // one per line, a comment, a pattern over two lines (with a comment between), a blank
+        // line ending a pattern a sticker short, and a pattern a sticker short followed at once
+        // by a whole one
+        let text = format!(
+            "# my patterns\n{p}\n\n  {q}  # D B\n{front}\n# the back\n{back}\n{short}\n\n\
+             {short}\n{p}\n{p}X\n"
+        );
+        let r = records(&text);
+        let texts: Vec<&str> = r.iter().map(|x| x.text.as_str()).collect();
+        let joined = format!("{front} {back}");
+        let lines: Vec<usize> = r.iter().map(|x| x.line).collect();
+        let longer = format!("{p}X");
+        assert_eq!(
+            texts,
+            [
+                p.as_str(),
+                q.as_str(),
+                joined.as_str(),
+                short,
+                short,
+                p.as_str(),
+                longer.as_str()
+            ]
+        );
+        assert_eq!(lines, [2, 4, 5, 8, 10, 11, 12]);
+        assert_eq!(
+            parse(&r[2].text),
+            Ok(of_moves(&parse_moves("R U' BL F").unwrap()))
+        );
+        assert_eq!(parse(&r[3].text), Err(PatternError::Length(71)));
+        assert_eq!(parse(&r[6].text), Err(PatternError::Length(73)));
+        assert_eq!(records("\n# nothing\n  \n"), Vec::<Record>::new());
+    }
+
+    #[test]
+    fn pattern_of_a_position() {
+        // a scramble whose turns keep the fixed corner: the same pattern as from the moves
+        let m = parse_moves("B BR' D BL").unwrap();
+        let (c, _) = crate::notation::scramble_to_cube(&m);
+        assert_eq!(of_cube(&c), of_moves(&m));
+        assert_eq!(position(&of_cube(&c)), Ok(c));
     }
 
     #[test]

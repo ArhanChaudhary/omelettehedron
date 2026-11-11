@@ -28,16 +28,6 @@ pub enum Tier {
     Huge,
 }
 
-/// The tables of a tier (see [`Tables::plan`]), with their sizes in memory.
-pub fn tier_plan(dir: &Path, tier: Tier, moves: MoveSet) -> Vec<crate::preflight::Planned> {
-    match tier {
-        Tier::Small => Tables::plan(dir, &AeSym::new(false), false, moves),
-        Tier::Medium => Tables::plan(dir, &AeSym::new(true), false, moves),
-        Tier::Large => Tables::plan(dir, &AeSym::new(true), true, moves),
-        Tier::Huge => Tables::plan(dir, &AeRelabel::new(), true, moves),
-    }
-}
-
 /// Index function of an AE table.
 pub trait AeIndex: Send + Sync + 'static {
     fn size(&self) -> usize;
@@ -325,9 +315,9 @@ impl AeIndex for AeSym {
     }
     fn name(&self) -> &'static str {
         if self.chiral {
-            "ae-sym288-chiral"
+            AE_CHIRAL_FILE
         } else {
-            "ae-sym288-triples"
+            AE_TRIPLES_FILE
         }
     }
     fn equivalents(&self, i: usize, out: &mut Vec<usize>) {
@@ -437,7 +427,7 @@ impl AeIndex for AeRelabel {
         prefetch_at(&self.cls.sym, a_rank as usize);
     }
     fn name(&self) -> &'static str {
-        "ae-relabel12-chiral"
+        AE_RELABEL_FILE
     }
 }
 
@@ -889,6 +879,69 @@ pub fn table_dir(dir: Option<&Path>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("tables"))
 }
 
+/// File names of the two-phase tables, before the move set's suffix and `.prun`: the
+/// A-centre/edge table of each index ([`AeIndex::name`]), the corner/B-centre table and the
+/// joint table. (The distance-to-solved table is [`cbs_file`].)
+pub const AE_TRIPLES_FILE: &str = "ae-sym288-triples";
+pub const AE_CHIRAL_FILE: &str = "ae-sym288-chiral";
+pub const AE_RELABEL_FILE: &str = "ae-relabel12-chiral";
+pub const CB_FILE: &str = "cb-sym24";
+pub const CBE_FILE: &str = "cbe";
+
+/// Entries of the tables (the sizes of the indices, as the file headers give them), so that
+/// table files can be judged without building the indices (`tier_entries_match_the_indices`
+/// checks them).
+pub const AE_TRIPLES_ENTRIES: u64 = 515_961_600;
+pub const AE_CHIRAL_ENTRIES: u64 = 4_127_692_800;
+pub const AE_RELABEL_ENTRIES: u64 = 91_069_440_000;
+pub const CBE_ENTRIES: u64 = 27_971_328_000;
+
+/// File name of the distance-to-solved table (face turns only, so no suffix), with `.prun`.
+pub fn cbs_file() -> String {
+    format!("cbe-solved{}.prun", crate::cbe::CBS_MIN)
+}
+
+impl Tier {
+    /// The tiers, smallest first.
+    pub const ALL: [Tier; 4] = [Tier::Small, Tier::Medium, Tier::Large, Tier::Huge];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Tier::Small => "small",
+            Tier::Medium => "medium",
+            Tier::Large => "large",
+            Tier::Huge => "huge",
+        }
+    }
+
+    /// The table files of the tier in the metric of `moves` (the names [`Tables::load_with`]
+    /// reads), with their entries.
+    pub fn files(self, moves: MoveSet) -> Vec<TableFile> {
+        let sfx = moves.table_suffix();
+        let file = |name: &str, entries: u64| TableFile {
+            name: format!("{name}{sfx}.prun"),
+            entries,
+        };
+        let ae = match self {
+            Tier::Small => file(AE_TRIPLES_FILE, AE_TRIPLES_ENTRIES),
+            Tier::Medium | Tier::Large => file(AE_CHIRAL_FILE, AE_CHIRAL_ENTRIES),
+            Tier::Huge => file(AE_RELABEL_FILE, AE_RELABEL_ENTRIES),
+        };
+        let mut v = vec![ae, file(CB_FILE, N_CB as u64)];
+        if matches!(self, Tier::Large | Tier::Huge) {
+            v.push(file(CBE_FILE, CBE_ENTRIES));
+            // (one bit per entry, stored as half as many 2-bit slots)
+            if !moves.slice {
+                v.push(TableFile {
+                    name: cbs_file(),
+                    entries: CBE_ENTRIES.div_ceil(2),
+                });
+            }
+        }
+        v
+    }
+}
+
 fn load_or_build(
     path: &Path,
     n: usize,
@@ -951,52 +1004,6 @@ impl<I: AeIndex> Tables<I> {
         Self::load_with(dir, ae_ix, false, moves, verbose)
     }
 
-    /// The tables [`Self::load_with`] reads or generates, with their sizes in memory (for the
-    /// checks of [`crate::preflight`]). 2 bits per entry.
-    /// (generation needs no memory beyond the tables themselves, except the 7.0 GB search
-    /// array of the 3.5 GB distance-to-solved table: the large tier peaks at 18.6 GB for
-    /// 11.6 GB of tables)
-    pub fn plan(
-        dir: &Path,
-        ae_ix: &I,
-        with_cbe: bool,
-        moves: MoveSet,
-    ) -> Vec<crate::preflight::Planned> {
-        let sfx = moves.table_suffix();
-        let ae_path = dir.join(format!("{}{sfx}.prun", ae_ix.name()));
-        let cb_path = dir.join(format!("cb-sym24{sfx}.prun"));
-        let cbe_path = dir.join(format!("cbe{sfx}.prun"));
-        let with_cbs = with_cbe && !moves.slice;
-        let cbs_path = dir.join(format!("cbe-solved{}.prun", crate::cbe::CBS_MIN));
-        let planned = |path: PathBuf, size: &dyn Fn() -> usize| {
-            let bytes =
-                std::fs::metadata(&path).map_or_else(|_| size().div_ceil(4) as u64, |m| m.len());
-            crate::preflight::Planned {
-                path,
-                bytes,
-                working_set: 0,
-            }
-        };
-        let mut plan = vec![
-            planned(ae_path, &|| ae_ix.size()),
-            planned(cb_path, &|| N_CB),
-        ];
-        if with_cbe {
-            plan.push(planned(cbe_path, &|| crate::cbe::CbeIndex::new().size()));
-        }
-        if with_cbs {
-            // (one bit per entry, made from a 2-bit breadth-first search array)
-            let n = || crate::cbe::CbeIndex::new().size();
-            let exists = std::fs::metadata(&cbs_path).is_ok();
-            let mut p = planned(cbs_path, &|| n().div_ceil(2));
-            if !exists {
-                p.working_set = n().div_ceil(4) as u64;
-            }
-            plan.push(p);
-        }
-        plan
-    }
-
     /// Load (generating if needed) the tables, optionally with the joint CBE table, in the
     /// metric of `moves` (with slices, the tables have their own files, `*-slice.prun`).
     ///
@@ -1013,14 +1020,45 @@ impl<I: AeIndex> Tables<I> {
     ) -> std::io::Result<Tables<I>> {
         let sfx = moves.table_suffix();
         let ae_path = dir.join(format!("{}{sfx}.prun", ae_ix.name()));
-        let cb_path = dir.join(format!("cb-sym24{sfx}.prun"));
-        let cbe_path = dir.join(format!("cbe{sfx}.prun"));
+        let cb_path = dir.join(format!("{CB_FILE}{sfx}.prun"));
+        let cbe_path = dir.join(format!("{CBE_FILE}{sfx}.prun"));
         // (face turns only: the slice metric would need its own table, not made)
         let with_cbs = with_cbe && !moves.slice;
-        let cbs_path = dir.join(format!("cbe-solved{}.prun", crate::cbe::CBS_MIN));
+        let cbs_path = dir.join(cbs_file());
         // Check all tables of the tier before generating any (a table that exists is loaded:
-        // it only needs memory).
-        crate::preflight::check_plan(&Self::plan(dir, &ae_ix, with_cbe, moves))?;
+        // it only needs memory). 2 bits per entry.
+        // (generation needs no memory beyond the tables themselves, except the 7.0 GB search
+        // array of the 3.5 GB distance-to-solved table: the large tier peaks at 18.6 GB for
+        // 11.6 GB of tables)
+        let planned = |path: PathBuf, size: &dyn Fn() -> usize| {
+            let bytes =
+                std::fs::metadata(&path).map_or_else(|_| size().div_ceil(4) as u64, |m| m.len());
+            crate::preflight::Planned {
+                path,
+                bytes,
+                working_set: 0,
+            }
+        };
+        let mut plan = vec![
+            planned(ae_path.clone(), &|| ae_ix.size()),
+            planned(cb_path.clone(), &|| N_CB),
+        ];
+        if with_cbe {
+            plan.push(planned(cbe_path.clone(), &|| {
+                crate::cbe::CbeIndex::new().size()
+            }));
+        }
+        if with_cbs {
+            // (one bit per entry, made from a 2-bit breadth-first search array)
+            let n = || crate::cbe::CbeIndex::new().size();
+            let exists = std::fs::metadata(&cbs_path).is_ok();
+            let mut p = planned(cbs_path.clone(), &|| n().div_ceil(2));
+            if !exists {
+                p.working_set = n().div_ceil(4) as u64;
+            }
+            plan.push(p);
+        }
+        crate::preflight::check_plan(&plan)?;
         let ae = load_or_build(&ae_path, ae_ix.size(), verbose, || {
             build_ae(&ae_ix, moves, verbose)
         })?;
@@ -1211,6 +1249,66 @@ impl<I: AeIndex> Tables<I> {
 mod tests {
     use super::*;
     use rand::{Rng, SeedableRng};
+
+    /// The entries [`Tier::files`] expects are the indices' sizes, and the names are the ones
+    /// the indices give. (64-bit only: the huge and joint indices exceed 2^32 entries.)
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn tier_entries_match_the_indices() {
+        let triples = AeSym::new(false);
+        let chiral = AeSym::new(true);
+        let relabel = AeRelabel::new();
+        assert_eq!(triples.size() as u64, AE_TRIPLES_ENTRIES);
+        assert_eq!(chiral.size() as u64, AE_CHIRAL_ENTRIES);
+        assert_eq!(relabel.size() as u64, AE_RELABEL_ENTRIES);
+        assert_eq!(crate::cbe::CbeIndex::new().size() as u64, CBE_ENTRIES);
+        let names = |t: Tier, slice: bool| -> Vec<String> {
+            t.files(MoveSet {
+                slice,
+                ..MoveSet::FACE
+            })
+            .into_iter()
+            .map(|f| f.name)
+            .collect()
+        };
+        assert_eq!(
+            names(Tier::Small, false),
+            ["ae-sym288-triples.prun", "cb-sym24.prun"]
+        );
+        assert_eq!(
+            names(Tier::Medium, true),
+            ["ae-sym288-chiral-slice.prun", "cb-sym24-slice.prun"]
+        );
+        assert_eq!(
+            names(Tier::Large, false),
+            [
+                "ae-sym288-chiral.prun",
+                "cb-sym24.prun",
+                "cbe.prun",
+                "cbe-solved11.prun"
+            ]
+        );
+        assert_eq!(
+            names(Tier::Huge, true),
+            [
+                "ae-relabel12-chiral-slice.prun",
+                "cb-sym24-slice.prun",
+                "cbe-slice.prun"
+            ]
+        );
+        assert_eq!(
+            format!("{}.prun", relabel.name()),
+            names(Tier::Huge, false)[0]
+        );
+        assert_eq!(
+            format!("{}.prun", triples.name()),
+            names(Tier::Small, false)[0]
+        );
+        assert_eq!(
+            format!("{}.prun", chiral.name()),
+            names(Tier::Large, false)[0]
+        );
+    }
 
     /// Moves between entries of the unreduced CB coordinate (corner state x B colouring), `N`
     /// moves (16, or 24 with the slices).

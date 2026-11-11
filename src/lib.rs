@@ -44,6 +44,7 @@
 )]
 //! Solvers for the face-turning octahedron: the two-phase solver (`search`, `tables`, ...) and the
 //! separate optimal solver (`optimal`, single-phase IDA* to the solved state).
+pub mod autotier;
 pub mod bench;
 pub mod cbe;
 pub mod cbsym;
@@ -52,6 +53,7 @@ pub mod coord;
 pub mod cube;
 pub mod fast;
 pub mod geometry;
+pub mod info;
 pub mod mem;
 pub mod notation;
 pub mod optimal;

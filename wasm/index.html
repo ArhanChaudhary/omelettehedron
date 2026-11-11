@@ -100,6 +100,7 @@ anticlockwise.</p>
 <div class="row">
   <button id="random" disabled>Random scramble</button>
   <button id="show-pattern" disabled>Show its pattern</button>
+  <button id="invert" title="Moves reversed, each turned the other way: a solution becomes a scramble of the position it solves">Invert</button>
   <label><input type="radio" name="mode" value="time" checked> best solution in <input id="seconds" type="number" min="0.1" step="any" value="10" style="width:4rem" aria-label="Time limit in seconds"> seconds</label>
   <label><input type="radio" name="mode" value="optimal"> shortest possible (can be slow)</label>
   <button id="solve" class="primary" disabled>Solve</button>
@@ -143,7 +144,7 @@ anticlockwise.</p>
 </details>
 
 <script type="module">
-import { cancel, parseImprovement, TIERS } from './omelettehedron.mjs';
+import { cancel, invertMoves, parseImprovement, TIERS } from './omelettehedron.mjs';
 import { PatternInput } from './pattern-input.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -252,6 +253,7 @@ const buttons = () => {
   $('apply').disabled = $('files').disabled = $('forget').disabled = !ready || solving;
   for (const r of document.querySelectorAll('input[name=tables]')) r.disabled = solving;
   $('show-pattern').disabled = !ready || solving;
+  $('invert').disabled = solving;
 };
 
 // --- Generation progress ---
@@ -434,7 +436,7 @@ const setMode = (mode) => {
   const pattern = mode === 'pattern';
   document.querySelector(`input[name=input][value=${pattern ? 'pattern' : 'scramble'}]`).checked = true;
   $('pattern-input').hidden = !pattern;
-  for (const id of ['scramble', 'random', 'show-pattern']) $(id).hidden = pattern;
+  for (const id of ['scramble', 'random', 'show-pattern', 'invert']) $(id).hidden = pattern;
   try {
     localStorage.setItem('omelettehedron-input', pattern ? 'pattern' : 'scramble');
   } catch {
@@ -577,6 +579,16 @@ $('stop').onclick = () => {
   }
   $('stats').textContent = '';
   run('Restart', () => start(threads));
+};
+
+// A solution from elsewhere, inverted, is a scramble of the position it solves: solve that
+// to find other solutions. (Plain text work: it needs neither the module nor the tables.)
+$('invert').onclick = () => {
+  const box = $('scramble');
+  const moves = invertMoves(plain(box.value));
+  if (!moves) return;
+  box.value = moves;
+  status('Inverted: these moves now scramble the position your moves solved');
 };
 
 $('random').onclick = () => run('Random scramble', async () => {

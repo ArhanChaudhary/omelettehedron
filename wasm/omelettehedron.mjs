@@ -634,6 +634,27 @@ export function randomMoves(length, seed) {
   return moves.join(' ');
 }
 
+/**
+ * The inverse of a move sequence, as text: the moves in reverse order, each turned the other
+ * way. A solution inverted is a scramble of the position it solves. It follows the notation
+ * of `parse_moves` (src/notation.rs): a face name, an optional `w` / `s` / `v`, then nothing,
+ * `1`, `'`, `1'`, `3`, `2` or `2'`; a token it does not know is kept as it is (the solver then
+ * reports it). Runs without the module, so it works while tables are being made.
+ */
+export function invertMoves(text) {
+  const inverse = { '': "'", 1: "'", "'": '', "1'": '', 3: '', 2: "2'", "2'": '2' };
+  return text
+    .replace(/[‘’‛′´`ʼʹ]/g, "'")
+    .split(/[\s,]+/)
+    .filter((t) => t)
+    .reverse()
+    .map((t) => {
+      const m = /^([A-Za-z]+)((?:[123]'?)|'|)$/.exec(t);
+      return m && m[2] in inverse ? m[1] + inverse[m[2]] : t;
+    })
+    .join(' ');
+}
+
 /** An improvement line printed while solving (`{ seconds, length, solution }`), or null. */
 export function parseImprovement(line) {
   const m = /^\s*([\d.]+)s\s+(\d+)\s+(.*)$/.exec(line);

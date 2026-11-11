@@ -31,14 +31,15 @@ use omelettehedron::bench;
 use omelettehedron::combined::TwoPhaseMode;
 use omelettehedron::cube::{Cube, MoveSet};
 use omelettehedron::notation::{
-    format_moves, invert_moves, parse_moves, scramble_to_cube, solves_pure, Frame, PhysMove,
+    format_moves, invert_moves, parse_moves, pure_stickers, scramble_to_cube, solves_pure, Frame,
+    PhysMove,
 };
 use omelettehedron::optimal::search::{solve_watched as opt_solve, Limits as OptLimits, Stop};
 use omelettehedron::optimal::tables::{OptTables, OptTier};
-use omelettehedron::pattern;
 use omelettehedron::progress::{Progress, Watch};
 use omelettehedron::search::{solve_watched, Limits, Report};
 use omelettehedron::tables::{table_dir, AeIndex, AeRelabel, AeSym, Tables, Tier};
+use omelettehedron::{autotier, info, pattern};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -58,10 +59,11 @@ struct Cli {
 
 #[derive(clap::Args, Clone)]
 struct TableArgs {
-    /// Pruning-table size (required; there is no default): small (~135 MB), medium (~1.0 GB),
-    /// large (~8 GB) or huge (~30 GB). Larger tiers search fewer nodes; large is the fastest.
+    /// Pruning-table size: small (~135 MB), medium (~1.0 GB), large (~8 GB) or huge (~30 GB).
+    /// Larger tiers search fewer nodes; large is the fastest. Without it: the largest tier whose
+    /// tables are all in the table directory (`gen` needs it)
     #[arg(long, value_enum)]
-    tier: Tier,
+    tier: Option<Tier>,
     /// Directory for pruning tables (default: $FTO_TABLES or ./tables)
     #[allow(clippy::doc_markdown)] // shown verbatim by --help
     #[arg(long)]
@@ -148,17 +150,37 @@ enum Cmd {
         inverse: bool,
         /// Solve a pattern instead of a scramble: the 72 sticker colours as you see them, in
         /// the order of `omelettehedron pattern --help`. Also prints a scramble that makes it
-        #[arg(long, conflicts_with_all = ["scramble", "random", "inverse"])]
+        #[arg(long, group = "patterns_in", conflicts_with_all = ["scramble", "random", "inverse"])]
         pattern: Option<String>,
-        /// With --pattern: your solved puzzle as you usually hold it to scramble, as the colours
-        /// of U R F L B BL D BR (8 characters, the letters of the pattern). The scramble then
-        /// starts from that hold
-        #[arg(long, requires = "pattern")]
+        /// Solve patterns read from stdin, each as with --pattern. A pattern takes one line or
+        /// several (joined until they hold 72 stickers; a blank line ends one); `#` starts a
+        /// comment. A pattern with a mistake is reported and the others are still solved
+        #[arg(long, group = "patterns_in", conflicts_with_all = ["scramble", "random", "inverse"])]
+        patterns: bool,
+        /// With --pattern(s): your solved puzzle as you usually hold it to scramble, as the
+        /// colours of U R F L B BL D BR (8 characters, the letters of the pattern). The
+        /// scramble then starts from that hold
+        #[arg(long, requires = "patterns_in")]
         usual: Option<String>,
         #[command(flatten)]
         tab: TableArgs,
         #[command(flatten)]
         prog: ProgressArgs,
+    },
+    /// Describe positions without loading any table
+    ///
+    /// For each position: the pattern, whether it is solved, its symmetries, the solved pieces,
+    /// whether it is in the two-phase solver's subgroups H_A and H_B, and a lower bound.
+    /// Scrambles as arguments or one per line on stdin, as for `solve`.
+    #[allow(clippy::doc_markdown)] // shown verbatim by --help
+    Info {
+        /// Scramble in FTO notation
+        scramble: Vec<String>,
+        #[command(flatten)]
+        input: InputArgs,
+        /// Print each position as one line of JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Print the pattern a scramble makes (the input of `solve --pattern`)
     ///
@@ -243,10 +265,11 @@ impl ProgressArgs {
 /// Table options of the optimal solver.
 #[derive(clap::Args, Clone)]
 struct OptTableArgs {
-    /// Table size (required; there is no default): small (~195 MB), medium (~3.4 GB, fewer
-    /// nodes) or large (~22.0 GB, fewest nodes)
+    /// Table size: small (~195 MB), medium (~3.4 GB, fewer nodes) or large (~22.0 GB, fewest
+    /// nodes). Without it: the largest tier whose tables are all in the table directory
+    /// (`optimal gen` needs it)
     #[arg(long, value_enum)]
-    tier: OptTier,
+    tier: Option<OptTier>,
     /// Directory for the tables (default: $FTO_TABLES or ./tables)
     #[allow(clippy::doc_markdown)] // shown verbatim by --help
     #[arg(long)]
@@ -327,6 +350,17 @@ enum OptCmd {
         /// inverted, applied to the solved puzzle) instead of the position it makes
         #[arg(long)]
         inverse: bool,
+        /// Solve a pattern instead of a scramble (as for the two-phase `solve --pattern`); also
+        /// prints a scramble that makes it
+        #[arg(long, group = "patterns_in", conflicts_with_all = ["scramble", "random", "inverse"])]
+        pattern: Option<String>,
+        /// Solve patterns read from stdin (as for the two-phase `solve --patterns`)
+        #[arg(long, group = "patterns_in", conflicts_with_all = ["scramble", "random", "inverse"])]
+        patterns: bool,
+        /// With --pattern(s): your solved puzzle as you usually hold it, as the colours of U R F
+        /// L B BL D BR (as for the two-phase `solve --usual`)
+        #[arg(long, requires = "patterns_in")]
+        usual: Option<String>,
         #[command(flatten)]
         tab: OptTableArgs,
         #[command(flatten)]
@@ -410,25 +444,25 @@ struct PatternInput {
 fn read_pattern(text: &str, usual: Option<&str>) -> Result<PatternInput, Error> {
     let p = pattern::parse(text).map_err(|e| format!("pattern: {e}"))?;
     let cube = pattern::position(&p).map_err(|e| format!("pattern: {e}"))?;
-    let usual = match usual {
-        Some(u) => {
-            let v: Vec<char> = u
-                .chars()
-                .filter(|c| !c.is_whitespace() && *c != '/')
-                .collect();
-            let u: [char; 8] = v
-                .as_slice()
-                .try_into()
-                .map_err(|_| "--usual: give the 8 colours of U R F L B BL D BR")?;
-            Some(u)
-        }
-        None => None,
-    };
     Ok(PatternInput {
         pattern: p,
-        usual,
+        usual: parse_usual(usual)?,
         cube,
     })
+}
+
+/// The colours of `--usual`.
+fn parse_usual(usual: Option<&str>) -> Result<Option<[char; 8]>, Error> {
+    let Some(u) = usual else { return Ok(None) };
+    let v: Vec<char> = u
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '/')
+        .collect();
+    let u: [char; 8] = v
+        .as_slice()
+        .try_into()
+        .map_err(|_| "--usual: give the 8 colours of U R F L B BL D BR")?;
+    Ok(Some(u))
 }
 
 /// Print the scramble that makes a solved pattern (and check the solution).
@@ -516,18 +550,19 @@ macro_rules! dispatch {
     ($tab:expr, |$t:ident, $name:ident| $body:expr) => {{
         let dir = table_dir($tab.tables.as_deref());
         let moves = $tab.move_set();
+        let tier = two_phase_tier(&$tab, &dir)?;
         omelettehedron::preflight::set_force($tab.force);
         // The large tier needs 8 GB and the huge tier's index has 9.1e10 entries: 32-bit
         // targets such as WebAssembly (4 GB) support the small and medium tiers (the medium
         // index has 4.13e9 entries, below 2^32).
-        if cfg!(target_pointer_width = "32") && matches!($tab.tier, Tier::Large | Tier::Huge) {
+        if cfg!(target_pointer_width = "32") && matches!(tier, Tier::Large | Tier::Huge) {
             return Err(
                 "only --tier small and medium are supported on 32-bit targets such as \
                         WebAssembly"
                     .into(),
             );
         }
-        match $tab.tier {
+        match tier {
             Tier::Small => {
                 let $t = Tables::load(&dir, AeSym::new(false), moves, $tab.verbose)
                     .map_err(|e| table_error(&dir, &e))?;
@@ -556,45 +591,6 @@ macro_rules! dispatch {
     }};
 }
 
-/// The positions to solve: `--random` positions, or the given scrambles (or stdin), inverted
-/// with `--inverse`.
-fn read_positions(
-    scramble: &[String],
-    random: Option<usize>,
-    seed: u64,
-    inverse: bool,
-) -> Result<Vec<(Cube, Frame, String)>, Error> {
-    if let Some(n) = random {
-        return Ok(bench::random_positions(n, seed)
-            .into_iter()
-            .enumerate()
-            .map(|(i, c)| {
-                (
-                    c,
-                    Frame::identity(),
-                    format!("random position {i} (seed {seed})"),
-                )
-            })
-            .collect());
-    }
-    let mut v = vec![];
-    for s in read_scrambles(scramble) {
-        let m = parse_moves(&s)?;
-        if inverse {
-            let m = invert_moves(&m);
-            let (c, f) = scramble_to_cube(&m);
-            v.push((c, f, format_moves(&m)));
-        } else {
-            let (c, f) = scramble_to_cube(&m);
-            v.push((c, f, s));
-        }
-    }
-    if v.is_empty() {
-        return Err("no scramble given".into());
-    }
-    Ok(v)
-}
-
 /// Load (generating if needed) the optimal solver's tables.
 fn load_opt(tab: &OptTableArgs) -> Result<OptTables, Error> {
     let dir = table_dir(tab.tables.as_deref());
@@ -603,7 +599,14 @@ fn load_opt(tab: &OptTableArgs) -> Result<OptTables, Error> {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let floor = (tab.min_free_memory * 1e9) as u64;
     omelettehedron::preflight::set_memory_floor(floor);
-    OptTables::load(&dir, tab.tier, tab.move_set(), tab.verbose).map_err(|e| table_error(&dir, &e))
+    let tier = if let Some(t) = tab.tier {
+        t
+    } else {
+        let c = autotier::optimal(&dir, tab.move_set())?;
+        eprintln!("{}", c.message);
+        c.tier
+    };
+    OptTables::load(&dir, tier, tab.move_set(), tab.verbose).map_err(|e| table_error(&dir, &e))
 }
 
 /// Evaluate `$body` with `$b` bound to the lower bounds of the tables' tier.
@@ -635,18 +638,41 @@ fn run_optimal(cmd: OptCmd) -> Result<(), Error> {
             random,
             seed,
             inverse,
+            pattern,
+            patterns,
+            usual,
             tab,
             prog,
         } => {
             let limits = stop.limits()?;
             let every = prog.every()?;
-            let positions = read_positions(&scramble, random, seed, inverse)?;
+            let jobs = read_jobs(&Inputs {
+                scramble: &scramble,
+                pattern: pattern.as_deref(),
+                patterns,
+                usual: usual.as_deref(),
+                random,
+                seed,
+                inverse,
+            })?;
+            if !jobs.iter().any(Result::is_ok) {
+                return none_read(&jobs);
+            }
             let p = pool(tab.threads)?;
             p.install(|| {
                 let t = load_opt(&tab)?;
                 opt_bounds!(t, |b| {
-                    for (cube, frame, label) in &positions {
-                        if positions.len() > 1 || tab.verbose {
+                    for job in &jobs {
+                        let Job {
+                            cube, frame, label, ..
+                        } = match job {
+                            Ok(j) => j,
+                            Err(bad) => {
+                                bad.report();
+                                continue;
+                            }
+                        };
+                        if jobs.len() > 1 || tab.verbose {
                             println!("# {label}");
                         }
                         let progress = every.map(|e| Progress::new(e, ""));
@@ -657,6 +683,15 @@ fn run_optimal(cmd: OptCmd) -> Result<(), Error> {
                         let o = opt_solve(&b, *cube, *frame, &limits, tab.verbose, &watch);
                         for s in &o.solutions {
                             println!("{}", format_moves(s));
+                        }
+                        if let (
+                            Ok(Job {
+                                pattern: Some(pi), ..
+                            }),
+                            Some(sol),
+                        ) = (job, o.solutions.first())
+                        {
+                            print_pattern_scramble(pi, sol);
                         }
                         match o.stop {
                             Stop::Solved => {}
@@ -700,11 +735,19 @@ fn run_optimal(cmd: OptCmd) -> Result<(), Error> {
                             }
                         }
                     }
-                    Ok(())
+                    Ok::<(), Error>(())
                 })
-            })
+            })?;
+            unread(&jobs)
         }
         OptCmd::Gen { tab } => {
+            if tab.tier.is_none() {
+                return Err(
+                    "optimal gen needs --tier: small, medium or large (the tables to \
+                            generate)"
+                        .into(),
+                );
+            }
             let p = pool(tab.threads)?;
             let mut tab = tab;
             tab.verbose = true;
@@ -791,6 +834,7 @@ fn run(cli: Cli) -> Result<(), Error> {
             lower_bound,
             inverse,
             pattern,
+            patterns,
             usual,
             tab,
             prog,
@@ -800,6 +844,9 @@ fn run(cli: Cli) -> Result<(), Error> {
                 bench::limits_with_time(stop.time, stop.max_length, stop.max_solutions)
                     .map_err(|e| format!("--time: {e}"))?;
             limits.lower_bound = lower_bound;
+            if patterns {
+                return solve_pattern_list(&tab, usual.as_deref(), &limits, print, progress);
+            }
             let input = match &pattern {
                 Some(text) => Some(read_pattern(text, usual.as_deref())?),
                 None => None,
@@ -865,6 +912,13 @@ fn run(cli: Cli) -> Result<(), Error> {
             Ok(())
         }
         Cmd::Gen { tab } => {
+            if tab.tier.is_none() {
+                return Err(
+                    "gen needs --tier: small, medium, large or huge (the tables to \
+                            generate)"
+                        .into(),
+                );
+            }
             let p = pool(tab.threads)?;
             let mut tab = tab;
             tab.verbose = true;
@@ -930,7 +984,300 @@ fn run(cli: Cli) -> Result<(), Error> {
         }
         Cmd::Optimal { cmd } => run_optimal(cmd),
         Cmd::Combined(args) => run_combined(&args),
+        Cmd::Info {
+            scramble,
+            input,
+            json,
+        } => {
+            let jobs = read_jobs(&Inputs {
+                scramble: &scramble,
+                pattern: input.pattern.as_deref(),
+                patterns: input.patterns,
+                usual: None,
+                random: input.random,
+                seed: input.seed,
+                inverse: input.inverse,
+            })?;
+            for job in &jobs {
+                match job {
+                    Ok(j) => print_info(j, jobs.len() > 1, json)?,
+                    // (one line of JSON for it too, in its place)
+                    Err(bad) if json => {
+                        let out = serde_json::json!({ "input": bad.label, "error": bad.message });
+                        println!("{out}");
+                        eprintln!("error: {}: {}", bad.label, bad.message);
+                    }
+                    Err(bad) => bad.report(),
+                }
+            }
+            unread(&jobs)
+        }
     }
+}
+
+/// The two-phase tier: `--tier`, or the largest whose tables are all in `dir` (said on stderr).
+fn two_phase_tier(tab: &TableArgs, dir: &Path) -> Result<Tier, Error> {
+    if let Some(t) = tab.tier {
+        return Ok(t);
+    }
+    let c = autotier::two_phase(dir, tab.move_set())?;
+    eprintln!("{}", c.message);
+    Ok(c.tier)
+}
+
+/// The inputs of `info` besides the scrambles.
+#[derive(clap::Args, Clone)]
+struct InputArgs {
+    /// Each given sequence is a solution: the position it solves (the sequence inverted)
+    #[arg(long)]
+    inverse: bool,
+    /// A pattern instead of a scramble (as for `solve --pattern`)
+    #[arg(long, conflicts_with_all = ["scramble", "inverse", "random"])]
+    pattern: Option<String>,
+    /// Patterns read from stdin (as for `solve --patterns`)
+    #[arg(long, conflicts_with_all = ["scramble", "inverse", "random", "pattern"])]
+    patterns: bool,
+    /// This many seeded random positions instead of scrambles
+    #[arg(long, conflicts_with_all = ["scramble", "inverse"])]
+    random: Option<usize>,
+    /// Seed of the random positions (`--random`)
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
+}
+
+/// A position to work on (`optimal solve`, `info`, `solve --patterns`).
+struct Job {
+    /// printed as `# label` when there are several
+    label: String,
+    /// a shorter name, if the label holds the pattern (`info` prints the pattern anyway)
+    name: Option<String>,
+    cube: Cube,
+    frame: Frame,
+    /// the moves that make it, if given as a scramble
+    moves: Option<Vec<PhysMove>>,
+    /// the pattern, if given as one: its solution is followed by a scramble that makes it
+    pattern: Option<PatternInput>,
+}
+
+/// A pattern of `--patterns` with a mistake: reported in its turn, and the run fails at the end.
+struct BadInput {
+    label: String,
+    message: String,
+}
+
+impl BadInput {
+    fn report(&self) {
+        println!("# {}", self.label);
+        eprintln!("error: {}: {}", self.label, self.message);
+    }
+}
+
+/// Where the positions of a command come from.
+struct Inputs<'a> {
+    scramble: &'a [String],
+    pattern: Option<&'a str>,
+    patterns: bool,
+    usual: Option<&'a str>,
+    random: Option<usize>,
+    seed: u64,
+    inverse: bool,
+}
+
+/// The positions to work on, in order: `--patterns` (stdin; a pattern with a mistake is kept
+/// as its error), `--pattern`, `--random`, or the scrambles (arguments, or one per line on
+/// stdin), inverted with `--inverse`.
+fn read_jobs(i: &Inputs) -> Result<Vec<Result<Job, BadInput>>, Error> {
+    if i.patterns {
+        let usual = parse_usual(i.usual)?;
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut text)?;
+        let records = pattern::records(&text);
+        if records.is_empty() {
+            return Err("no pattern on stdin".into());
+        }
+        return Ok(records
+            .iter()
+            .enumerate()
+            .map(|(k, r)| {
+                let name = format!("pattern {} (line {})", k + 1, r.line);
+                let read = pattern::parse(&r.text).and_then(|p| Ok((p, pattern::position(&p)?)));
+                match read {
+                    Ok((p, cube)) => Ok(Job {
+                        label: format!("{name}: {}", pattern::format(&p)),
+                        name: Some(name),
+                        cube,
+                        frame: Frame::identity(),
+                        moves: None,
+                        pattern: Some(PatternInput {
+                            pattern: p,
+                            usual,
+                            cube,
+                        }),
+                    }),
+                    Err(e) => Err(BadInput {
+                        label: name,
+                        message: e.to_string(),
+                    }),
+                }
+            })
+            .collect());
+    }
+    if let Some(text) = i.pattern {
+        let pi = read_pattern(text, i.usual)?;
+        return Ok(vec![Ok(Job {
+            label: pattern::format(&pi.pattern),
+            name: None,
+            cube: pi.cube,
+            frame: Frame::identity(),
+            moves: None,
+            pattern: Some(pi),
+        })]);
+    }
+    if let Some(n) = i.random {
+        return Ok(bench::random_positions(n, i.seed)
+            .into_iter()
+            .enumerate()
+            .map(|(k, cube)| {
+                Ok(Job {
+                    label: format!("random position {k} (seed {})", i.seed),
+                    name: None,
+                    cube,
+                    frame: Frame::identity(),
+                    moves: None,
+                    pattern: None,
+                })
+            })
+            .collect());
+    }
+    let mut v = vec![];
+    for s in read_scrambles(i.scramble) {
+        let m = parse_moves(&s)?;
+        let (m, label) = if i.inverse {
+            let m = invert_moves(&m);
+            let label = format_moves(&m);
+            (m, label)
+        } else {
+            (m, s)
+        };
+        let (cube, frame) = scramble_to_cube(&m);
+        v.push(Ok(Job {
+            label,
+            name: None,
+            cube,
+            frame,
+            moves: Some(m),
+            pattern: None,
+        }));
+    }
+    if v.is_empty() {
+        return Err("no scramble given".into());
+    }
+    Ok(v)
+}
+
+/// When no pattern could be read: report each, and fail (no table is loaded).
+fn none_read(jobs: &[Result<Job, BadInput>]) -> Result<(), Error> {
+    for bad in jobs.iter().filter_map(|j| j.as_ref().err()) {
+        bad.report();
+    }
+    unread(jobs)
+}
+
+/// After the jobs: an error if some pattern could not be read (each was reported in its turn).
+fn unread(jobs: &[Result<Job, BadInput>]) -> Result<(), Error> {
+    match jobs.iter().filter(|j| j.is_err()).count() {
+        0 => Ok(()),
+        bad => Err(format!(
+            "{bad} of {} patterns could not be read (see above)",
+            jobs.len()
+        )
+        .into()),
+    }
+}
+
+/// `solve --patterns`: each pattern of stdin as with `--pattern`; one with a mistake is
+/// reported in its turn, the others are solved, and the run fails at the end.
+fn solve_pattern_list(
+    tab: &TableArgs,
+    usual: Option<&str>,
+    limits: &Limits,
+    print: Report,
+    progress: Option<std::time::Duration>,
+) -> Result<(), Error> {
+    let jobs = read_jobs(&Inputs {
+        scramble: &[],
+        pattern: None,
+        patterns: true,
+        usual,
+        random: None,
+        seed: 0,
+        inverse: false,
+    })?;
+    if !jobs.iter().any(Result::is_ok) {
+        return none_read(&jobs);
+    }
+    let p = pool(tab.threads)?;
+    p.install(|| {
+        dispatch!(tab, |t, _name| {
+            for job in &jobs {
+                match job {
+                    Ok(j) => {
+                        // (`run_solve` prints the label itself with -v)
+                        if !tab.verbose {
+                            println!("# {}", j.label);
+                        }
+                        run_solve(
+                            &t,
+                            &[(j.cube, j.frame, j.label.clone())],
+                            limits,
+                            print,
+                            tab.verbose,
+                            j.pattern.as_ref(),
+                            progress,
+                        );
+                    }
+                    Err(bad) => bad.report(),
+                }
+            }
+        });
+        Ok::<(), Error>(())
+    })?;
+    unread(&jobs)
+}
+
+/// `info`: the facts about one position, as text or one line of JSON.
+fn print_info(j: &Job, header: bool, json: bool) -> Result<(), Error> {
+    let labels = j.moves.as_deref().map(pure_stickers);
+    let facts = info::info(&j.cube, labels.as_ref());
+    let pat = match (&j.pattern, &j.moves) {
+        (Some(pi), _) => pattern::format(&pi.pattern),
+        (None, Some(m)) => pattern::format(&pattern::of_moves(m)),
+        (None, None) => pattern::format(&pattern::of_cube(&j.cube)),
+    };
+    if json {
+        #[derive(serde::Serialize)]
+        struct Out<'a> {
+            input: &'a str,
+            pattern: &'a str,
+            #[serde(flatten)]
+            info: &'a info::Info,
+        }
+        let out = Out {
+            input: j.name.as_deref().unwrap_or(&j.label),
+            pattern: &pat,
+            info: &facts,
+        };
+        println!("{}", serde_json::to_string(&out)?);
+        return Ok(());
+    }
+    if header {
+        println!("# {}", j.name.as_deref().unwrap_or(&j.label));
+    }
+    println!("pattern: {pat}");
+    for line in facts.lines() {
+        println!("{line}");
+    }
+    Ok(())
 }
 
 /// `omelettehedron combined`: both solvers on each position at once.
@@ -941,12 +1288,14 @@ struct CombinedArgs {
     /// Stop after this many seconds and print the best solution and the bounds proven
     #[arg(short = 't', long)]
     time: Option<f64>,
-    /// Tables of the two-phase solver (as for `solve --tier`)
+    /// Tables of the two-phase solver (as for `solve --tier`; default: the largest tier whose
+    /// tables are all there)
     #[arg(long, value_enum)]
-    tier: Tier,
-    /// Tables of the optimal solver (as for `optimal solve --tier`)
+    tier: Option<Tier>,
+    /// Tables of the optimal solver (as for `optimal solve --tier`; default: the largest tier
+    /// whose tables are all there)
     #[arg(long, value_enum)]
-    opt_tier: OptTier,
+    opt_tier: Option<OptTier>,
     /// How the two-phase solver searches. improve: as under a time limit, each better solution
     /// as soon as possible (the optimal solver proves the lower bounds). passes: its optimal
     /// mode, target-length passes that start from the largest lower bound proven by either
@@ -992,24 +1341,39 @@ struct CombinedArgs {
 
 fn run_combined(a: &CombinedArgs) -> Result<(), Error> {
     use omelettehedron::combined;
+    use omelettehedron::preflight::{check_memory, set_force, set_memory_floor, Planned};
     let every = a.prog.every()?;
     let time = a
         .time
         .map(std::time::Duration::try_from_secs_f64)
         .transpose()
         .map_err(|e| format!("--time: {e}"))?;
-    let positions = read_positions(&a.scramble, a.random, a.seed, a.inverse)?;
+    let jobs = read_jobs(&Inputs {
+        scramble: &a.scramble,
+        pattern: None,
+        patterns: false,
+        usual: None,
+        random: a.random,
+        seed: a.seed,
+        inverse: a.inverse,
+    })?;
+    if !jobs.iter().any(Result::is_ok) {
+        return none_read(&jobs);
+    }
     // threads: split evenly unless given
     let total = a.threads.unwrap_or_else(rayon::current_num_threads).max(2);
-    let n_tp = a.two_phase_threads.unwrap_or_else(|| {
-        a.optimal_threads
-            .map_or(total.div_ceil(2), |o| total.saturating_sub(o))
-            .max(1)
-    });
+    let n_tp = a
+        .two_phase_threads
+        .unwrap_or_else(|| {
+            a.optimal_threads
+                .map_or(total.div_ceil(2), |o| total.saturating_sub(o))
+        })
+        .max(1);
     let n_opt = a
         .optimal_threads
-        .unwrap_or_else(|| total.saturating_sub(n_tp).max(1));
-    let tab = TableArgs {
+        .unwrap_or_else(|| total.saturating_sub(n_tp))
+        .max(1);
+    let mut tab = TableArgs {
         tier: a.tier,
         tables: a.tables.clone(),
         threads: Some(n_tp),
@@ -1017,7 +1381,7 @@ fn run_combined(a: &CombinedArgs) -> Result<(), Error> {
         force: a.force,
         moves: a.moves.clone(),
     };
-    let otab = OptTableArgs {
+    let mut otab = OptTableArgs {
         tier: a.opt_tier,
         tables: a.tables.clone(),
         threads: Some(n_opt),
@@ -1026,24 +1390,48 @@ fn run_combined(a: &CombinedArgs) -> Result<(), Error> {
         min_free_memory: a.min_free_memory,
         moves: a.moves.clone(),
     };
-    // Both solvers' tables are held at once: check that they fit before loading either.
+    // the tiers (without --tier / --opt-tier: the largest whose tables are all there)
     let dir = table_dir(a.tables.as_deref());
-    omelettehedron::preflight::set_force(a.force);
+    let tier = two_phase_tier(&tab, &dir)?;
+    tab.tier = Some(tier);
+    let opt_tier = match a.opt_tier {
+        Some(t) => t,
+        None => {
+            let c = autotier::optimal(&dir, otab.move_set())?;
+            eprintln!("{}", c.message);
+            c.tier
+        }
+    };
+    otab.tier = Some(opt_tier);
+    // Both solvers' tables are held at once: check that they fit before loading either
+    // (2 bits per entry; a missing table is generated, which `load` checks on its own).
+    set_force(a.force);
     // (an `as` cast saturates: negative or NaN -> 0, too large -> u64::MAX)
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let floor = (a.min_free_memory * 1e9) as u64;
-    omelettehedron::preflight::set_memory_floor(floor);
-    let mut plan = omelettehedron::tables::tier_plan(&dir, a.tier, tab.move_set());
-    plan.extend(
-        OptTables::plan(&dir, a.opt_tier, otab.move_set()).map_err(|e| table_error(&dir, &e))?,
-    );
-    omelettehedron::preflight::check_memory(&plan).map_err(|e| table_error(&dir, &e))?;
+    set_memory_floor(floor);
+    let files = tier
+        .files(tab.move_set())
+        .into_iter()
+        .chain(opt_tier.files(otab.move_set()).unwrap_or_default());
+    let plan: Vec<Planned> = files
+        .map(|f| {
+            let path = dir.join(&f.name);
+            let bytes = std::fs::metadata(&path).map_or(f.entries.div_ceil(4), |m| m.len());
+            Planned {
+                path,
+                bytes,
+                working_set: 0,
+            }
+        })
+        .collect();
+    check_memory(&plan).map_err(|e| table_error(&dir, &e))?;
     if a.verbose {
         eprintln!(
-            "two-phase solver: {n_tp} threads, tier {:?}; optimal solver: {n_opt} threads, tier \
+            "two-phase solver: {n_tp} threads, tier {}; optimal solver: {n_opt} threads, tier \
              {}; tables {:.1} GB in all",
-            a.tier,
-            a.opt_tier.name(),
+            tier.name(),
+            opt_tier.name(),
             plan.iter().map(|p| p.bytes).sum::<u64>() as f64 / 1e9
         );
     }
@@ -1057,14 +1445,22 @@ fn run_combined(a: &CombinedArgs) -> Result<(), Error> {
     dispatch!(tab, |t, _name| {
         let ot = load_opt(&otab)?;
         opt_bounds!(ot, |b| {
-            for (cube, frame, label) in &positions {
-                if positions.len() > 1 || a.verbose {
-                    println!("# {label}");
+            for job in &jobs {
+                let j = match job {
+                    Ok(j) => j,
+                    Err(bad) => {
+                        bad.report();
+                        continue;
+                    }
+                };
+                if jobs.len() > 1 || a.verbose {
+                    println!("# {}", j.label);
                 }
-                let o = combined::solve(&t, &b, &p_tp, &p_opt, *cube, *frame, &cfg)?;
+                let o = combined::solve(&t, &b, &p_tp, &p_opt, j.cube, j.frame, &cfg)?;
                 combined::print_outcome(&o);
             }
-            Ok(())
+            Ok::<(), Error>(())
         })
-    })
+    })?;
+    unread(&jobs)
 }

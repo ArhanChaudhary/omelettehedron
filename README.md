@@ -135,10 +135,45 @@ FTO_DEBUG=1 target/release/omelettehedron solve --tier large --lower-bound 21 ".
 
 # optimal solution with slice turns allowed (generates the slice tables on first use)
 target/release/omelettehedron solve --tier large --moves slice "U R' BL F D B' L BR"
+
+# without --tier: the largest tier whose tables are all there (see Pruning tables)
+target/release/omelettehedron solve "U R' BL F D B' L BR"
 ```
 
 Stopping rules can be combined; the search stops when any of them triggers. `-j N` sets the
 thread count (default: all cores).
+
+### Position info
+
+`info` describes a position without loading any table (it starts in well under a second). It
+takes scrambles like `solve` (arguments or stdin, `--inverse`), `--pattern`, `--patterns` and
+`--random N`; `--json` prints one line of JSON per position.
+
+```sh
+target/release/omelettehedron info "U R' BL F D B' L BR"
+# pattern: GAOOAOWAW BBBBRRPPP GOOAGGGWO RRYYYRBBB / RRYYPRRBB OOGGWAGAO PPPPYYYPY AAWWWWWGA
+# solved: no
+# symmetries: none (only the identity)
+# pieces (with the puzzle held so that most stickers are right):
+#   corners: 1 of 6 solved
+#   edges: 4 of 12 solved
+#   centres: 13 of 24 on a face of their colour (6 of 12 on U F BR BL, 7 of 12 on R L B D)
+#   pure FTO (every centre unique): 10 of the 13 are their own piece, 3 exchanged with a centre of the same colour
+# in H_A (solvable with U F BR BL alone): no
+# in H_B (solvable with R L B D alone): no
+# lower bound: 7 moves (the corners alone need 3, the centres 7 and 4, the edges 7)
+```
+
+* Symmetries: how many of the octahedron's 48 symmetries (turning or mirroring the whole
+  puzzle, colours renamed to match) give the same position. The optimal solver uses them.
+* Pieces are counted with the puzzle held the way (of the 12 that turns can reach) that puts
+  the most stickers on a face of their colour.
+* Pure FTO: whether centres of a colour are exchanged. Only a scramble tells which centre is
+  which, so a pattern or a random position says "not known".
+* `H_A` and `H_B` are the two-phase solver's target groups (see [docs/PHASES.md](docs/PHASES.md));
+  for a position in one, the exact count of turns of its four faces is given.
+* The lower bound (face turns) is the largest distance to solved of the corners, the centres of
+  each half and the edges' places, each taken alone (small tables built in memory).
 
 ### Patterns
 
@@ -157,7 +192,17 @@ target/release/omelettehedron solve --tier large -t 5 --usual WRGPBOYA \
 # D' F U' L BR' R' B D' F' BL' U R'
 # scramble from solved with W on U and G on F: R U' BL F D B' R BR L' U F' D
 # scramble from your usual hold: R U' BL F D B' R BR L' U F' D
+
+# several patterns from a file (or stdin), each solved as with --pattern
+target/release/omelettehedron solve --tier large -t 5 --usual WRGPBOYA --patterns < patterns.txt
 ```
+
+With `--patterns`, `solve` reads patterns from stdin and numbers them in the output
+(`# pattern 2 (line 4): ...`). A pattern can take one line or several: lines are joined until
+they hold 72 stickers. A blank line ends a pattern early, so a pattern with a sticker missing
+does not run into the next one. `#` starts a comment. A pattern with a mistake gets its error
+message, the others are still solved, and the run then exits with an error.
+`optimal solve` accepts `--pattern`, `--patterns` and `--usual` too.
 
 Hold the puzzle with a corner pointing at you and read the front faces U, R, F, L (top, right,
 bottom, left), then turn the whole puzzle around, keeping the top at the top, and read the back
@@ -187,11 +232,17 @@ makes the same puzzle, held another way.
 
 ### Pruning tables
 
-`--tier` is required (there is no default size): choose the largest tier that fits
-comfortably in RAM. Tables are generated on first use. They are written to `./tables`, or to `--tables DIR` or
-`$FTO_TABLES` if given. `omelettehedron gen --tier T` generates them ahead of time. Before generating a
-table, the solver checks that the disk and the free memory can hold it, and stops at once
-with a message if not.
+Choose the largest tier that fits comfortably in RAM. Tables are generated on first use. They
+are written to `./tables`, or to `--tables DIR` or `$FTO_TABLES` if given.
+`omelettehedron gen --tier T` generates them ahead of time (`gen` needs `--tier`). Before
+generating a table, the solver checks that the disk and the free memory can hold it, and stops
+at once with a message if not.
+
+Without `--tier`, `solve` and `bench` use the largest tier whose tables are all in the table
+directory, and say which on stderr. A file counts if its size and header are right; the tables
+are not read to decide. With `--moves slice` the `-slice` files count. If no tier is complete,
+the command stops and says to pass `--tier` or to run `gen --tier T`; nothing is generated
+without `--tier`. The optimal solver chooses among its own tiers the same way.
 
 | `--tier` | Memory | Generation (48 cores) | Contents |
 |---|---|---|---|
@@ -278,6 +329,9 @@ target/release/omelettehedron optimal solve --tier medium --moves slice "..."  #
 | `medium` | 3.4 GB | corners x centres, corners x edges (48 symmetries), and the two-phase A-centre/edge table on both sides |
 | `large` | 22.0 GB | the two-phase A-centre/edge table on both sides and corners x B-centres x the edges of one face, to solved (21 GB, 6 symmetries, read for all 8 faces); `optimal gen --tier large` takes about 2 minutes on 48 cores (`--min-free-memory GB` stops it cleanly if memory runs low) |
 
+Without `--tier`, `optimal solve` and `optimal bench` use the largest tier whose tables are all
+there (see [Pruning tables](#pruning-tables)); `optimal gen` needs `--tier`.
+
 Stopping rules: none (first optimal solution), `-n N` (up to N optimal solutions), `-t T`
 (time limit; prints the lower bound proven so far), `-l L` (give up above L moves). Positions
 that some of the octahedron's 48 symmetries fix (like most of `bench/hard.tsv`) are searched
@@ -336,6 +390,9 @@ reloads once; where a browser refuses, the demo runs on one thread.
   it goes back to the small one and says so. The page shows each better solution while
   solving. **Stop** cancels a solve. Without shared memory, it restarts the worker and reloads
   the stored tables.
+* **Invert** turns the moves in the box around (reversed, each turned the other way), so a
+  solution found elsewhere becomes a scramble of the position it solves; solve that to find
+  other solutions. It works on the text alone, before the tables are ready too.
 * The page also solves a pattern (see [Patterns](#patterns)): the visitor colours a picture of
   the front and the back (`wasm/pattern-picture.mjs`, `wasm/pattern-input.mjs`; the palette is
   their colour scheme, kept in localStorage), and gets a solution and a scramble that makes the
@@ -437,3 +494,6 @@ The tests cover:
   the two-phase solver's optimal mode, with and without slice turns, `-n` against brute-force
   enumeration of all optimal solutions, the other stopping rules, deterministic node counts and
   table consistency.
+* the command line (`tests/cli.rs`): patterns on stdin (one with a mistake) for both solvers,
+  the tier chosen from the table files (and nothing generated without `--tier`), and `info`
+  without tables.

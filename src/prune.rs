@@ -122,6 +122,62 @@ pub fn save_words(path: &Path, n: usize, hist: &[u64], data: &[u64]) -> std::io:
     std::fs::rename(tmp, path)
 }
 
+/// A table file that a tier needs: its name (with the move set's suffix and `.prun`) and the
+/// number of entries its header must give.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TableFile {
+    pub name: String,
+    pub entries: u64,
+}
+
+/// What a table file looks like from its size and header (nothing else is read).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileState {
+    /// the header is this version's for the table, and the file has all its bytes
+    Complete,
+    Missing,
+    /// why the file cannot be the table
+    Bad(String),
+}
+
+/// Judge a table file of `entries` entries from its size and its header only (the 24 bytes
+/// that [`save_words`] writes first), without reading the table: whether it is there, has the
+/// right number of entries and every byte the header implies. (A file that passes can still
+/// fail its checksum when loaded.)
+pub fn file_state(path: &Path, entries: u64) -> FileState {
+    let len = match std::fs::metadata(path) {
+        Ok(m) => m.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return FileState::Missing,
+        Err(e) => return FileState::Bad(e.to_string()),
+    };
+    let mut head = [0u8; 24];
+    let read = std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut head));
+    let word = |i: usize| {
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&head[8 * i..8 * i + 8]);
+        u64::from_le_bytes(b)
+    };
+    if read.is_err() || &head[..8] != b"FTOPRUN2" {
+        return FileState::Bad("not a table file".into());
+    }
+    let (n, nh) = (word(1), word(2));
+    if n != entries {
+        return FileState::Bad(format!(
+            "{n} entries where this version's table has {entries}"
+        ));
+    }
+    // magic, n, histogram length, histogram, checksum, then the 2-bit entries in words
+    let want = nh
+        .checked_mul(8)
+        .and_then(|h| h.checked_add(32))
+        .and_then(|h| h.checked_add(n.div_ceil(32).checked_mul(8)?));
+    match want {
+        Some(w) if w == len => FileState::Complete,
+        Some(w) => FileState::Bad(format!("{len} bytes where the complete file has {w}")),
+        None => FileState::Bad("not a table file".into()),
+    }
+}
+
 /// Words per checksum chunk.
 const CK: usize = 1 << 20;
 /// Checksum chunks hashed together (independent dependency chains) by one worker.
@@ -789,6 +845,36 @@ mod tests {
         let b = bfs(&g, 1000, &[0], "cycle", false);
         assert_eq!(a.hist, b.hist);
         assert!((0..1000).all(|i| a.get(i) == b.get(i)));
+    }
+
+    /// A saved table is complete; a truncated or padded one, one of another size, a file that
+    /// is no table and a missing one are told apart from their size and header alone.
+    #[cfg(unix)]
+    #[test]
+    fn file_states() {
+        let dir =
+            std::env::temp_dir().join(format!("omelettehedron-filestate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Ring(1000);
+        let t = bfs(&g, 1000, &[0], "cycle", false);
+        let path = dir.join("ring.prun");
+        t.save(&path).unwrap();
+        assert_eq!(file_state(&path, 1000), FileState::Complete);
+        assert!(matches!(file_state(&path, 1001), FileState::Bad(e) if e.contains("1000 entries")));
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes[..bytes.len() - 8]).unwrap();
+        assert!(matches!(file_state(&path, 1000), FileState::Bad(e) if e.contains("bytes")));
+        let mut longer = bytes.clone();
+        longer.push(0);
+        std::fs::write(&path, &longer).unwrap();
+        assert!(matches!(file_state(&path, 1000), FileState::Bad(_)));
+        std::fs::write(&path, b"FTOPRUN").unwrap();
+        assert_eq!(
+            file_state(&path, 1000),
+            FileState::Bad("not a table file".into())
+        );
+        assert_eq!(file_state(&dir.join("none.prun"), 1000), FileState::Missing);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
