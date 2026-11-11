@@ -55,6 +55,7 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | `AE_FIRST` 5 or 7 instead of 6 (after the merged traversal) | (no branch: constant) | optimal 1.03x / 1.01x (5) and 1.04x / 1.01x (7) time; nodes/s 0.97-1.02x | no |
 | `FTO_TASKN` 128 or 2048 instead of 512 | (no branch: env knob) | optimal 19-move set 1.04x / 1.03x, random position 3 0.98x / 0.97x | no |
 | Distance-to-solved bound in optimal mode: 1-bit table (distance >= 11) on the joint table's index, 8 lookups (4 triples x 2 sides), read with at most 10 moves left; large and huge tiers, +3.5 GB, read on first use (estimate first: `archive/tosolved-est`) | `opt/tosolved` | 1T nodes 0.743x / 0.771x (17 / 19-move sets); optimal 0.788x (1T) / 0.853x (48T) time with the table read on first use (0.784x / 0.841x read at start-up), random positions 0.82-0.90x, edge_hard 0.85x, corner 6-flip 626.5 -> 117.2 s; time-limited and start-up unchanged | yes |
+| Distance-to-solved lookups in two waves: triple 2 of both sides first (issued in `stage2`), the other six only for the children they keep (27.8% on the 17-move set; table reads 0.459x) | `opt/tosolved-order` | optimal 0.982x (1T) / 0.985x (48T) time, 4 rounds, identical node counts; both waves in `finish`: 1.007x / 1.008x; second wave issued before the CB / class-B stages: 0.985x / 0.986x, no better (`neg/tosolved-wave2`) | yes |
 
 Cumulative, first working version -> main 97452e0 of 2026-11-10 (48 threads, 40 random
 positions, 5 s): mean best length 21.60 -> 21.175; first solution 86 ms -> 6.0 ms. Optimal mode,

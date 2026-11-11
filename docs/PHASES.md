@@ -220,7 +220,10 @@ optimisation.
     edge_hard 0.85x, corner 6-flip see
     [RESULTS.md](RESULTS.md). The table is read when the first search reaches an iteration
     that can use it, on a background thread while the search goes on without it, so time-limited
-    solves and short proofs never read it. `FTO_NO_CBS=1` turns it off. Checks: the table's
+    solves and short proofs never read it. `FTO_NO_CBS=1` turns it off, `FTO_CBS_EAGER=1` reads
+    it at start-up (deterministic one-thread node counts). Its eight lookups come in two waves:
+    triple 2 of both sides (issued with the CB stage), and the other six only for the children
+    those two keep (`opt/tosolved-order`: 0.982x / 0.985x time at 1T / 48T, half the reads). Checks: the table's
     bits equal the estimate's exact distances on all 1,684,303 children it was read for in the
     17-move searches, an ignored test compares them with search on random positions, the large
     tier gives the brute force's optimal lengths (ignored test), and regenerating it with 16

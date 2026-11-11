@@ -21,6 +21,7 @@ scrambles / 1 thread, 17-move scrambles).
 
 | Experiment | Date | Summary |
 |---|---|---|
+| <a id="ref-neg-tosolved-wave2"></a>`neg/tosolved-wave2` | 2026-11-11 | Two-phase solver: the second wave of distance-to-solved lookups issued before the CB and class-B stages (the first wave read at the start of `finish`), so that its latency overlaps them: 0.985x / 0.986x time at 1T / 48T against main, the same as the first wave alone in `stage2` (0.982x / 0.985x; rounds mixed), identical node counts |
 | <a id="ref-neg-lanes"></a>`neg/lanes` | 2026-11-10 | Lane-interleaved phase-1 search (several paths advanced in turn): slower; the search is compute-bound (~110 cycles per child). 48T nodes/s 0.94x, first solution 2.70x; optimal 1.07x |
 | <a id="ref-neg-sibling"></a>`neg/sibling` | 2026-11-10 | Sibling pruning in the AE stage: slower, it exposes a second DRAM latency. Nodes/s 0.95x (48T and 1T) |
 | <a id="ref-neg-direct"></a>`neg/direct` | 2026-11-10 | Direct distance-to-solved bound (edge permutation 12!/2 + corners, from a competing solver's design): prunes nothing beyond max(distance to H_A, distance to H_B). Optimal 1.10x / 1.12x, nodes/s 0.91x |
