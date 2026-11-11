@@ -787,9 +787,10 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             }
             // The first distance-to-solved lookups (triple `CBS_FIRST` of both sides, read in
             // `finish`) are issued here for the children that passed their AE stage, so that
-            // their latency overlaps the CB and joint-table stages (opt/tosolved-order: 0.987x /
-            // 0.986x time at 1T / 48T against reading all eight in `finish`; issued in `finish`
-            // too, the two waves took 1.007x / 1.008x).
+            // their latency overlaps the CB and joint-table stages (opt/tosolved-order: 0.982x /
+            // 0.985x time at 1T / 48T against reading all eight in `finish`, 4 rounds; issued in
+            // `finish` too, the two waves took 1.007x / 1.008x; also issuing the second wave
+            // before the CB and class-B stages: 0.985x / 0.986x, no better, neg/tosolved-wave2).
             if B && k > 0 && lim < usize::from(crate::cbe::CBS_MIN) {
                 if let Some((lazy, cbe)) = self.cbs {
                     if let Some(cbs) = lazy.loaded() {
