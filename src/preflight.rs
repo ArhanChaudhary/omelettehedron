@@ -213,6 +213,42 @@ pub fn check_plan(tables: &[Planned]) -> io::Result<()> {
     Ok(())
 }
 
+/// Make sure the tables of several solvers fit in memory together (`omelettehedron combined`
+/// loads both solvers' tables): every table, loaded or generated, plus the largest generation
+/// working set of the missing ones. The disk is checked when each solver generates its tables
+/// ([`check_plan`]).
+///
+/// # Errors
+///
+/// If the free memory is too small (unless the checks are switched off with [`set_force`]).
+pub fn check_memory(tables: &[Planned]) -> io::Result<()> {
+    if FORCE.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    let resident: u64 = tables.iter().map(|t| t.bytes).sum();
+    let working = tables
+        .iter()
+        .filter(|t| !t.path.exists())
+        .map(|t| t.working_set)
+        .max()
+        .unwrap_or(0);
+    let need = resident
+        .saturating_add(working)
+        .saturating_add(MARGIN.max(FLOOR.load(Ordering::Relaxed)));
+    if let Some(mem) = memory_room() {
+        if mem < need {
+            return Err(io::Error::other(format!(
+                "not enough memory for the tables of both solvers: they need {:.2} GB, {:.2} GB \
+                 is available. Use smaller tiers (--tier, --opt-tier), or skip this check with \
+                 --force.",
+                gb(need),
+                gb(mem)
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +279,15 @@ mod tests {
             working_set: u64::MAX / 4,
         }];
         assert!(check_plan(&loaded).is_ok());
+        // tables held together: loaded ones count too
+        assert!(check_memory(&loaded[..0]).is_ok());
+        let huge = [Planned {
+            path: dir.join("present.prun"),
+            bytes: u64::MAX / 4,
+            working_set: 0,
+        }];
+        let err = check_memory(&huge).expect_err("an exabyte of tables must not fit");
+        assert!(err.to_string().contains("not enough memory"));
     }
 
     /// The guard trips when the memory left is below its floor, and not otherwise.

@@ -20,6 +20,7 @@ use super::coords::*;
 use super::tables::{exact, Bounds, MAX_K};
 use crate::cube::*;
 use crate::notation::{solution_to_physical, Frame, PhysMove};
+use crate::progress::{self, rate, with_heartbeat, Bound, Watch};
 use crate::prune::decode;
 use crate::tables::prefetch_at;
 use std::collections::HashMap;
@@ -258,7 +259,8 @@ struct Shared<'a, B: Bounds, const N: usize> {
     cube: Cube,
     limits: Limits,
     start: Instant,
-    stop: AtomicBool,
+    /// the search's own flag, or one shared with other searches (`Watch::stop`)
+    stop: &'a AtomicBool,
     nodes: AtomicU64,
     lookups: AtomicU64,
     stats: Mutex<PruneStats>,
@@ -648,23 +650,39 @@ pub fn solve<B: Bounds>(
     limits: &Limits,
     verbose: bool,
 ) -> Outcome {
+    solve_watched(b, cube, frame, limits, verbose, &Watch::default())
+}
+
+/// [`solve`] with progress lines and links to other searches (see [`Watch`]): the lower bound
+/// of the start position and of every completed iteration, and the first solution, go to
+/// `watch.on_bound`.
+pub fn solve_watched<B: Bounds>(
+    b: &B,
+    cube: Cube,
+    frame: Frame,
+    limits: &Limits,
+    verbose: bool,
+    watch: &Watch,
+) -> Outcome {
     // (compiled once per number of moves, so the face metric runs the same code as before)
     if b.moves().slice {
-        solve_n::<B, MAX_MOVES>(b, cube, frame, limits, verbose)
+        solve_n::<B, MAX_MOVES>(b, cube, frame, limits, verbose, watch)
     } else {
-        solve_n::<B, N_MOVES>(b, cube, frame, limits, verbose)
+        solve_n::<B, N_MOVES>(b, cube, frame, limits, verbose, watch)
     }
 }
 
-/// [`solve`] with `N` internal moves (`b.moves().n_moves()`).
+/// [`solve_watched`] with `N` internal moves (`b.moves().n_moves()`).
 fn solve_n<B: Bounds, const N: usize>(
     b: &B,
     cube: Cube,
     frame: Frame,
     limits: &Limits,
     verbose: bool,
+    watch: &Watch,
 ) -> Outcome {
     let start = Instant::now();
+    let own_stop = AtomicBool::new(false);
     let p = Pos::of(&cube);
     let mut out = Outcome {
         internal: vec![],
@@ -699,7 +717,7 @@ fn solve_n<B: Bounds, const N: usize>(
         cube,
         limits: limits.clone(),
         start,
-        stop: AtomicBool::new(false),
+        stop: watch.stop.unwrap_or(&own_stop),
         nodes: AtomicU64::new(0),
         lookups: AtomicU64::new(0),
         stats: Mutex::new(PruneStats::default()),
@@ -737,14 +755,31 @@ fn solve_n<B: Bounds, const N: usize>(
     // ordering statistic of each task of the previous iteration, by its move prefix
     let mut stats: HashMap<u32, f32> = HashMap::new();
     let mut prev_nodes: Option<u64> = None;
+    // time of the previous iteration (progress: no heartbeat after a short one)
+    let mut prev_dt: Option<f64> = None;
     let mut depth = lo;
     out.lower_bound = lo;
+    if lo > 0 {
+        watch.bound(Bound::Lower(lo));
+    }
+    watch.line(format_args!(
+        "search from depth {lo}{}",
+        if sh.symmetries.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " (symmetric start: {} of the 48 symmetries fix the position)",
+                root_syms.len() + 1
+            )
+        }
+    ));
     out.stop = loop {
         if limits.max_length.is_some_and(|l| depth > l) {
             break Stop::MaxLength;
         }
         let it_start = sh.nodes.load(Ordering::Relaxed);
         let it_lookups = sh.lookups.load(Ordering::Relaxed);
+        let it_t0 = start.elapsed().as_secs_f64();
         let predicted = prev_nodes.map_or(0, |n| n.saturating_mul(13));
         let inline = threads == 1 || predicted < SERIAL_NODES;
         let want = if inline && threads > 1 {
@@ -811,17 +846,32 @@ fn solve_n<B: Bounds, const N: usize>(
                 .unwrap_or_else(PoisonError::into_inner)
                 .add(&ctr.stats);
         };
-        if inline {
-            worker();
-        } else {
-            rayon::scope(|scope| {
-                for _ in 0..threads.min(tasks.len()) {
-                    scope.spawn(|_| worker());
-                }
-            });
-        }
+        // progress: a line every `Progress::every` while the iteration runs
+        let beat = || {
+            let n = sh.nodes.load(Ordering::Relaxed) - it_start;
+            let dt = start.elapsed().as_secs_f64() - it_t0;
+            format!(
+                "depth {depth}: {:.3e} nodes so far in {dt:.1} s ({}), {}/{} tasks started",
+                n as f64,
+                rate(n, dt),
+                next.load(Ordering::Relaxed).min(tasks.len()),
+                tasks.len()
+            )
+        };
+        with_heartbeat(watch.progress, prev_dt, beat, || {
+            if inline {
+                worker();
+            } else {
+                rayon::scope(|scope| {
+                    for _ in 0..threads.min(tasks.len()) {
+                        scope.spawn(|_| worker());
+                    }
+                });
+            }
+        });
         let it_nodes = sh.nodes.load(Ordering::Relaxed) - it_start;
         prev_nodes = Some(it_nodes);
+        prev_dt = Some(start.elapsed().as_secs_f64() - it_t0);
         stats = tasks
             .iter()
             .zip(&task_stats)
@@ -854,18 +904,50 @@ fn solve_n<B: Bounds, const N: usize>(
                 }
             );
         }
+        let stopped = n_sols == 0 && (sh.stop.load(Ordering::Relaxed) || sh.time_up());
+        if let Some(p) = watch.progress {
+            let dt = elapsed - it_t0;
+            p.line(format_args!(
+                "depth {depth} {} in {dt:.3} s: {}; {:.3e} nodes ({}, {})",
+                if stopped { "stopped" } else { "done" },
+                if n_sols > 0 {
+                    format!("{n_sols} solution(s) of {depth} moves")
+                } else if stopped {
+                    "no lower bound from it".into()
+                } else {
+                    format!("no solution of at most {depth} moves")
+                },
+                it_nodes as f64,
+                rate(it_nodes, dt),
+                progress::tasks(tasks.len())
+            ));
+        }
         if n_sols > 0 {
             out.length = Some(depth);
             out.lower_bound = depth;
+            // (the solutions are all of this length, which the iterations below prove optimal)
+            if watch.on_bound.is_some() {
+                let first = sh
+                    .sols
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .first()
+                    .map(|s| solution_to_physical(frame, s, b.moves().wide));
+                if let Some(m) = first {
+                    watch.bound(Bound::Upper(&m));
+                }
+            }
+            watch.bound(Bound::Lower(depth));
             break Stop::Solved;
         }
-        if sh.stop.load(Ordering::Relaxed) || sh.time_up() {
+        if stopped {
             // (the interrupted iteration proves nothing)
             break Stop::Time;
         }
         // no solution of at most `depth` moves
         depth += 1;
         out.lower_bound = depth;
+        watch.bound(Bound::Lower(depth));
     };
     out.internal = sh.sols.into_inner().unwrap_or_else(PoisonError::into_inner);
     out.solutions = out

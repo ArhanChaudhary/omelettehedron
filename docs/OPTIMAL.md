@@ -25,6 +25,11 @@ omelettehedron optimal solve --tier medium -l 18 "..."
 omelettehedron optimal solve --tier medium --inverse "U F BL B' ..."
 # per-iteration progress (depth, nodes, tasks, time) on stderr
 omelettehedron optimal solve --tier medium -v "..."
+# what the search is doing while it runs (each depth as it ends, "no solution of at most D
+# moves", nodes and nodes/s, and a line every second during a long depth; see the README)
+omelettehedron optimal solve --tier medium --progress "..."
+# together with the two-phase solver: it finds upper bounds, this solver lower bounds
+omelettehedron combined --tier large --opt-tier large "..."
 # generate the tables ahead of time
 omelettehedron optimal gen --tier medium
 # benchmark: seeded random-move scrambles (the two-phase bench sets), one line per position
