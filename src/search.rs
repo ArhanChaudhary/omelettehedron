@@ -900,6 +900,14 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         let (mut k, h_ae, h_cb, min_ha, cbe_done) = (*k, *h_ae, *h_cb, *min_ha, *cbe_done);
         let mut n = 0;
         let mut b_done = false;
+        // The joint table's stage below reads the children that pass the AE/CB stage: each
+        // one's entries are prefetched as soon as it passes, so their misses overlap the rest
+        // of this loop instead of being read right after a separate prefetch loop.
+        let cbe_early = if budget <= 8 && !cbe_done {
+            t.cbe.as_ref()
+        } else {
+            None
+        };
         if budget >= AE_FIRST {
             if cbe_done {
                 if let Some(cbe) = &t.cbe {
@@ -975,6 +983,13 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                     }
                 }
                 live[u] = c;
+                if let (Some(cbe), true) = (cbe_early, c != 0) {
+                    for s in 0..2 {
+                        if on(S, s) && (S != BOTH || on(c, s)) {
+                            cbe.prefetch_all(f, &ys[s][u], &mut ci[s][u]);
+                        }
+                    }
+                }
                 sel[n % N] = i;
                 n += usize::from(c != 0);
             }
@@ -995,24 +1010,21 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                     }
                 }
                 live[u] = c;
+                if let (Some(cbe), true) = (cbe_early, c != 0) {
+                    for s in 0..2 {
+                        if on(S, s) && (S != BOTH || on(c, s)) {
+                            cbe.prefetch_all(f, &ys[s][u], &mut ci[s][u]);
+                        }
+                    }
+                }
                 sel[n % N] = i;
                 n += usize::from(c != 0);
             }
         }
         // The joint corner/B-centre/edge-triple table only adds information near the leaves.
-        if budget <= 8 && !cbe_done {
-            if let Some(cbe) = &t.cbe {
-                for s in 0..2 {
-                    if !on(S, s) {
-                        continue;
-                    }
-                    for &i in &sel[..n] {
-                        let i = usize::from(i) % N;
-                        if S != BOTH || on(live[i], s) {
-                            cbe.prefetch_all(f, &ys[s][i], &mut ci[s][i]);
-                        }
-                    }
-                }
+        if let Some(cbe) = cbe_early {
+            {
+                // (the entries were prefetched as the children passed the stage above)
                 let mut k = 0;
                 for j in 0..n {
                     let i = sel[j];
