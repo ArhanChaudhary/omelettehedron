@@ -211,8 +211,15 @@ fn tier_is_chosen_from_the_files() {
             .collect();
         let (ok, out, err) = run(&args, "");
         assert!(!ok, "{out}");
+        // (the smallest tier of each solver)
+        let smallest = if solver[0] == "optimal" {
+            "small"
+        } else {
+            "tiny"
+        };
         assert!(
-            err.contains("no tier has all its tables") && err.contains("--tier small"),
+            err.contains("no tier has all its tables")
+                && err.contains(&format!("--tier {smallest}")),
             "{err}"
         );
     }

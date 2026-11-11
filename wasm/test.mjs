@@ -14,7 +14,10 @@
 //  - a random-state scramble is well formed;
 //  - an optimal solve of a random position, cancelled after a second, returns at once;
 //  - the threads build for the small tables refuses to generate the medium ones (no room in
-//    its fixed 1 GiB), with an error instead of a trap.
+//    its fixed 1 GiB), with an error instead of a trap;
+//  - the tiny tables: the threads build generates them (with FTO_TABLES holding the native
+//    tiny tier, byte for byte its files), the single-thread build loads them, and both solve
+//    the same scrambles with the native optimal lengths (and on one thread node counts).
 // The medium tables (1.04 GB), if FTO_TABLES has the native medium tier (`gen --tier medium`):
 //  - the single-thread build loads the native files and solves the same scrambles with the
 //    native optimal lengths and one-thread node counts (the medium index on 32-bit wasm);
@@ -42,20 +45,22 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // 11..17) with the native optimal length and one-thread node count (FTO_DEBUG=1
 // omelettehedron solve --tier small -j 1 -v, after fix/cancel: the module's optimal solves have
 // no time limit, only a cancellation deadline, so they keep the one-thread target-length passes).
-// The fourth value is the node count with the medium tables (`--tier medium`, same lengths).
+// The fourth value is the node count with the medium tables (`--tier medium`, same lengths),
+// the fifth with the tiny ones (`--tier tiny`).
 const CASES = [
-  ["F' BL' D' F' L' BR'", 6, 62, 62],
-  ["B BR U' BR L B' D F'", 8, 56, 56],
-  ["BR' U' R' D B' BL' U B U F'", 10, 58, 58],
-  ["BL D L B U' BL L' F' D R L'", 11, 486, 74],
-  ["D' L' F BL BR' F B L' D' U' F L", 12, 214, 82],
-  ["R' B BR BL' U F' R' L U' BR' B' D F'", 13, 2000, 316],
-  ["U R' B R' U BL' BR' R B BL' U L BL' U", 14, 169652, 19846],
+  ["F' BL' D' F' L' BR'", 6, 62, 62, 170],
+  ["B BR U' BR L B' D F'", 8, 56, 56, 110],
+  ["BR' U' R' D B' BL' U B U F'", 10, 58, 58, 58],
+  ["BL D L B U' BL L' F' D R L'", 11, 486, 74, 616],
+  ["D' L' F BL BR' F B L' D' U' F L", 12, 214, 82, 278],
+  ["R' B BR BL' U F' R' L U' BR' B' D F'", 13, 2000, 316, 4806],
+  ["U R' B R' U BL' BR' R B BL' U L BL' U", 14, 169652, 19846, 315594],
 ];
 
 /** The cases as [scramble, length, nodes] for the tables `tier`. */
 const casesFor = (cases, tier) =>
-  cases.map(([scramble, length, small, medium]) => [scramble, length, tier === 'medium' ? medium : small]);
+  cases.map(([scramble, length, small, medium, tiny]) =>
+    [scramble, length, { small, medium, tiny }[tier]]);
 
 /** Recompute the native values with FTO_NATIVE and FTO_TABLES, if set. */
 function nativeCases() {
@@ -72,9 +77,11 @@ function nativeCases() {
     return [length, nodes];
   };
   const medium = Bun.file(`${tables}/${TIERS.medium.ae}`).size > 0;
+  const tiny = Bun.file(`${tables}/${TIERS.tiny.ae}`).size > 0;
   return CASES.map(([scramble]) => {
     const [length, nodes] = run('small', scramble);
-    return [scramble, length, nodes, medium ? run('medium', scramble)[1] : null];
+    return [scramble, length, nodes, medium ? run('medium', scramble)[1] : null,
+      tiny ? run('tiny', scramble)[1] : null];
   });
 }
 
@@ -265,11 +272,42 @@ try {
 }
 check(/not enough memory/.test(noRoom), `threads build: generating the medium tables: ${noRoom || 'no error'}`);
 console.log(`threads build: generating the medium tables is refused: ${noRoom}`);
+
+// --- The tiny tables (the same threads module as the small ones) ---
+const MiB = 2 ** 20;
+t0 = performance.now();
+mt.lines.length = 0;
+const genT = await mt.call('generate', { tier: 'tiny' });
+await sleep(50);
+const progressT = mt.lines.filter((l) => l.fd === 2 && /depth \d+/.test(l.line));
+check(genT.tier === 'tiny' && genT.ae_bytes === 37260304 && progressT.length >= 10,
+  `threads build: generated the tiny tables ${JSON.stringify(genT)}, ${progressT.length} progress lines`);
+console.log(`threads build: generated the tiny tables in ${genT.seconds.toFixed(2)} s (call ${seconds(t0)} s), `
+  + `AE ${genT.ae_bytes} + CB ${genT.cb_bytes} bytes, ${progressT.length} progress lines`);
+const filesT = await mt.call('export');
+check(filesT[0].name === TIERS.tiny.ae, `threads build: exported ${filesT[0].name}`);
+if (process.env.FTO_TABLES && (await Bun.file(`${process.env.FTO_TABLES}/${TIERS.tiny.ae}`).exists())) {
+  for (const f of filesT) {
+    const same = await sameBytes(Bun.file(`${process.env.FTO_TABLES}/${f.name}`), f.blob);
+    check(same, `exported ${f.name} (tiny) differs from the native file`);
+    console.log(`exported ${f.name} (${f.blob.size} bytes) ${same ? 'equals' : 'DIFFERS FROM'} the native file`);
+  }
+}
+await solveCases(mt, `threads build, ${threads} threads, tiny`, casesFor(cases, 'tiny'), false);
 mt.close();
 st.close();
+const stT = demoWorker('single-tiny');
+await stT.call('init', { threads: 1, channel: stT.channelName, tier: 'tiny' });
+t0 = performance.now();
+const loadedT = await stT.call('load', { ae: filesT[0].blob, cb: filesT[1].blob });
+const grownT = await stT.call('memory');
+check(loadedT.tier === 'tiny', `single build: loaded ${JSON.stringify(loadedT)}`);
+console.log(`single build: loaded the tiny tables in ${loadedT.seconds.toFixed(2)} s (call ${seconds(t0)} s); `
+  + `memory grown to ${grownT.bytes / MiB} MiB`);
+await solveCases(stT, 'single build, tiny', casesFor(cases, 'tiny'), true);
+stT.close();
 
 // --- The medium tables ---
-const MiB = 2 ** 20;
 const tablesDir = process.env.FTO_TABLES;
 const nativeMedium = tablesDir && (await Bun.file(`${tablesDir}/${TIERS.medium.ae}`).exists());
 const generateMedium = process.env.FTO_TEST_MEDIUM_GENERATE === '1';

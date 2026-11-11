@@ -291,6 +291,7 @@ without `--tier`. The optimal solver chooses among its own tiers the same way.
 
 | `--tier` | Memory | Generation (48 cores) | Contents |
 |---|---|---|---|
+| `tiny` | ~42 MB | ~0.3 s | two small A-centre/edge tables read through relabellings (for low-memory devices; see below) |
 | `small` | ~135 MB | ~1 s | A-centre/edge table without edge chirality |
 | `medium` | ~1.0 GB | ~7 s | full A-centre/edge table (288-fold symmetry) |
 | `large` | ~11.6 GB | ~50 s | medium + joint corner/B-centre/edge-triple table (about 2x fewer nodes) + a 3.5 GB distance-to-solved table on the same index (proofs, with or without a time limit: about 0.8x the time) |
@@ -310,8 +311,21 @@ solves and proofs start as fast as without it; long time-limited solves use it t
 6-flip under `-t 1800`: 624 -> 84 s).
 Generation needs about the memory of the tier, plus 7 GB while the distance-to-solved table is
 made (peak 18.3 GB for `large`; `huge` 29.4 GB without that table, not measured with it); on
-one core it takes ~30 s for `small` and ~3 min for `medium`. Writing the 30 GB of `huge` to
-disk is a large part of its time.
+one core it takes ~5 s for `tiny`, ~30 s for `small` and ~3 min for `medium`. Writing the 30 GB
+of `huge` to disk is a large part of its time.
+
+The `tiny` tier (`src/light.rs`; the demo's Light) replaces the small tier's 129 MB
+A-centre/edge table by two smaller ones: the A-centres x the places of the edges of two of the
+four A-triples (36.3 MB, 145M entries under 48 symmetries), read for all six pairs of triples
+through relabellings, and the A-centres x which edges belong to which half of a split of the
+triples into two pairs (0.9 MB), read where the first says "at most 7". The bound is the largest
+of these lookups, so the entries are not distances mod 3 but saturating codes (the first: at most
+7, 8, 9, 10 or more; the second: at most 4, 5, 6, 7 or more), and the search reads them in
+stages: the first lookup's word is prefetched with the others of its stage, and the rest only
+for children the first does not cut. Estimated from 4M random positions it needs 1.5x the nodes of
+the small tier (measured: 1.9x on the demo test's 14-move scramble, about 2.8x on 15-move
+scrambles), and a node costs about twice as much: on one thread it finds a first solution for
+about half as many random positions within 5 s.
 
 ## Benchmarks
 
@@ -453,8 +467,9 @@ two-phase solver, and a random position 8.5 s against 74 s for the optimal solve
 ## WebAssembly demo
 
 `wasm/` holds a browser demo: the solver as a WebAssembly module, a JavaScript wrapper and a
-static page. It offers the small and medium tiers (the page calls them Standard and Faster; the
-large tier needs 8 GB, and wasm32 has a 4 GB address space) and face turns only (no `--moves`).
+static page. It offers the tiny, small and medium tiers (the page calls them Light, Standard and
+Faster; the large tier needs 8 GB, and wasm32 has a 4 GB address space) and face turns only (no
+`--moves`).
 
 ```sh
 rustup target add wasm32-wasip1 wasm32-wasip1-threads
@@ -463,7 +478,7 @@ scripts/build-wasm.sh        # wasm/dist/: omelettehedron.wasm, omelettehedron-t
 bun wasm/serve.mjs           # then open http://localhost:8000/
 bun wasm/test.mjs            # headless test in Bun (FTO_TABLES=DIR also compares the tables and
                              # loads the medium tier; FTO_TEST_MEDIUM_GENERATE=1 generates it)
-bun wasm/bench.mjs [--tier small|medium] [--threads N] [--tables DIR] [--count 10] [--seconds 5]
+bun wasm/bench.mjs [--tier tiny|small|medium] [--threads N] [--tables DIR] [--count 10] [--seconds 5]
 ```
 
 The demo is deployed to GitHub Pages (https://omelettehedron.arhan.sh/) by
@@ -472,12 +487,13 @@ builds the three modules and copies only the public files. Pages cannot send the
 isolation headers, so the page registers `wasm/coi-sw.js`, a service worker that adds them, and
 reloads once; where a browser refuses, the demo runs on one thread.
 
-* `omelettehedron.wasm` (`wasm32-wasip1`) runs on one thread anywhere, with either tier; its
+* `omelettehedron.wasm` (`wasm32-wasip1`) runs on one thread anywhere, with any of the tiers; its
   memory grows as needed. `omelettehedron-threads.wasm` (`wasm32-wasip1-threads`) runs
   rayon's thread pool on wasi-threads. It needs `SharedArrayBuffer`, so a browser page must be
   cross-origin isolated (the COOP/COEP headers that `wasm/serve.mjs` sends; GitHub Pages
   cannot send them). Its memory is fixed from the start: growing the shared memory while
-  threads run is unsafe in V8 (see `wasm/build.rs`). It has 1 GiB, room for the small tier;
+  threads run is unsafe in V8 (see `wasm/build.rs`). It has 1 GiB, room for the tiny and small
+  tiers;
   `omelettehedron-threads-medium.wasm`, the same module built with 2 GiB (feature `medium`),
   has room for the medium tier. Asked to generate tables that do not fit, a module says so
   instead of trapping.
@@ -496,14 +512,16 @@ reloads once; where a browser refuses, the demo runs on one thread.
   its time limit; this needs shared memory.
 * The page (`wasm/index.html`, run in a worker by `wasm/demo-worker.mjs`) starts with every core
   when it is cross-origin isolated, else with one thread. The visitor chooses the tables:
-  Standard (small, 134 MB) or Faster (medium, 1.04 GB); the choice is remembered. The page
-  generates the chosen tables, warms up the engine and keeps the tables in IndexedDB (one entry
-  per tier) for later visits. If the medium tier cannot be prepared (e.g. not enough memory),
-  it goes back to the small one and says so. The page shows each better solution while
-  solving, and the proven lower bound ("shortest possible: at least N moves"). Three modes:
-  best solution in a given time; **keep improving** (no time limit: better and better
-  solutions until the last is proven shortest); and **shortest possible** (the fastest proof,
-  but the first solution it shows is already the shortest). **Stop** cancels a solve. Without shared memory, it restarts the worker and reloads
+  Light (tiny, 42 MB), Standard (small, 134 MB) or Faster (medium, 1.04 GB); the choice is
+  remembered. Phones and tablets start with Light (Standard took too long to prepare on an
+  iPhone), other devices with Standard. The page generates the chosen tables, warms up the
+  engine and keeps the tables in IndexedDB (one entry per tier) for later visits. If a tier
+  cannot be prepared (e.g. not enough memory), it goes back to the next smaller one and says
+  so. The page shows each better solution while solving, and the proven lower bound
+  ("shortest possible: at least N moves"). Three modes: best solution in a given time;
+  **keep improving** (no time limit: better and better solutions until the last is proven
+  shortest); and **shortest possible** (the fastest proof, but the first solution it shows is
+  already the shortest). **Stop** cancels a solve. Without shared memory, it restarts the worker and reloads
   the stored tables.
 * **Invert** turns the moves in the box around (reversed, each turned the other way), so a
   solution found elsewhere becomes a scramble of the position it solves; solve that to find
@@ -512,7 +530,7 @@ reloads once; where a browser refuses, the demo runs on one thread.
   the front and the back (`wasm/pattern-picture.mjs`, `wasm/pattern-input.mjs`; the palette is
   their colour scheme, kept in localStorage), and gets a solution and a scramble that makes the
   pattern, with its start hold. Mistakes are explained and the stickers concerned outlined.
-* Tables can also be loaded from the native `gen --tier small` or `gen --tier medium` files:
+* Tables can also be loaded from the native `gen --tier tiny`, `small` or `medium` files:
   the formats are the same, and the module generates byte-identical files.
 
 Measured in Bun 1.4.4 (JavaScriptCore, Safari's engine) on the 48-core EPYC VM (small tier;
@@ -531,9 +549,20 @@ atomic load, which in JavaScriptCore (Bun, Safari, every browser on iOS) makes t
 contend; the generator's graphs and indices now hold those tables.
 
 The modules are 0.63 MB (one thread) and 0.67 MB (each threads module). The single-thread
-module grows to 352 MiB while generating and 358 MiB while loading table files (428 MiB before
-the files were loaded in place). The optimal solves of short scrambles (6-14 moves) take
+module grows to 352 MiB while generating and 314 MiB while loading table files (358 MiB before
+the edge symmetry tables were made in place, 428 MiB before the files were loaded in place). The optimal solves of short scrambles (6-14 moves) take
 milliseconds, with the same node counts as natively on one thread.
+
+The tiny tier (Light) against the small one, one thread, same machine (more in
+[docs/RESULTS.md](docs/RESULTS.md#tiny-tier)):
+
+| | small (Standard) | tiny (Light) |
+|---|---|---|
+| tables | 134 MB | 42 MB |
+| generation, wasm, 1 / 8 threads | 29.6-30.8 s / 5.7 s | 6.8 s / 1.4 s |
+| module memory after loading | 314 MiB | 190 MiB |
+| search speed, wasm | 20.9 M nodes/s | 13.4 M nodes/s |
+| random positions with a solution within 5 s, wasm / native | 5 / 9 of 10 | 2 / 5 of 10 |
 
 The medium tier was measured on 2026-11-11 while proofs kept 43 of the 48 cores busy; the
 measurements ran at the lowest priority, so their wall times are inflated many times. For one

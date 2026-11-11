@@ -449,6 +449,15 @@ impl FastTables {
     pub fn relabel_rank(&self, x: &Fc, g: usize) -> u32 {
         self.rank(&masks(&shuffle(&self.relab_map[g & 31], &x.e)))
     }
+
+    /// Rank of the positions of labels 0 and 1 alone (0..18480): the multiset rank without
+    /// its last term, so the rank of a labelling is this plus 18480 times the rank of label
+    /// 2's positions among the other six.
+    #[inline(always)]
+    pub fn rank_pair(&self, m: &[u16; 4]) -> u32 {
+        let m0 = m[0] as u32 & 0xfff;
+        self.r12[m0 as usize] + self.r9[self.compress(m[1] as u32, 0xfff & !m0) as usize & 511]
+    }
 }
 
 /// Label vector (lanes 0..12, zero padded) of every multiset rank, for decoding table
@@ -727,7 +736,10 @@ mod tests {
             assert_eq!(f.of_coords(&r), x);
             for &(g, t) in &s.pairs {
                 let (e, b) = f.sym_e(&x, &em, g as usize, t as usize);
-                assert_eq!((e, b), s.apply_e(g as usize, t as usize, r.e, r.ebits));
+                assert_eq!(
+                    (e, b),
+                    edge_syms().apply_e(g as usize, t as usize, r.e, r.ebits)
+                );
             }
         }
     }

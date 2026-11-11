@@ -145,8 +145,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         // nothing yet: an error that says what to do
         let e = two_phase(&dir, MoveSet::FACE).unwrap_err();
+        // (the smallest tier, quickest to generate)
         assert!(
-            e.contains("--tier") && e.contains("omelettehedron gen --tier small"),
+            e.contains("--tier") && e.contains("omelettehedron gen --tier tiny"),
             "{e}"
         );
         let e = optimal(&dir, SLICE).unwrap_err();
@@ -155,6 +156,15 @@ mod tests {
             "{e}"
         );
 
+        fake_tier(&dir, &Tier::Tiny.files(MoveSet::FACE));
+        let c = two_phase(&dir, MoveSet::FACE).unwrap();
+        assert_eq!(c.tier, Tier::Tiny);
+        assert!(
+            c.message
+                .contains("small: ae-sym288-triples.prun is missing"),
+            "{}",
+            c.message
+        );
         fake_tier(&dir, &Tier::Small.files(MoveSet::FACE));
         let c = two_phase(&dir, MoveSet::FACE).unwrap();
         assert_eq!(c.tier, Tier::Small);

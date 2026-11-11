@@ -38,10 +38,19 @@ pub struct Syms {
     pub relab_bits: [[u8; 16]; N_GEO],
     /// the 288 (g, t) pairs
     pub pairs: Vec<(u8, u8)>,
+}
+
+/// The symmetries of the whole edge triple labelling as rank tables (71 MB), apart from
+/// [`Syms`] and made on first use ([`edge_syms`]): the indices of the small, medium and huge
+/// tiers read them, the tiny tier's ([`crate::light`]) does not, so its WebAssembly module
+/// needs neither their memory nor their time.
+pub struct EdgeSyms {
     /// relabelled triple labelling rank: `relab_e[g * N_MSET + rank]`
     pub relab_e: HugeBuf<u32>,
     /// repositioned triple labelling: `repos_e[t * N_MSET + rank]` = new rank | flip mask << 20
     pub repos_e: HugeBuf<u32>,
+    /// as [`Syms::relab_bits`]
+    pub relab_bits: [[u8; 16]; N_GEO],
 }
 
 fn build() -> Syms {
@@ -112,40 +121,6 @@ fn build() -> Syms {
             }
         }
     }
-    let ms = mset();
-    // Speedup: both tables work on the label masks (`Mset::unrank_masks`, `MaskPerm`) instead of
-    // unranking to labels and ranking again.
-    let relab_e: Vec<Vec<u32>> = (0..N_GEO)
-        .map(|g| {
-            // label x becomes a_col[g][x]: the new mask of label y is the old mask of from[y]
-            let mut from = [0usize; 4];
-            for x in 0..4 {
-                from[a_col[g][x] as usize] = x;
-            }
-            (0..N_MSET as u32)
-                .into_par_iter()
-                .map(|r| {
-                    let [m0, m1, m2] = ms.unrank_masks(r);
-                    let m = [m0, m1, m2, 0xfff ^ m0 ^ m1 ^ m2];
-                    ms.rank_masks(m[from[0]], m[from[1]], m[from[2]])
-                })
-                .collect()
-        })
-        .collect();
-    let repos_e: Vec<Vec<u32>> = (0..N_GEO)
-        .map(|t| {
-            let perm = MaskPerm::new(&e_pos[t]);
-            (0..N_MSET as u32)
-                .into_par_iter()
-                .map(|r| {
-                    let m = ms.unrank_masks(r);
-                    perm.rank(ms, &m) | u32::from(perm.flips(&m)) << 20
-                })
-                .collect()
-        })
-        .collect();
-    let relab_e = HugeBuf::from_slice(&relab_e.concat());
-    let repos_e = HugeBuf::from_slice(&repos_e.concat());
     let mut mul = [[0u8; N_GEO]; N_GEO];
     for i in 0..N_GEO {
         for j in 0..N_GEO {
@@ -167,14 +142,69 @@ fn build() -> Syms {
         mul,
         relab_bits,
         pairs,
-        relab_e,
-        repos_e,
     }
 }
 
 pub fn syms() -> &'static Syms {
     static S: OnceLock<Syms> = OnceLock::new();
     S.get_or_init(build)
+}
+
+/// The tables of [`EdgeSyms`], each filled where it lies (no second copy).
+fn build_edge() -> EdgeSyms {
+    let s = syms();
+    let ms = mset();
+    // Speedup: both tables work on the label masks (`Mset::unrank_masks`, `MaskPerm`) instead of
+    // unranking to labels and ranking again.
+    let mut relab_e = HugeBuf::<u32>::for_overwrite(N_GEO * N_MSET);
+    relab_e
+        .par_chunks_mut(N_MSET)
+        .enumerate()
+        .for_each(|(g, chunk)| {
+            // label x becomes a_col[g][x]: the new mask of label y is the old mask of from[y]
+            let mut from = [0usize; 4];
+            for x in 0..4 {
+                from[s.a_col[g][x] as usize] = x;
+            }
+            for (r, o) in chunk.iter_mut().enumerate() {
+                let [m0, m1, m2] = ms.unrank_masks(r as u32);
+                let m = [m0, m1, m2, 0xfff ^ m0 ^ m1 ^ m2];
+                *o = ms.rank_masks(m[from[0]], m[from[1]], m[from[2]]);
+            }
+        });
+    let mut repos_e = HugeBuf::<u32>::for_overwrite(N_GEO * N_MSET);
+    repos_e
+        .par_chunks_mut(N_MSET)
+        .enumerate()
+        .for_each(|(t, chunk)| {
+            let perm = MaskPerm::new(&s.e_pos[t]);
+            for (r, o) in chunk.iter_mut().enumerate() {
+                let m = ms.unrank_masks(r as u32);
+                *o = perm.rank(ms, &m) | u32::from(perm.flips(&m)) << 20;
+            }
+        });
+    EdgeSyms {
+        relab_e,
+        repos_e,
+        relab_bits: s.relab_bits,
+    }
+}
+
+/// The edge labelling's symmetry tables, made on first use.
+pub fn edge_syms() -> &'static EdgeSyms {
+    static S: OnceLock<EdgeSyms> = OnceLock::new();
+    S.get_or_init(build_edge)
+}
+
+impl EdgeSyms {
+    /// Apply (g, t) to the edge coordinate (triple rank, 4 chirality bits).
+    #[inline(always)]
+    pub fn apply_e(&self, g: usize, t: usize, e: u32, bits: u8) -> (u32, u8) {
+        let e1 = self.relab_e[g * N_MSET + e as usize];
+        let b1 = self.relab_bits[g][bits as usize];
+        let p = self.repos_e[t * N_MSET + e1 as usize];
+        (p & 0xfffff, b1 ^ (p >> 20) as u8)
+    }
 }
 
 impl Syms {
@@ -185,14 +215,6 @@ impl Syms {
             n[self.a_pos[t][p] as usize] = self.a_col[g][l[p] as usize];
         }
         n
-    }
-    /// Apply (g, t) to the edge coordinate (triple rank, 4 chirality bits).
-    #[inline(always)]
-    pub fn apply_e(&self, g: usize, t: usize, e: u32, bits: u8) -> (u32, u8) {
-        let e1 = self.relab_e[g * N_MSET + e as usize];
-        let b1 = self.relab_bits[g][bits as usize];
-        let p = self.repos_e[t * N_MSET + e1 as usize];
-        (p & 0xfffff, b1 ^ (p >> 20) as u8)
     }
 }
 
@@ -326,18 +348,18 @@ mod tests {
 
     #[test]
     fn edge_tables_match_label_construction() {
-        let (s, ms) = (syms(), mset());
+        let (s, es, ms) = (syms(), edge_syms(), mset());
         for g in 0..N_GEO {
             for r in 0..N_MSET as u32 {
                 let l = ms.unrank(r);
                 let i = g * N_MSET + r as usize;
-                assert_eq!(s.relab_e[i], ms.rank(&l.map(|x| s.a_col[g][x as usize])));
+                assert_eq!(es.relab_e[i], ms.rank(&l.map(|x| s.a_col[g][x as usize])));
                 let mut n = [0u8; 12];
                 for p in 0..12 {
                     n[s.e_pos[g][p] as usize] = l[p];
                 }
                 let want = ms.rank(&n) | u32::from(triple_flip_mask(&l, &s.e_pos[g])) << 20;
-                assert_eq!(s.repos_e[i], want);
+                assert_eq!(es.repos_e[i], want);
             }
         }
     }

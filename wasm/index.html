@@ -71,6 +71,7 @@ anticlockwise.</p>
 
 <fieldset id="choice">
   <legend>Solving data</legend>
+  <label><input type="radio" name="tables" value="tiny"> <strong>Light</strong> — 42 MB, quick to prepare, slower solving</label>
   <label><input type="radio" name="tables" value="small" checked> <strong>Standard</strong> — 134 MB, about a minute to prepare</label>
   <label><input type="radio" name="tables" value="medium"> <strong>Faster</strong> — about 1 GB, several minutes to prepare, faster solving</label>
   <div id="choice-note" class="note" hidden></div>
@@ -119,11 +120,12 @@ anticlockwise.</p>
 <details id="settings">
   <summary>More options and how it works</summary>
   <p class="note">The first time, the page prepares its solving data here in your browser and
-  saves it, so later visits start almost at once. There are two kinds. <strong>Standard</strong>
-  (134 MB) takes about a minute to prepare. <strong>Faster</strong> (about 1 GB) takes several
-  minutes and needs a computer with plenty of free memory (phones and tablets may not manage
-  it), but then solves faster: proving that a solution is the shortest possible takes about a
-  fifth of the time. If Faster cannot be prepared, the page goes back to Standard. Each kind is
+  saves it, so later visits start almost at once. There are three kinds. <strong>Light</strong>
+  (42 MB, the first choice on phones and tablets) is quick to prepare but solves more slowly.
+  <strong>Standard</strong> (134 MB) takes about a minute to prepare. <strong>Faster</strong>
+  (about 1 GB) takes several minutes and needs a computer with plenty of free memory, but then
+  solves faster: proving that a solution is the shortest possible takes about a fifth of the
+  time. If one cannot be prepared, the page goes back to the next smaller one. Each kind is
   saved separately, so you can switch between them.</p>
   <p class="note">A random scramble gets a solution of about 22–24 moves within seconds. Proving
   that a solution is the shortest possible can take hours for a random scramble, but short
@@ -140,8 +142,8 @@ anticlockwise.</p>
     <label>Load data files <input id="files" type="file" multiple accept=".prun" disabled></label>
   </div>
   <p class="note">For developers: instead of preparing the data here, you can load the two files
-  that the omelettehedron program makes (<code>gen --tier small</code> for Standard,
-  <code>gen --tier medium</code> for Faster).</p>
+  that the omelettehedron program makes (<code>gen --tier tiny</code> for Light,
+  <code>gen --tier small</code> for Standard, <code>gen --tier medium</code> for Faster).</p>
 </details>
 
 <script type="module">
@@ -152,16 +154,22 @@ const $ = (id) => document.getElementById(id);
 const status = (text) => { $('status').textContent = text; };
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-// --- The choice of solving data: 'small' (Standard) or 'medium' (Faster), as the solver
-// calls them ---
-const KIND = { small: 'standard', medium: 'faster' };
+// --- The choice of solving data: 'tiny' (Light), 'small' (Standard) or 'medium' (Faster),
+// as the solver calls them ---
+const KIND = { tiny: 'light', small: 'standard', medium: 'faster' };
 const CHOICE = 'omelettehedron-tables';
+// Phones and tablets start with Light, unless the visitor chose: Standard took too long to
+// prepare on an iPhone, and their memory is small. (iPadOS Safari says it is a Mac.)
+const handheld = navigator.userAgentData?.mobile
+  || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+  || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+const DEFAULT = handheld ? 'tiny' : 'small';
 const savedChoice = () => {
   try {
     const t = localStorage.getItem(CHOICE);
-    return t in TIERS ? t : 'small';
+    return t in TIERS ? t : DEFAULT;
   } catch {
-    return 'small';
+    return DEFAULT;
   }
 };
 let tier = savedChoice();
@@ -259,11 +267,12 @@ const buttons = () => {
 };
 
 // --- Generation progress ---
-// Share of the generation time when each depth of the A-centre/edge table is done (small:
+// Share of the generation time when each depth of the A-centre/edge table is done (tiny, small:
 // measured on one thread; medium: from the work of each depth, the positions it makes, which
 // agrees roughly with a run in Bun: depth 11 takes about three quarters of the time); the
 // corner/B-centre table and the rest take the time after `cb`.
 const PROGRESS = {
+  tiny: { ae: { 7: 0.03, 8: 0.13, 9: 0.77 }, cb: 0.8, skip: 'ae-split96' },
   small: { ae: { 8: 0.01, 9: 0.14, 10: 0.73, 11: 0.87, 12: 0.88 }, cb: 0.88 },
   medium: { ae: { 8: 0.01, 9: 0.02, 10: 0.07, 11: 0.8, 12: 0.97, 13: 0.975 }, cb: 0.975 },
 };
@@ -273,6 +282,8 @@ const generationProgress = (line) => {
   if (!m || !generating) return;
   const depth = Number(m[2]);
   const p = PROGRESS[generating.tier];
+  // (Light's second table takes a moment: the bar skips it)
+  if (m[1] === p.skip) return;
   const share = (table, d) => (table === 'cb' ? p.cb + d / 8 * (0.98 - p.cb) : p.ae[d] ?? 0);
   const f = share(m[1], depth);
   if (f <= generating.done) return;
@@ -373,18 +384,21 @@ const boot = async (n) => {
   return session;
 };
 
-/** `boot`, then the tables; if the faster kind cannot be prepared, the standard one. */
+/** `boot`, then the tables; if a kind cannot be prepared, the next smaller one. */
+const SMALLER = { medium: 'small', small: 'tiny' };
 const start = async (n) => {
   wanted = n;
   const session = await boot(n);
   try {
     await prepareTables(session);
   } catch (e) {
-    if (tier === 'small' || e.message === 'restarted') throw e;
-    console.warn('the faster solving data:', e);
-    choose('small');
-    choiceNote('Faster could not be prepared in this browser (it may not have enough memory),'
-      + ' so the page uses Standard.');
+    const next = SMALLER[tier];
+    if (!next || e.message === 'restarted') throw e;
+    console.warn(`the ${KIND[tier]} solving data:`, e);
+    const failed = KIND[tier];
+    choose(next);
+    choiceNote(`${capital(failed)} could not be prepared in this browser (it may not have enough`
+      + ` memory), so the page uses ${capital(KIND[next])}.`);
     return start(n);
   }
   ready = true;
@@ -645,14 +659,16 @@ $('forget').onclick = () => run('Forget', async () => {
 $('files').onchange = () => run('Load', async () => {
   const files = [...$('files').files];
   $('files').value = '';
-  const ae = files.find((f) => f.name.startsWith('ae-sym288-'));
+  // (the tier whose A-centre/edge file this is, by its name)
+  const tierOf = (f) => Object.keys(TIERS).find((t) => f.name.startsWith(TIERS[t].ae.replace('.prun', '')));
+  const ae = files.find(tierOf);
   const cb = files.find((f) => f.name.startsWith('cb-sym24'));
   if (!ae || !cb || /-slice/.test(ae.name + cb.name)) {
-    throw new Error('choose both files: ae-sym288-triples.prun (Standard) or ae-sym288-chiral.prun'
-      + ' (Faster), and cb-sym24.prun');
+    throw new Error('choose both files: ae-pair48-split96.prun (Light), ae-sym288-triples.prun'
+      + ' (Standard) or ae-sym288-chiral.prun (Faster), and cb-sym24.prun');
   }
   const before = tier;
-  const t = ae.name.startsWith(TIERS.medium.ae.replace('.prun', '')) ? 'medium' : 'small';
+  const t = tierOf(ae);
   ready = false;
   buttons();
   const t0 = performance.now();

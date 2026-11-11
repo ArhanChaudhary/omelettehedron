@@ -356,6 +356,77 @@ an idle machine):
 With the medium tier the module needs about 9-11 times fewer nodes; a node costs about twice
 as much in WebAssembly (natively the same), so proofs take about a fifth of the time there.
 
+## Tiny tier
+
+The `tiny` tier (`src/light.rs`, the demo's Light) is for phones: the user reported that the
+134 MB of the small tier took too long to prepare on an iPhone.
+
+### Choosing the tables (estimate before building)
+
+Projections of the A-centre/edge coordinate merge labels of the A-centres (A) or of the edge
+triples (E): all four told apart (Full, 369,600 labellings), two told apart and two merged
+(Pair, 18,480), two pairs (Split, 924) or one against three (Single, 220). Each projection's
+exact distance to the projection of `H_A` was computed (a throwaway program, not kept), read
+on seeded random positions through relabellings (4M for the 1.49x-1.99x rows and the codes
+below, 100k-1M for the others), and the maximum with the corner/B-centre table compared with
+the small tier by Korf's formula (relative nodes = sum over k of 12.93^-k P(h <= k)):
+
+| bound | entries | nodes vs small (estimate) |
+|---|---|---|
+| small tier (Full x Full, 288 symmetries) | 516M | 1.00x |
+| A Full x E Pair (48 symmetries), 6 lookups | 145M | 1.49x |
+| the same, 4 / 3 / 2 / 1 lookups | | 1.70x / 1.99x / 2.90x / 16x |
+| A Pair x E Full, 6 lookups | 145M | 1.48x |
+| A Pair x E Pair (6), Full x Split (3), Split x Full (3), Full x Single (4), Single x Full (4), all together | 17M | 9.5x |
+| A Full x E Split, 3 lookups | 3.6M | 24x |
+
+Nothing lies between: the next smaller projections have about 7M entries. A maximum of
+lookups cannot be decoded from distances mod 3 (that needs each lookup's parent value), so the
+tables hold direct 2-bit codes: P (Full x Pair) 0 = at most 7, 1 = 8, 2 = 9, 3 = 10 or more,
+which alone is 81x (code 0 says nothing); with S (Full x Split, codes at most 4 / 5 / 6 / 7 or
+more) read where every P lookup says 0, 1.50x (1.72x with 4 P lookups). Without the
+corner/B-centre table the estimate is far worse (2.2x even with exact S values, and the leaves
+of the search would not be found), so the tier keeps it.
+
+### Measured (2026-11-11, the 48-core VM; one thread unless noted)
+
+The same 10 random positions (seed 2026) and 10 random 15-move scrambles as `bench`; the
+WebAssembly figures in Bun 1.4.4 (JavaScriptCore), loaded from the native files.
+
+| | small | tiny |
+|---|---|---|
+| tables (A-centre/edge + corner/B-centre) | 129.0 + 4.7 MB | 37.3 + 4.7 MB |
+| generation, native, 1 / 48 threads | 21-27 s / 1.1-1.2 s | 5.0 s / 0.28 s (peak 0.20 GB) |
+| generation, WebAssembly, 1 / 8 threads | 29.6-30.8 s / 5.7 s | 6.8 s / 1.4 s |
+| table load, WebAssembly | 0.47 s | 0.29 s |
+| one-thread module after loading / after generating | 314 / 352 MiB (352: before the edge symmetry tables were made in place) | 190 / 216 MiB |
+| search speed, native / WebAssembly | 57.5 / 20.9 M nodes/s | 31.6 / 13.4 M nodes/s |
+| random positions with a solution within 1 s / 5 s, native | 3 / 9 of 10 | 0 / 5 of 10 |
+| first solution (mean over those found), native | 2.00 s, 23.6 moves | 2.79 s, 22.8 moves |
+| random positions with a solution within 5 s, WebAssembly | 5 of 10 (first after 2.63 s) | 2 of 10 (first after 4.17 s) |
+| optimal, 15-move scrambles, native (mean per scramble) | 7.5 ms | 42.6 ms (about 2.8x the nodes) |
+| optimal, the demo test's 14-move scramble | 169,652 nodes | 315,594 nodes |
+
+Per node the tiny tier costs about twice as much (natively 0.55x the speed, in WebAssembly
+0.64x): a child reads up to six P words instead of one A-centre/edge word, and at most 7 moves
+left, three S words. Its tables are read in stages to keep that low (for children the first P
+lookup does not cut, the other five; S first where it can cut, P not at all below 7, where it cut
+0.2% of what S kept). The first-solution times of random positions on one thread are long for
+both tiers; the tiny tier finds about half as many within a few seconds. Optimal solves of short
+scrambles need more nodes than the estimate for random positions suggests: there the A-centre
+and edge distances are small, where the codes are coarse.
+
+K, the P lookups per position: with six instead of four (one thread, the same positions with 10 s
+each), the first solution came in 0.94-0.98x the time on each of the 6 positions both solved,
+and 8 of 10 positions were solved instead of 6, at 31.4 against 33.4 M nodes/s; so six.
+
+Existing tiers: the search's hooks for the tiny tier sit behind the constant
+`AeIndex::DIRECT`, so its hot functions compile for the other indices byte for byte as before
+(`expand_any`, `stage2_any`, `finish`; objdump, addresses aside), and one-thread node counts are
+unchanged. The quick set still came out 0.1-0.9% slower on the 48-thread 19-move optimal set (3
+rounds: 1.005x, 1.009x, 1.001x; the 17-move set on one thread 1.011x, 0.994x, 1.005x), about the
+same as before the gate (0.1-1.4%), so it is not the search code; the binary around it changed.
+
 ## Optimal solver (v0)
 
 The separate optimal solver (`omelettehedron optimal`, single-phase IDA* to the solved state;
