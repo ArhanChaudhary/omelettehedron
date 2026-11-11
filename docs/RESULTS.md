@@ -3,12 +3,84 @@
 [Documentation home](../README.md) · [Optimisation log](OPTIMIZATION_LOG.md) ·
 [Phase design](PHASES.md)
 
+The reference run of 2026-11-11 comes first; the sections after it are earlier measurements, each
+labelled with its commit (the previous reference run: main 97452e0 of 2026-11-10).
+
 Measured on a 48-core AMD EPYC VM (94 GB RAM, no hardware performance counters), large tier
 (A-centre/edge 1.03 GB + corner/B-centre + joint 7.0 GB tables), tables loaded before timing
 (loading takes 0.33 s with 48 threads). Positions are seeded random states unless stated
 otherwise; the numbers below are from the standard suites (`scripts/bench.sh`,
 `scripts/bench-opt.sh`, `scripts/bench-randopt.sh`): means of two interleaved runs of main
 784a24a (7278262 for the 1-thread optimal row) unless stated otherwise.
+
+## Reference run, 2026-11-11 (main 9a9262f, tag v0.1.0)
+
+Quiet machine, each item alone under the bench lock, tables loaded before timing; large tier for
+the two-phase solver unless stated otherwise. From now on comparisons use the quick set
+(`scripts/bench-quick.sh`, under 5 minutes; see the README), so its numbers are the baseline.
+
+### What changed since the previous reference run
+
+"Now" is main 9a9262f on the same sets as "before" (means of two runs, one run of each single
+position; see the last table of this section for the full suites).
+
+| | before | now | change | merged on 2026-11-11 |
+|---|---|---|---|---|
+| two-phase, optimal mode, 10 x 19 moves, 48 threads (per position) | 0.80 s (main 97452e0) | 0.667 s | 0.83x | `opt/tosolved`, `opt/tosolved-order` |
+| two-phase, optimal mode, 10 x 17 moves, 1 thread (per position) | 0.286 s | 0.227 s | 0.79x | the same |
+| two-phase, edge_hard (21), 48 threads | 74 s | 62.8 s | 0.85x | `opt/tosolved` |
+| two-phase, corner 6-flip (20) from scratch, 48 threads | 626.5 s | 117.2 s (measured on the branch, not rerun) | 0.19x | `opt/tosolved` |
+| two-phase, time limit 5 s, 48 threads: first solution, best after 5 s | 22.98 @ 6.0 ms, 21.175 | 22.98 @ 5.8 ms, 21.19 | unchanged (nodes/s 1.03x) | (the new bound is used in optimal mode only) |
+| two-phase, time limit 5 s, 1 thread: first solution, best after 5 s | 23.25 @ 0.168 s, 22.00 | 23.25 @ 0.167 s, 22.00 | unchanged (nodes/s 1.02x) | |
+| optimal solver, 10 x 17 moves, 1 thread (per position) | 1.03 s (first timing: medium, main 3deb77e) | medium 0.585 s, large 0.482 s | 0.57x / 0.47x | `optimal/order`, `optimal/cbe-solved` (the large tier), `optimal/r3-prefetch`, `optimal/r3-masks`, `optimal/r3-aepre`, `optimal/large-noce` |
+| optimal solver, 10 x 19 moves, 48 threads (per position) | 4.12 s (medium, main 3deb77e) | medium 2.37 s, large 0.98 s | 0.58x / 0.24x | the same |
+| optimal solver, large tier, start of round 3 (main 4c96995) -> now: 17 / 19-move sets | 0.758 / 1.528 s | 0.482 / 0.982 s | 0.64x / 0.64x | round 3, `optimal/large-noce` |
+| optimal solver, random position seed 1 (21), large, 48 threads | 91.7 s (main 4c96995) | 66.4 s | 0.72x | the same |
+| optimal solver, corner 6-flip (20), 48 threads | 232 s (medium, v0, beside other work) | large 0.34 s, medium 21.6 s | | the large tier; round 3 |
+| optimal solver, the four 23-move positions of `bench/hard.tsv` | (two-phase solver: 11.1 h) | 44.5 min (large, measured earlier today, not rerun) | 0.067x | |
+
+### Quick set (`scripts/bench-quick.sh --opt-tier medium,large --rounds 2`)
+
+Two rounds (each figure the mean of the two; the rounds differ by up to 4%). Two-phase optimal
+mode with the distance-to-solved table read at start-up (`FTO_CBS_EAGER=1`).
+
+| item | threads | result |
+|---|---|---|
+| two-phase, optimal mode, 10 x 17 moves (seed 1717) | 1 | 2.24 s (0.224 s per position), 7.86e7 nodes, mean 16.50 |
+| two-phase, optimal mode, 10 x 19 moves (seed 1919) | 48 | 7.02 s (0.702 s per position), 1.00e10 nodes, mean 18.10 |
+| two-phase, time limit 1 s, 10 random positions (seed 2026) | 48 | best 21.80, first solution 23.00 @ 6.9 ms, 1.45e9 nodes/s |
+| two-phase, time limit 1 s, 10 random positions (seed 7) | 1 | best 22.20, first solution 23.10 @ 0.211 s, 3.56e7 nodes/s |
+| optimal solver, medium, 10 x 17 moves | 1 | 5.88 s, 1.48e8 nodes |
+| optimal solver, medium, 10 x 19 moves | 48 | 24.4 s, 2.52e10 nodes |
+| optimal solver, large, 10 x 17 moves | 1 | 5.02 s, 7.82e7 nodes |
+| optimal solver, large, 10 x 19 moves | 48 | 9.99 s, 6.28e9 nodes |
+
+Single runs (48 threads): the two-phase solver proves edge_hard 21 in 62.8 s (9.43e10 nodes);
+the optimal solver proves the corner 6-flip 20 in 0.34 s with the large tier (9.6e7 nodes) and
+in 21.6 s with medium (2.06e10 nodes).
+
+### The previous suites, once more
+
+Before the switch to the quick set, the suites of the previous reference run ran once more on
+the same main (two runs of `scripts/bench.sh` and `bench-opt.sh`, one of `bench-randopt.sh`),
+so they line up with the numbers below:
+
+| | main 97452e0 (2026-11-10) | main 9a9262f |
+|---|---|---|
+| 48 threads, 40 positions, 5 s: first solution | 22.975 @ 6.0 ms | 22.975 @ 5.8 ms |
+| after 0.01 s / 0.1 s / 1 s / 5 s | 22.30 (33 of 40 solved) / 21.75 / 21.525 / 21.175 | 22.36 (36 of 40) / 21.75 / 21.50 / 21.19 |
+| search speed | 1.52e9 nodes/s | 1.56e9 nodes/s |
+| 1 thread, 20 positions, 5 s: first solution | 23.25 @ 0.168 s | 23.25 @ 0.167 s |
+| after 0.1 s / 1 s / 5 s | 22.70 (10 of 20) / 22.35 / 22.00 | 22.70 (10 of 20) / 22.325 / 22.00 |
+| search speed | 3.54e7 nodes/s | 3.62e7 nodes/s |
+| optimal mode, 10 x 19 moves, 48 threads | 8.0 s | 6.68 s (table read on first use) |
+| optimal mode, 10 x 17 moves, 1 thread | 2.86 s | 2.27 s |
+| random positions 1 / 2 / 3, `-t 1200` | 54.6 / 64.3 / 5.3 s | 53.2 / 60.5 / 4.9 s |
+
+`bench-randopt.sh` caps each position with `-t 1200`, and with a time limit the search is the
+time-limited one, which does not use the distance-to-solved bound: the random positions, and
+edge_hard (67.9 s) and the corner 6-flip (624 s) under `-t 1800`, show the speed without it.
+Without `-t` (optimal mode) edge_hard takes 62.8 s and the 6-flip 117 s.
 
 ## Two-phase solving (time limit)
 

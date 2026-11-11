@@ -56,6 +56,8 @@ moves; 1 thread: 10 x 17 moves). The large tier is used from the joint-table cha
 | `FTO_TASKN` 128 or 2048 instead of 512 | (no branch: env knob) | optimal 19-move set 1.04x / 1.03x, random position 3 0.98x / 0.97x | no |
 | Distance-to-solved bound in optimal mode: 1-bit table (distance >= 11) on the joint table's index, 8 lookups (4 triples x 2 sides), read with at most 10 moves left; large and huge tiers, +3.5 GB, read on first use (estimate first: `archive/tosolved-est`) | `opt/tosolved` | 1T nodes 0.743x / 0.771x (17 / 19-move sets); optimal 0.788x (1T) / 0.853x (48T) time with the table read on first use (0.784x / 0.841x read at start-up), random positions 0.82-0.90x, edge_hard 0.85x, corner 6-flip 626.5 -> 117.2 s; time-limited and start-up unchanged | yes |
 | Distance-to-solved lookups in two waves: triple 2 of both sides first (issued in `stage2`), the other six only for the children they keep (27.8% on the 17-move set; table reads 0.459x) | `opt/tosolved-order` | optimal 0.982x (1T) / 0.985x (48T) time, 4 rounds, identical node counts; both waves in `finish`: 1.007x / 1.008x; second wave issued before the CB / class-B stages: 0.985x / 0.986x, no better (`neg/tosolved-wave2`) | yes |
+| Joint-table (CBE) entries prefetched inside the AE/CB loop as soon as a child passes, instead of in a loop of their own before the reads (profile: 8.1% / 17.9% of the samples on that read, optimal / time-limited) | `neg/cbe-nextpf` | optimal 0.999x (1T) / 1.006x (48T) time, identical node counts; time limit 5 s: mean length unchanged (21.450 at 48T, 22.000 at 1T), nodes/s 1.000x / 0.980x | no |
+| Edge label masks computed once per child and shared by the A-centre/edge, joint-table and distance-to-solved indices (kept in the frame) | `neg/shared-em` | identical node counts; optimal 1.032x (1T) / 1.032x (48T) time, time limit 5 s nodes/s 0.974x (48T) / 0.973x (1T); computed only where every child needs them: 1.020x / 1.039x, nodes/s 0.972x / 0.975x; mean lengths unchanged | no |
 
 Cumulative, first working version -> main 97452e0 of 2026-11-10 (48 threads, 40 random
 positions, 5 s): mean best length 21.60 -> 21.175; first solution 86 ms -> 6.0 ms. Optimal mode,
@@ -64,6 +66,15 @@ positions, 5 s): mean best length 21.60 -> 21.175; first solution 86 ms -> 6.0 m
 few seconds). Round 2 alone
 (main-r2 -> micro-compute): 1.52x nodes/s at 48T and 1T, first solution 0.36x (48T) / 0.64x
 (1T), optimal proofs 0.65x / 0.67x time.
+
+Per-node work on the two-phase solver closed on 2026-11-11. The profile of the large tier (perf,
+task-clock sampling, the VM has no hardware counters; 1 thread), optimal mode on the 19-move set
+/ time limit 1 s: A-centre/edge and CB index arithmetic 16.0% / 13.1% of the samples, the stall
+on their table reads 12.8% / 14.2%, prefetch instructions (line fill buffers full) 12.1% / 9.7%,
+the joint table's reads 8.1% / 17.9%, the rest thinly spread (move application, the stack). The
+two changes aimed at it, prefetching the joint table's entries earlier and computing the edge
+masks once per child, did not pay, like the earlier `neg/pipe4` and `neg/sibling`: the read
+stall does not shrink with more slack, and the arithmetic left is spread over many small steps.
 
 ## Table generation (`opt/gen`)
 

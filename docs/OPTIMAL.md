@@ -663,6 +663,12 @@ Next, by expected value:
 3. **A centres table** (A x B colourings to solved, 4.3 GB): only 0.88x nodes when estimated
    on its own; not worth it.
 
+The per-node work is closed on both solvers (2026-11-11): what is left of the cost per node is
+the first-stage read stall, which more slack, earlier prefetches and 1 GiB pages do not shrink,
+and index arithmetic spread over many small steps (on the two-phase side, earlier joint-table
+prefetches and shared edge masks were measured and not kept; see the
+[optimisation log](OPTIMIZATION_LOG.md)).
+
 Not applicable here: sibling pruning with bounds learned from subtrees (with consistent tables
 the bound learned from a subtree never exceeds the node's own: for a descendant at distance j,
 `max_k h_k(D) - j <= max_k h_k(node)`), and anything on the inverse position (the normal FTO's

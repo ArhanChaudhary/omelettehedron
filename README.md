@@ -47,7 +47,7 @@ for why this split was chosen and how it compares with alternatives,
 [docs/OPTIMIZATION_LOG.md](docs/OPTIMIZATION_LOG.md) for how it got there.
 
 On 48 threads a random position gets its first solution in about 6 ms (23 moves on average),
-21.5 moves after 1 s and 21.1 after 5 s; a proof of optimality takes from a few seconds to about
+21.5 moves after 1 s and 21.2 after 5 s; a proof of optimality takes from a few seconds to about
 a minute (optimal lengths are around 20-21).
 
 ## Build
@@ -218,10 +218,22 @@ disk is a large part of its time.
 
 ## Benchmarks
 
+Comparisons use the quick set, which takes about a minute per build and round on 48 threads (two
+builds in two interleaved rounds stay under 5 minutes): the two-phase solver's optimal mode on
+ten 17-move scrambles (1 thread) and ten 19-move scrambles (all threads), its time-limited mode
+on ten random positions for 1 s each (all threads and 1 thread), and the optimal solver on the
+same two optimal sets. Single items vary by up to about 5% between rounds (a comparison that
+left the optimal solver unchanged gave 0.976x and 1.018x on its items), so a change of a few
+percent shows up as a consistent direction over the items and rounds rather than in one number.
+The longer suites below are for occasional runs.
+
 ```sh
+scripts/bench-quick.sh <label>                  # build this tree, one round of the quick set
+scripts/bench-quick.sh --compare <binA> <binB>  # two builds, interleaved rounds, markdown table
+scripts/bench-quick.sh --opt-tier medium,large --rounds 2 <label>   # more tiers and rounds
 target/release/omelettehedron bench --tier large -N 40 -t 5       # 40 seeded random positions, 5 s each
 target/release/omelettehedron bench --tier large -N 20 -t 5 -j 1  # single-threaded
-scripts/bench.sh <label> <tier>                 # the standard set used during optimisation
+scripts/bench.sh <label> <tier>                 # the long standard set (about 5 minutes)
 scripts/bench-opt.sh <label> <tier>             # optimal mode: time to prove optimality
 scripts/bench-optimal.sh <label> <tier>         # the optimal solver: 17-move (1 thread), 19-move sets
 scripts/bench-randopt.sh <label> <tier>         # optimal mode on random positions (slow)
