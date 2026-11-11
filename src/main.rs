@@ -171,7 +171,7 @@ enum Cmd {
         /// Solve the positions concurrently, one thread each (-j of them), instead of one at a
         /// time on all threads: faster for many short solves (with -l or -t). Prints the best
         /// solution of each in input order, and its length and time on stderr
-        #[arg(long, conflicts_with_all = ["lower_bound", "progress"])]
+        #[arg(long, conflicts_with_all = ["lower_bound", "progress", "improve"])]
         batch: bool,
         #[command(flatten)]
         tab: TableArgs,
