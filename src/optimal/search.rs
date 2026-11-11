@@ -653,20 +653,26 @@ impl<B: Bounds, const N: usize> Shared<'_, B, N> {
 }
 
 /// The order in which the children of a node with exact values `h` and `budget` moves left
-/// after them read their lookups: the tier's order ([`Bounds::ORDER`]), but the lookups that
-/// cannot prune any of them last. A child's value is at most one above its parent's, so
-/// lookup `k` can prune a child only if `h[k] + 1 > budget`; the others pass every child, and
-/// their exact values are only needed for the children that pass the rest, so reading them
-/// last saves those reads for the children another lookup prunes. The survivors and their
-/// values are the same in any order.
+/// after them read their lookups: first the lookups at the node's limit (`h[k] == budget + 1`,
+/// the most a passing node can have: they prune every child whose value does not drop), then
+/// those one below (`h[k] == budget`: they prune the children whose value rises), each group
+/// in the tier's order ([`Bounds::ORDER`]); last the lookups that cannot prune any child (a
+/// child's value is at most one above its parent's), whose exact values are only needed for
+/// the children that pass the rest. The survivors and their values are the same in any order.
 #[inline(always)]
 fn stage_order<B: Bounds>(h: &[u8; MAX_K], budget: usize) -> [u8; MAX_K] {
     let mut o = [0u8; MAX_K];
     let mut n = 0;
     let order = &B::ORDER[..B::K.min(B::ORDER.len())];
-    for pass in [true, false] {
+    // group of lookup k: 0 at the limit, 1 one below, 2 cannot prune
+    let group = |k: usize| {
+        (budget + 1)
+            .saturating_sub(usize::from(h[k % MAX_K]))
+            .min(2)
+    };
+    for g in 0..3 {
         for &k in order {
-            if (usize::from(h[k % MAX_K]) + 1 > budget) == pass {
+            if group(k) == g {
                 o[n % MAX_K] = k as u8;
                 n += 1;
             }
