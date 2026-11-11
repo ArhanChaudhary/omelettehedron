@@ -847,7 +847,9 @@ mod tests {
     }
 
     /// A missing or broken distance-to-solved file turns the bound off (`None`) instead of
-    /// failing, read at once or on the background thread.
+    /// failing, read at once or on the background thread. (Not under WASI: no temporary
+    /// directory there; the large tier is not offered on 32-bit targets anyway.)
+    #[cfg(unix)]
     #[test]
     fn lazy_table_failures_turn_the_bound_off() {
         let ix = CbeIndex::new();
@@ -859,18 +861,15 @@ mod tests {
         assert!(l.get(&ix).is_none());
         std::fs::write(&p, b"FTOPRUN2 not a table").unwrap();
         assert!(LazyCbs::new(p.clone()).get(&ix).is_none());
-        // (WebAssembly test runs have no threads: `start` then leaves the bound off)
-        if cfg!(not(target_family = "wasm")) {
-            let l = Arc::new(LazyCbs::new(p));
-            l.start();
-            l.start();
-            let t0 = std::time::Instant::now();
-            while l.cell.get().is_none() && t0.elapsed().as_secs() < 120 {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            assert!(l.cell.get().is_some(), "background read did not finish");
-            assert!(l.loaded().is_none());
+        let l = Arc::new(LazyCbs::new(p));
+        l.start();
+        l.start();
+        let t0 = std::time::Instant::now();
+        while l.cell.get().is_none() && t0.elapsed().as_secs() < 120 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        assert!(l.cell.get().is_some(), "background read did not finish");
+        assert!(l.loaded().is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
