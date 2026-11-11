@@ -230,6 +230,8 @@ struct Eval<const N: usize> {
     mx: [u8; N],
     /// each child's [`Bounds::pre`] value of the first stage
     pre: [u32; N],
+    /// the order of this frame's stages ([`stage_order`])
+    order: [u8; MAX_K],
     sel: [u8; N],
 }
 
@@ -243,6 +245,7 @@ impl<const N: usize> Eval<N> {
             hs: [[0; MAX_K]; N],
             mx: [0; N],
             pre: [0; N],
+            order: [0; MAX_K],
             sel: [0; N],
         }
     }
@@ -375,16 +378,18 @@ impl<B: Bounds, const N: usize> Shared<'_, B, N> {
             ev.mx[i % N] = 0;
         }
         if !ready {
+            ev.order = stage_order::<B>(&h, budget);
             self.first_stage(ev, n, false);
         }
-        let order = &B::ORDER[..B::K.min(B::ORDER.len())];
+        let order = ev.order;
+        let order = &order[..B::K.min(MAX_K)];
         for (s, &k) in order.iter().enumerate() {
-            let k = k % MAX_K;
+            let k = usize::from(k) % MAX_K;
             ctr.lookups += alive as u64;
             let tab = self.b.table(k);
             // (the first stage's indices are computed and prefetched already, the later
             // stages' as soon as a child passes the stage before)
-            let nk = order.get(s + 1).map(|&x| x % MAX_K);
+            let nk = order.get(s + 1).map(|&x| usize::from(x) % MAX_K);
             let mut next = 0;
             for j in 0..alive {
                 let i = ev.sel[j % N];
@@ -427,10 +432,10 @@ impl<B: Bounds, const N: usize> Shared<'_, B, N> {
     /// (`have_pre`: `ev.pre` holds the children's [`Bounds::pre`] values of this lookup.)
     #[inline(always)]
     fn first_stage(&self, ev: &mut Eval<N>, n: usize, have_pre: bool) {
-        let Some(&k) = B::ORDER.first() else {
+        if B::K == 0 {
             return;
-        };
-        let k = k % MAX_K;
+        }
+        let k = usize::from(ev.order[0]) % MAX_K;
         let tab = self.b.table(k);
         for u in 0..n {
             let y = &ev.ys[u % N];
@@ -496,12 +501,20 @@ impl<B: Bounds, const N: usize> Shared<'_, B, N> {
     /// counted when the search enters it ([`Shared::enter`]), so the counts do not depend on
     /// how early its frame was prepared.
     #[inline(always)]
-    fn prepare(&self, p: &Pos, last: usize, budget: usize, fr: &mut Eval<N>) -> usize {
+    fn prepare(
+        &self,
+        p: &Pos,
+        h: &[u8; MAX_K],
+        last: usize,
+        budget: usize,
+        fr: &mut Eval<N>,
+    ) -> usize {
         let mut moves = ALLOWED[usize::from(N > N_MOVES)][last.min(MAX_MOVES)];
         let mut n = 0;
         // (with lookups left, the first stage's Bounds::pre in the same loop: it prefetches
         // what the first-stage index reads first)
-        let k0 = B::ORDER.first().map_or(0, |&k| k % MAX_K);
+        fr.order = stage_order::<B>(h, budget);
+        let k0 = usize::from(fr.order[0]) % MAX_K;
         while moves != 0 {
             let m = moves.trailing_zeros() as usize;
             moves &= moves - 1;
@@ -543,7 +556,7 @@ impl<B: Bounds, const N: usize> Shared<'_, B, N> {
             debug_assert!(false, "out of search frames");
             return;
         };
-        let n = self.prepare(p, last, bound - g - 1, &mut pair[0]);
+        let n = self.prepare(p, &h, last, bound - g - 1, &mut pair[0]);
         self.enter(n, h, bound, path, ctr, frames, 0, stat);
     }
 
@@ -606,6 +619,7 @@ impl<B: Bounds, const N: usize> Shared<'_, B, N> {
         let i0 = child(0);
         let mut n_cur = self.prepare(
             &fr.ys[i0],
+            &fr.hs[i0],
             usize::from(fr.ms[i0]),
             budget - 1,
             &mut cpair[0],
@@ -618,6 +632,7 @@ impl<B: Bounds, const N: usize> Shared<'_, B, N> {
                 };
                 self.prepare(
                     &fr.ys[i1],
+                    &fr.hs[i1],
                     usize::from(fr.ms[i1]),
                     budget - 1,
                     &mut cpair[(j + 1) & 1],
@@ -637,10 +652,32 @@ impl<B: Bounds, const N: usize> Shared<'_, B, N> {
     }
 }
 
-/// Solve one position optimally with the lower bounds `b`, in the metric of their move set
-/// (`b.moves()`: face turns, or with slices). `frame` is the physical frame of the scrambled
-/// position (for the physical moves of the solutions). With `verbose`, each iteration is
-/// reported on stderr.
+/// The order in which the children of a node with exact values `h` and `budget` moves left
+/// after them read their lookups: the tier's order ([`Bounds::ORDER`]), but the lookups that
+/// cannot prune any of them last. A child's value is at most one above its parent's, so
+/// lookup `k` can prune a child only if `h[k] + 1 > budget`; the others pass every child, and
+/// their exact values are only needed for the children that pass the rest, so reading them
+/// last saves those reads for the children another lookup prunes. The survivors and their
+/// values are the same in any order.
+#[inline(always)]
+fn stage_order<B: Bounds>(h: &[u8; MAX_K], budget: usize) -> [u8; MAX_K] {
+    let mut o = [0u8; MAX_K];
+    let mut n = 0;
+    let order = &B::ORDER[..B::K.min(B::ORDER.len())];
+    for pass in [true, false] {
+        for &k in order {
+            if (usize::from(h[k % MAX_K]) + 1 > budget) == pass {
+                o[n % MAX_K] = k as u8;
+                n += 1;
+            }
+        }
+    }
+    o
+}
+
+/// Solve one position optimally with the lower bounds `b`. `frame` is the physical frame of the
+/// scrambled position (for the physical moves of the solutions). With `verbose`, each
+/// iteration is reported on stderr.
 pub fn solve<B: Bounds>(
     b: &B,
     cube: Cube,
