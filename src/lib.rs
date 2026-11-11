@@ -52,6 +52,7 @@ pub mod fast;
 pub mod geometry;
 pub mod mem;
 pub mod notation;
+pub mod pattern;
 pub mod preflight;
 pub mod prune;
 pub mod search;

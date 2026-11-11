@@ -30,8 +30,9 @@ use clap::{Parser, Subcommand};
 use omelettehedron::bench;
 use omelettehedron::cube::{Cube, MoveSet};
 use omelettehedron::notation::{
-    format_moves, invert_moves, parse_moves, scramble_to_cube, solves_pure, Frame,
+    format_moves, invert_moves, parse_moves, scramble_to_cube, solves_pure, Frame, PhysMove,
 };
+use omelettehedron::pattern;
 use omelettehedron::search::{solve, Limits, Report};
 use omelettehedron::tables::{table_dir, AeIndex, AeRelabel, AeSym, Tables, Tier};
 use std::io::BufRead;
@@ -141,8 +142,33 @@ enum Cmd {
         /// inverted, applied to the solved puzzle) instead of the position it makes
         #[arg(long)]
         inverse: bool,
+        /// Solve a pattern instead of a scramble: the 72 sticker colours as you see them, in
+        /// the order of `omelettehedron pattern --help`. Also prints a scramble that makes it
+        #[arg(long, conflicts_with_all = ["scramble", "random", "inverse"])]
+        pattern: Option<String>,
+        /// With --pattern: your solved puzzle as you usually hold it to scramble, as the colours
+        /// of U R F L B BL D BR (8 characters, the letters of the pattern). The scramble then
+        /// starts from that hold
+        #[arg(long, requires = "pattern")]
+        usual: Option<String>,
         #[command(flatten)]
         tab: TableArgs,
+    },
+    /// Print the pattern a scramble makes (the input of `solve --pattern`)
+    ///
+    /// A pattern is the 72 sticker colours, one character each (any 8 different characters;
+    /// spaces, `/`, `,` and `|` are ignored). Hold the puzzle with a corner pointing at you and
+    /// read the four front faces U, R, F, L (top, right, bottom, left: clockwise from the top),
+    /// then turn the whole puzzle around, keeping the top at the top, and read the four back
+    /// faces B, BL, D, BR (again clockwise from the top: B is now at the top and BL on the
+    /// right). Read each face with its outer edge at the top: the 5 stickers along that edge
+    /// from left to right, the 3 of the middle row, then the one at the corner in the middle of
+    /// the picture. Printed patterns use the letters W R G P / B O Y A for the solved faces U R
+    /// F L / B BL D BR; patterns given to `solve --pattern` may use any letters, and the
+    /// puzzle may be held any way and have any colour scheme.
+    Pattern {
+        /// Scramble in FTO notation
+        scramble: Vec<String>,
     },
     /// Generate (or verify) the pruning tables for a tier
     Gen {
@@ -211,18 +237,80 @@ fn read_scrambles(args: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// A pattern to solve (`solve --pattern`).
+struct PatternInput {
+    pattern: [char; pattern::STICKERS],
+    usual: Option<[char; 8]>,
+    cube: Cube,
+}
+
+fn read_pattern(text: &str, usual: Option<&str>) -> Result<PatternInput, Error> {
+    let p = pattern::parse(text).map_err(|e| format!("pattern: {e}"))?;
+    let cube = pattern::position(&p).map_err(|e| format!("pattern: {e}"))?;
+    let usual = match usual {
+        Some(u) => {
+            let v: Vec<char> = u
+                .chars()
+                .filter(|c| !c.is_whitespace() && *c != '/')
+                .collect();
+            let u: [char; 8] = v
+                .as_slice()
+                .try_into()
+                .map_err(|_| "--usual: give the 8 colours of U R F L B BL D BR")?;
+            Some(u)
+        }
+        None => None,
+    };
+    Ok(PatternInput {
+        pattern: p,
+        usual,
+        cube,
+    })
+}
+
+/// Print the scramble that makes a solved pattern (and check the solution).
+fn print_pattern_scramble(pi: &PatternInput, solution: &[PhysMove]) {
+    let Some(sc) = pattern::scramble(&pi.pattern, solution, pi.usual.as_ref()) else {
+        eprintln!("error: the solution does not solve the pattern (please report this pattern)");
+        return;
+    };
+    println!(
+        "scramble from solved with {} on U and {} on F: {}",
+        sc.start[0],
+        sc.start[2],
+        format_moves(&sc.moves)
+    );
+    match sc.from_usual_text() {
+        Some((text, true)) => println!("scramble from your usual hold: {text}"),
+        Some((text, false)) => println!(
+            "scramble from your usual hold (no turns from it make the pattern exactly as \
+             entered: this makes the same puzzle, which matches it once the whole puzzle is \
+             turned): {text}"
+        ),
+        None if pi.usual.is_some() => println!(
+            "no scramble from your usual hold: its colours are not a solved state of this \
+             puzzle"
+        ),
+        None => {}
+    }
+}
+
 fn run_solve<I: AeIndex>(
     t: &Tables<I>,
     scrambles: &[(Cube, Frame, String)],
     limits: &Limits,
     print: Report,
     verbose: bool,
+    input: Option<&PatternInput>,
 ) {
     for (cube, frame, label) in scrambles {
         if scrambles.len() > 1 || verbose {
             println!("# {label}");
         }
         let o = solve(t, *cube, *frame, limits, print);
+        if let (Some(pi), Some(sol)) = (input, &o.solution) {
+            print_pattern_scramble(pi, sol);
+        }
         if verbose || print == Report::Improvements {
             eprintln!(
                 "length {} in {:.3}s, {} solutions, {:.3e} nodes{}",
@@ -316,13 +404,21 @@ fn run(cli: Cli) -> Result<(), Error> {
             seed,
             lower_bound,
             inverse,
+            pattern,
+            usual,
             tab,
         } => {
             let mut limits =
                 bench::limits_with_time(stop.time, stop.max_length, stop.max_solutions)
                     .map_err(|e| format!("--time: {e}"))?;
             limits.lower_bound = lower_bound;
-            let positions: Vec<(Cube, Frame, String)> = if let Some(n) = random {
+            let input = match &pattern {
+                Some(text) => Some(read_pattern(text, usual.as_deref())?),
+                None => None,
+            };
+            let positions: Vec<(Cube, Frame, String)> = if let Some(pi) = &input {
+                vec![(pi.cube, Frame::identity(), pattern::format(&pi.pattern))]
+            } else if let Some(n) = random {
                 bench::random_positions(n, seed)
                     .into_iter()
                     .enumerate()
@@ -366,10 +462,18 @@ fn run(cli: Cli) -> Result<(), Error> {
                     &positions,
                     &limits,
                     print,
-                    tab.verbose
+                    tab.verbose,
+                    input.as_ref()
                 ));
                 Ok(())
             })
+        }
+        Cmd::Pattern { scramble } => {
+            for s in read_scrambles(&scramble) {
+                let m = parse_moves(&s).map_err(|e| e.clone())?;
+                println!("{}", pattern::format(&pattern::of_moves(&m)));
+            }
+            Ok(())
         }
         Cmd::Gen { tab } => {
             let p = pool(tab.threads)?;
