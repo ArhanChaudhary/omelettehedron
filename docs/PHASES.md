@@ -184,6 +184,22 @@ optimisation.
 * **Stopping**: after N solutions, after a time limit, at the first solution of
   length ≤ L, or at proven optimality (default). Output is either the best
   solution only (at the end) or each improvement as it is found.
+* **Proving optimality faster** (optimal mode, no stopping rule):
+  * the *early proof end* (section 7) skips the iteration at depth best − 1 and stops at once on a
+    solution of length depth + 1;
+  * *target-length passes*: once the best is at least 2 above the proven lower bound, the search
+    restarts as pass T = that bound, which looks only for solutions of at most T moves (the
+    class-B bound against T + 1 instead of the loose best prunes far more); a completed pass
+    proves that none exists and the next pass tries T + 1. On by default at every thread count
+    (one thread: 0.39x proof time when added; 48 threads since the merged traversal: 0.95x).
+    Off under a time limit, which asks for the best solution by then: a pass reports nothing
+    until it reaches the optimum, and no rule that turns them on only when the proof will fit
+    in the limit won (`neg/tlpasses`). A cancellation deadline (the WebAssembly demo's Stop
+    button) is not a stopping rule and keeps them;
+  * `--lower-bound L` resumes a long proof: the search finds a first solution, then starts its
+    passes at L (from a previous run's "pass L − 1 complete" log line).
+  `FTO_FULL_PROOF=1` turns the early end and the passes off; `scripts/check-optimal.sh` checks
+  that the proven lengths agree.
 
 ## 5. Measured comparison of phase choices (prototype, 1 thread, 1 search variant)
 
@@ -208,7 +224,7 @@ Notes:
 2. "Stop after N solutions" counts every phase-2 completion, including ones longer than the best so far.
 3. Both splits are to be tried.
 
-## 5. Questions for the reviewer
+## 6b. Questions for the reviewer (as asked before the review; answers in section 6)
 
 1. **Notation / orientation.** I am assuming the puzzle is held with a corner
    toward you:
@@ -320,7 +336,7 @@ optimality. The early end of the proof (iteration best − 1 skipped, and the st
 of length depth + 1) is switched off with slices: it relies on a solving phase-1 path of that
 length ending in a class-B move, so that the class-B variant finds the same solution in an
 earlier iteration, and a path ending in a slice is in neither class. The target-length passes
-(on by default with one thread) rest on the same argument: with slices pass T also runs depth T,
+(on by default, at every thread count) rest on the same argument: with slices pass T also runs depth T,
 and the passes start from the iterations completed so far without the extra move.
 `scripts/check-optimal.sh <tier> slice` checks the proven lengths against `FTO_FULL_PROOF=1`
 (with target passes on one thread), that without target passes the two searches are identical
