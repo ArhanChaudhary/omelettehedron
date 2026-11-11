@@ -304,8 +304,19 @@ the same node count per position on every set:
 | 10 x 17 moves, seed 1717 | medium | 738,617,940 | 223,268,625 (0.302x) | 1.51 | AE 1.000, AE twin 0.252, CE 0.105, CB 0.078, CA 0.077 |
 
 The tables that miss the cache (AE 1.03 GB, corners x edges 2.4 GB) are read 1.36 times per node
-instead of 3. The stages add dependent memory rounds (up to five per node instead of one), so
-the time gain needs measuring once the machine is free. The statistics also show where the
+instead of 3. The stages add dependent memory rounds (up to five per node instead of one), but
+the fewer misses win on wall time. Timing on the quiet machine (after the two-phase proofs,
+under the bench lock), medium tier, against main 3deb77e, three interleaved A/B rounds (the
+order alternating), `scripts/bench-optimal.sh` sets:
+
+| set | threads | main 3deb77e (s, median) | optimal/order (s, median) | ratio (rounds) | nodes/s |
+|---|---|---|---|---|---|
+| 10 x 17 moves, seed 1717 | 1 | 10.33 | 8.50 | 0.818 (0.818, 0.828, 0.818) | 1.42e7 -> 1.74e7 |
+| 10 x 19 moves, seed 1919 | 48 | 41.19 | 33.42 | 0.811 (0.805, 0.818, 0.811) | 6.07e8 -> 7.54e8 |
+
+Same lengths (means 16.50 / 18.10) and, on one thread, the same nodes (147,723,722); on 48
+threads the node counts differ by under 0.01% between runs (the parallel split), and the
+lookups drop to 0.308x. The statistics also show where the
 nodes are: 92% of the children have 9 or 10 moves left and fewer than 0.01% at most 6 (17-move
 set: 1,700 of 1.5e8), so exact checks near the leaves (for example one move left: one of the 16
 neighbours of solved) cannot change the node count measurably; not done.
