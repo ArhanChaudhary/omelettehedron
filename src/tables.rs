@@ -1019,7 +1019,13 @@ impl<I: AeIndex> Tables<I> {
                             cbs_path.display()
                         );
                     }
-                    crate::cbe::LazyCbs::new(cbs_path)
+                    let lazy = crate::cbe::LazyCbs::new(cbs_path);
+                    // FTO_CBS_EAGER=1: read it now, so that every search uses it from its
+                    // start (deterministic node counts on one thread, for benchmarks)
+                    if std::env::var_os("FTO_CBS_EAGER").is_some_and(|v| v == "1") {
+                        let _ = lazy.get(&cbe.ix);
+                    }
+                    lazy
                 } else {
                     if verbose {
                         eprintln!("generating {} ...", cbs_path.display());
