@@ -560,6 +560,17 @@ impl FcMaps {
         }
     }
 
+    /// The A-centres of the position (`swap == false`) or of its `SWAP_AB` conjugate, as in
+    /// [`FcMaps::fc`] and [`FcMaps::fc_swap`].
+    #[inline(always)]
+    pub fn a_of(&self, p: &Pos, swap: bool) -> [u8; 16] {
+        if swap {
+            shuffle(&shuffle(&self.a_relab, &p.xb), &self.a_gath)
+        } else {
+            p.xa
+        }
+    }
+
     /// The two-phase coordinates of the position conjugated by `SWAP_AB`.
     #[inline(always)]
     pub fn fc_swap(&self, p: &Pos) -> Fc {
