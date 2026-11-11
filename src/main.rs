@@ -1394,13 +1394,12 @@ fn run_combined(a: &CombinedArgs) -> Result<(), Error> {
     let dir = table_dir(a.tables.as_deref());
     let tier = two_phase_tier(&tab, &dir)?;
     tab.tier = Some(tier);
-    let opt_tier = match a.opt_tier {
-        Some(t) => t,
-        None => {
-            let c = autotier::optimal(&dir, otab.move_set())?;
-            eprintln!("{}", c.message);
-            c.tier
-        }
+    let opt_tier = if let Some(t) = a.opt_tier {
+        t
+    } else {
+        let c = autotier::optimal(&dir, otab.move_set())?;
+        eprintln!("{}", c.message);
+        c.tier
     };
     otab.tier = Some(opt_tier);
     // Both solvers' tables are held at once: check that they fit before loading either
