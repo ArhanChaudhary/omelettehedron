@@ -555,6 +555,7 @@ fn score(s: &[u8; STICKERS], f: [u8; 8]) -> usize {
 }
 
 /// Calls `visit` with every permutation of `0..8` (Heap's algorithm).
+#[cfg(test)]
 fn permutations(mut visit: impl FnMut(&[u8; 8])) {
     let mut a: [u8; 8] = std::array::from_fn(|i| i as u8);
     let mut c = [0usize; 8];
@@ -614,22 +615,104 @@ fn direct(s: &[u8; STICKERS]) -> Option<[u8; 8]> {
     Some(f)
 }
 
-/// The assignment that makes the most pieces real (trying all 8! of them); among those, one
-/// that puts corner 0 in place at vertex 0 (one exists whenever every piece is real, see the
-/// module notes). Used only for a pattern with a mistake, to name the pieces that are wrong.
-fn best_assignment(s: &[u8; STICKERS]) -> [u8; 8] {
-    let mut best = (0, false, [0u8; 8]);
-    permutations(|f| {
-        let sc = score(s, *f);
-        if sc < best.0 {
+/// A piece for [`best_assignment`]: its stickers' colours and what makes it real.
+struct Part {
+    /// colour index of each sticker (corners in slot order, edges A then B)
+    colours: [u8; 4],
+    kind: PartKind,
+}
+
+#[derive(Clone, Copy)]
+enum PartKind {
+    Corner,
+    Edge,
+    /// a centre sticker at a position of class A (true) or B (false)
+    Centre(bool),
+}
+
+impl Part {
+    fn real(&self, f: [u8; 8]) -> bool {
+        let face = |i: usize| f[self.colours[i] as usize] as usize;
+        match self.kind {
+            PartKind::Corner => lookup().corner[(0..4).fold(0, |a, j| a | face(j) << (3 * j))] != 0,
+            PartKind::Edge => lookup().edge[face(0) | face(1) << 3] != 0,
+            PartKind::Centre(a) => is_a_face(face(0)) == a,
+        }
+    }
+}
+
+/// Branch and bound over the assignments of faces to colours 0, 1, 2, ...: `score` counts
+/// the real pieces among those already decided, and a branch that cannot reach the best score
+/// even if every undecided piece turns out real is cut.
+struct Search<'a> {
+    s: &'a [u8; STICKERS],
+    /// pieces by the colour that decides them
+    by_last: [Vec<Part>; 8],
+    f: [u8; 8],
+    best: (usize, bool, [u8; 8]),
+}
+
+impl Search<'_> {
+    fn go(&mut self, k: usize, used: u8, score: usize, undecided: usize) {
+        if k == 8 {
+            let home = decode(self.s, self.f).corners[0] == 1;
+            if (score, home) > (self.best.0, self.best.1) {
+                self.best = (score, home, self.f);
+            }
             return;
         }
-        let home = decode(s, *f).corners[0] == 1;
-        if (sc, home) > (best.0, best.1) {
-            best = (sc, home, *f);
+        let decided = self.by_last[k].len();
+        for face in 0..8u8 {
+            if used >> face & 1 != 0 {
+                continue;
+            }
+            self.f[k] = face;
+            let gain = self.by_last[k].iter().filter(|p| p.real(self.f)).count();
+            // (`<`, not `<=`: an equal score may still win on the tie-break)
+            if score + gain + undecided - decided < self.best.0 {
+                continue;
+            }
+            self.go(k + 1, used | 1 << face, score + gain, undecided - decided);
         }
-    });
-    best.2
+    }
+}
+
+/// The assignment that makes the most pieces real; among those, one that puts corner 0 in
+/// place at vertex 0 (one exists whenever every piece is real, see the module notes). Used only
+/// for a pattern with a mistake, to name the pieces that are wrong. Branch and bound: a
+/// pattern with a few wrong stickers visits a small part of the 8! assignments (the brute
+/// force over all of them took about 10 ms).
+fn best_assignment(s: &[u8; STICKERS]) -> [u8; 8] {
+    let d = defs();
+    let mut by_last: [Vec<Part>; 8] = Default::default();
+    let mut add = |stickers: &[usize], kind: PartKind| {
+        let mut colours = [0u8; 4];
+        for (c, &i) in colours.iter_mut().zip(stickers) {
+            *c = s[i];
+        }
+        // (a piece is decided once colours 0..=last have faces)
+        let last = stickers.iter().map(|&i| s[i]).max().unwrap_or(0);
+        by_last[usize::from(last)].push(Part { colours, kind });
+    };
+    for v in 0..6 {
+        add(&d.corner_slots[v], PartKind::Corner);
+    }
+    for e in 0..12 {
+        add(&d.edge_slots[e], PartKind::Edge);
+    }
+    for i in 0..12 {
+        add(&[d.a_pos[i]], PartKind::Centre(true));
+        add(&[d.b_pos[i]], PartKind::Centre(false));
+    }
+    let undecided = by_last.iter().map(Vec::len).sum();
+    let mut search = Search {
+        s,
+        by_last,
+        f: [0; 8],
+        best: (0, false, [0; 8]),
+    };
+    search.go(0, 0, 0, undecided);
+    search.best.2
 }
 
 /// The position of a pattern, in the frame of the puzzle as held (solve it with
@@ -994,6 +1077,41 @@ mod tests {
             let _ = scramble(&p, &m, Some(&['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']));
         }
         assert!(ok > 500 && errors > 500, "{ok} read, {errors} errors");
+    }
+
+    #[test]
+    fn branch_and_bound_finds_the_best_score() {
+        // against the brute force over all 8! assignments, on corrupted patterns
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(23);
+        let mut checked = 0;
+        for t in 0..30 {
+            let m: Vec<PhysMove> = (0..rng.gen_range(0..20))
+                .map(|_| PhysMove::face(rng.gen_range(0..8), rng.gen_bool(0.5)))
+                .collect();
+            let mut p = of_moves(&m);
+            for _ in 0..=(t % 6) {
+                let (i, j) = (rng.gen_range(0..STICKERS), rng.gen_range(0..STICKERS));
+                p.swap(i, j);
+            }
+            let (colours, s) = colour_indices(&p);
+            if colours.len() != 8 {
+                continue;
+            }
+            let mut brute = (0, false);
+            permutations(|f| {
+                let x = (score(&s, *f), decode(&s, *f).corners[0] == 1);
+                brute = brute.max(x);
+            });
+            let f = best_assignment(&s);
+            assert_eq!(
+                (score(&s, f), decode(&s, f).corners[0] == 1),
+                brute,
+                "{}",
+                format(&p)
+            );
+            checked += 1;
+        }
+        assert!(checked > 25);
     }
 
     #[test]
