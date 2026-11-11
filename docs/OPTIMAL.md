@@ -460,6 +460,71 @@ in 29.0 s; large **96,270,740 nodes in 0.497 s** (214x fewer nodes, 58x faster),
 deeper the triple table sees the corners together with the edges and centres they disturb
 (depth 19: 4.17e9 -> 5.82e7 nodes).
 
+## The optimal solver against the two-phase solver's optimal mode
+
+Both solvers prove optimality; the same positions, quiet machine, bench lock, two interleaved
+rounds (`opt-vs-2p.sh`): the two-phase solver (`bench`/`solve --tier large`, main 4c96995)
+against this solver's large tier. Times to a proven optimum (both rounds):
+
+| positions | threads | two-phase (s) | optimal solver (s) | ratio | nodes, two-phase / optimal |
+|---|---|---|---|---|---|
+| 10 x 17 moves, seed 1717 (mean 16.5) | 1 | 2.82, 2.87 | 7.06, 7.28 | 2.51x, 2.54x | 1.06e8 / 7.61e7 |
+| 10 x 19 moves, seed 1919 (mean 18.1) | 48 | 7.95, 8.01 | 14.23, 14.93 | 1.79x, 1.86x | 1.24e10 / 6.27e9 |
+| random position, seed 1 (21) | 48 | 53.8, 53.5 | 91.7, 91.4 | 1.70x, 1.71x | 8.60e10 / 3.85e10 |
+| random position, seed 2 (21) | 48 | 61.2, 60.4 | 210.9, 214.6 | 3.45x, 3.55x | 9.69e10 / 9.10e10 |
+| random position, seed 3 (20) | 48 | 4.94, 4.97 | 106.0, 105.5 | 21.4x, 21.2x | 7.88e9 / 4.52e10 |
+| edge_hard (21, `bench/hard.tsv`) | 48 | 71.3 | 344.7 | 4.84x | 1.08e11 / 1.67e11 |
+| corner 6-flip (20, normal FTO) | 48 | 626.5 | **0.478** | **0.00076x (1,310x faster)** | 7.97e11 / 9.60e7 |
+
+The two-phase solver stays faster everywhere except on the corner 6-flip, where the large
+tier's triple table sees the flipped corners together with the edges and centres they would
+disturb (every root bound is 9, but its depth-19 iteration has 98.6% fewer nodes than the
+medium tier's). The optimal solver usually
+searches fewer nodes (0.4x to 0.9x on the sets and the 21-move positions), but each costs 3.5
+times as much (1.08e7 against 3.75e7 nodes/s on one thread, 4.4e8 against 1.57e9 on 48; the
+large tier reads 2.4 to 2.6 table entries per node, nearly half of them in the 21 GB table). It
+is weakest where the optimum is reached early: on the
+random position of length 20 the two-phase solver has its 20 within 0.5 s and only has to
+exclude 19 (7.9e9 nodes), while IDA* must finish the whole depth-19 iteration (4.5e10).
+
+## Optimisation round 3: the cost per node
+
+**Profile** (perf with task-clock sampling, the VM has no hardware counters; 1 thread, 17-move
+set, main 4c96995). Over 90% of the time is in `dfs` (everything is inlined into it). The
+largest single cost is the stall on the table read: 36.5% of the medium tier's `dfs` samples
+and 44% of the large tier's sit on the instruction after the table load, although every
+entry is prefetched before it is read (a stage computed all its children's indices and
+prefetched them right before reading them). Then 6.3% on the A-centre/edge index's u32
+symmetry-class table (1.5 MB, misses the 1 MB L2), 3.6% (medium) / 10% (large) on the
+prefetch instructions themselves (line fill buffers full); the rest is index arithmetic,
+thinly spread, and move application (the shuffles) is 2-4%.
+
+Changes (`optimal/r3-prefetch`), each with the same tree, nodes and lookups:
+
+* **Next-stage prefetch:** a child that passes stage k gets its stage-k+1 index computed and its
+  entry prefetched at once, inside stage k's read loop, so the miss overlaps the rest of stage
+  k as well.
+* **Sibling pipeline:** before the search descends into a surviving child, the next surviving
+  child's children are generated and their first-stage entries prefetched (two frames per
+  level), so those misses overlap the current child's subtree. A node's children are counted
+  when the search enters it.
+
+Time against main 4c96995 (quiet machine, bench lock, three rounds with the order rotating;
+1 thread on the 17-move set, 48 threads on the 19-move set):
+
+| variant | medium 1T | medium 48T | large 1T | large 48T |
+|---|---|---|---|---|
+| next-stage prefetch | 0.976, 0.982 | 0.996, 0.986 | 0.772, 0.815 | 0.821, 0.835 |
+| sibling pipeline | 0.953 | 0.940 | 0.890 | 0.973 |
+| **both** | **0.928** | **0.945** | **0.818** | **0.875** |
+| AE class-entry prefetch pass (`neg/optimal-r3-aeclass`) | 1.104 | 1.120 | 1.007 | 1.009 |
+
+(Two numbers: two sessions.) The large tier gains most from the next-stage prefetch (1.36
+lookups per node after the first stage, against 0.51 for medium), the medium tier from the
+pipeline (its first stage is most of its lookups). The AE prefetch pass computes the
+A-centre rank of every child of a stage first and prefetches its class entry: the extra pass
+costs more than the stall it hides.
+
 ## Missing (v0)
 
 * Timings: the machine was busy with long two-phase proofs, so only node counts are measured.
