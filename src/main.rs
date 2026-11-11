@@ -977,13 +977,13 @@ struct InputArgs {
     #[arg(long)]
     inverse: bool,
     /// A pattern instead of a scramble (as for `solve --pattern`)
-    #[arg(long, conflicts_with_all = ["inverse", "random"])]
+    #[arg(long, conflicts_with_all = ["scramble", "inverse", "random"])]
     pattern: Option<String>,
     /// Patterns read from stdin (as for `solve --patterns`)
-    #[arg(long, conflicts_with_all = ["inverse", "random", "pattern"])]
+    #[arg(long, conflicts_with_all = ["scramble", "inverse", "random", "pattern"])]
     patterns: bool,
     /// This many seeded random positions instead of scrambles
-    #[arg(long, conflicts_with = "inverse")]
+    #[arg(long, conflicts_with_all = ["scramble", "inverse"])]
     random: Option<usize>,
     /// Seed of the random positions (`--random`)
     #[arg(long, default_value_t = 1)]

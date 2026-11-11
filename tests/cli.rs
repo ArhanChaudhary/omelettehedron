@@ -105,9 +105,9 @@ fn usual_scramble<'a>(lines: &[&'a str]) -> &'a str {
         .unwrap()
 }
 
-/// Three patterns on stdin, the second with a mistake (two stickers of an edge exchanged), the
-/// third over two lines: the good ones are solved (the scrambles printed make them), the bad one
-/// is reported in plain words, and the run fails at the end. For both solvers.
+/// Three patterns on stdin, the second with a mistake (a sticker of the wrong colour), the third
+/// over two lines: the good ones are solved (the scrambles printed make them), the bad one is
+/// reported in plain words, and the run fails at the end. For both solvers.
 #[test]
 fn patterns_on_stdin_with_a_bad_one() {
     let dir = small_tables().to_str().unwrap();
@@ -365,4 +365,44 @@ fn info_without_tables() {
     assert_eq!(rows[1]["input"], "pattern 2 (line 2)");
     assert!(rows[1]["error"].as_str().unwrap().contains("72 stickers"));
     assert!(err.contains("1 of 2 patterns could not be read"), "{err}");
+}
+
+/// Every way tables get generated checks first that they fit, and writes nothing when they do
+/// not: `optimal gen` and the optimal solver's tables on first use (`--min-free-memory` asks for
+/// more memory than any machine has), and the two-phase loader behind `gen`, `solve` and `bench`
+/// (the same floor, set in this process).
+#[cfg(target_os = "linux")]
+#[test]
+fn nothing_written_when_tables_do_not_fit() {
+    let dir = std::env::temp_dir().join(format!("omelettehedron-cli-fit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let d = dir.to_str().unwrap();
+    for args in [
+        &["optimal", "gen", "--tier", "small"][..],
+        &["optimal", "solve", "--tier", "small", "U R"],
+    ] {
+        let args: Vec<&str> = args
+            .iter()
+            .copied()
+            .chain(["--tables", d, "--min-free-memory", "1e9"])
+            .collect();
+        let (ok, _, err) = run(&args, "");
+        assert!(!ok && err.contains("not enough memory"), "{err}");
+    }
+    omelettehedron::preflight::set_memory_floor(u64::MAX / 4);
+    for (tier, joint) in [(false, false), (true, true)] {
+        let r = omelettehedron::tables::Tables::load_with(
+            &dir,
+            omelettehedron::tables::AeSym::new(tier),
+            joint,
+            MoveSet::FACE,
+            false,
+        );
+        let e = r.err().unwrap();
+        assert!(e.to_string().contains("not enough memory"), "{e}");
+    }
+    // (the check may create the directory, but no file in it)
+    let files = std::fs::read_dir(&dir).map_or(0, Iterator::count);
+    assert_eq!(files, 0);
+    let _ = std::fs::remove_dir_all(&dir);
 }
