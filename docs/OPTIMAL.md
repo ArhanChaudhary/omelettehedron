@@ -114,7 +114,7 @@ Tiers (`--tier`):
 |---|---|---|
 | `small` | edges, corners x B-centres, corners x A-centres, A-centres/edge triples on both sides | 195 MB |
 | `medium` | corners x edges, corners x B-centres, corners x A-centres, A-centres/edges (with chirality) on both sides | 3.4 GB |
-| `large` | corners x edges, A-centres/edges (with chirality) on both sides, and corners x B-centres x edge triple to solved for the 4 A-triples and the 4 B-triples (no corner x centre lookups: a triple lookup is never below the corner x centre value of its orbit) | 24.4 GB |
+| `large` | A-centres/edges (with chirality) on both sides, and corners x B-centres x edge triple to solved for the 4 A-triples and the 4 B-triples (no corner x centre lookups: a triple lookup is never below the corner x centre value of its orbit; no corners x edges: it costs more than it prunes) | 22.0 GB |
 
 (The corner x edge table subsumes the edge table: every corner x edge path is an edge path.)
 
@@ -593,6 +593,30 @@ symmetries, 1450 tasks; depth 20 7.44e8 nodes (1.8 s), 21 1.07e10 (25.2 s), 22 1
 s, complete), 23 2.34e11 until the first solution (803.0 s); 3.97e11 nodes in all, against
 1.9e13. Solution `B' D F' U' D R BR' D' U' F BL' D' L' F BL' D B' L BL U' L BL' U'`, checked
 with `omelettehedron pattern`.
+
+**tri_adj+[UB_FD,NL_MR] proven 23 in 447.8 s** (the two-phase solver: 8,397 s). 16 symmetries,
+2176 tasks; root bounds 10 (corners x edges) and 13 (every other lookup); depth 20 9.44e8 nodes
+(2.2 s), 21 1.36e10 (30.9 s), 22 1.95e11 (439.3 s, complete), 23 4.30e9 until the first solution
+(447.8 s); 2.14e11 nodes in all, against 1.3e13. Solution `B D' R F D B' D' R' BR' R L' B BL BR'
+B' BL F B' BL' BR L B' BL'`.
+
+**tri_adj-[Uf_Fu;Db_Bd] proven 23 in 1,155.1 s** (the two-phase solver: 10,942 s; light
+one-thread work ran beside it). 8 symmetries, 4352 tasks; its corners and edges are solved
+(corners x edges 0 at the root; the A-centre/edge lookups 11, the triple lookups 12); depth 20
+2.67e9 nodes (6.2 s), 21 3.77e10 (82.8 s), 22 5.29e11 (1,144.0 s, complete), 23 5.80e9 until the
+first solution (1,155.1 s); 5.75e11 nodes in all, against 1.7e13. Solution `BR U' BL L BL R BR B'
+U BL L' D B BL D' R' U BR' L' U' R' D R`.
+
+All four 23-move positions: 266.5 + 803.0 + 447.8 + 1,155.1 s = 44.5 minutes on 48 threads,
+against 11.1 hours for the two-phase solver (33x, 14.8x, 18.8x, 9.5x); every solution leaves
+each face one colour on the sticker model.
+
+**The large tier without corners x edges (`optimal/large-noce`).** After the A-centre/edge and
+triple lookups, corners x edges prunes 0.3% of the children (the pruning statistics of round 3),
+so it is left out: 22.0 GB instead of 24.4, lookups per node 2.36 -> 2.27 (17-move set), nodes
+1.028x to the first solution on the 17-move set (1.007x for the full tree) and 1.001x on the
+19-move set, time 0.979x (1 thread, 17-move set; rounds 0.971, 0.970, 0.988) and 0.954x (48
+threads, 19-move set; 0.950, 0.956, 0.956).
 
 ## Open
 
