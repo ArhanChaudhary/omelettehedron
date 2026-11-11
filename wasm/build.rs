@@ -12,16 +12,32 @@
 //! The small tier needs ~300 MB (the 129 MB A-centre/edge table, the 4.7 MB corner/B-centre
 //! table, the move and symmetry tables, and while loading a table file its bytes too), and
 //! each thread a 2 MiB stack: 1 GiB leaves room for 256 threads.
+//!
+//! The medium tier needs ~1.3 GB (its A-centre/edge table is 1.03 GB; a table file is loaded
+//! where it is copied in, without a second copy). It gets its own module, built with the
+//! feature `medium` (`omelettehedron-threads-medium.wasm`, see scripts/build-wasm.sh), with
+//! 2 GiB: that leaves room for over 300 threads, and the small tier's module keeps its 1 GiB,
+//! which more devices can reserve. (The memory cannot simply be larger than the module says:
+//! `malloc` uses only the memory up to the module's initial size, `__heap_end`, and then
+//! grows it.)
 
 /// Memory of the threads build, in bytes (a multiple of the 64 KiB page).
 const MEMORY: u64 = 1 << 30;
+
+/// Memory of the threads build with the feature `medium`.
+const MEDIUM_MEMORY: u64 = 2 << 30;
 
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(wasm_threads)");
     println!("cargo::rerun-if-changed=build.rs");
     if std::env::var("TARGET").is_ok_and(|target| target.ends_with("-threads")) {
+        let memory = if std::env::var_os("CARGO_FEATURE_MEDIUM").is_some() {
+            MEDIUM_MEMORY
+        } else {
+            MEMORY
+        };
         println!("cargo::rustc-cfg=wasm_threads");
-        println!("cargo::rustc-cdylib-link-arg=--initial-memory={MEMORY}");
-        println!("cargo::rustc-cdylib-link-arg=--max-memory={MEMORY}");
+        println!("cargo::rustc-cdylib-link-arg=--initial-memory={memory}");
+        println!("cargo::rustc-cdylib-link-arg=--max-memory={memory}");
     }
 }

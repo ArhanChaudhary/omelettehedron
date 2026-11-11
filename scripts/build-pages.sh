@@ -13,7 +13,8 @@ scripts/build-wasm.sh
 mkdir -p "$output/dist"
 cp wasm/index.html wasm/demo-worker.mjs wasm/omelettehedron.mjs wasm/omelettehedron-thread.mjs \
     wasm/coi-sw.js "$output/"
-cp wasm/dist/omelettehedron.wasm wasm/dist/omelettehedron-threads.wasm "$output/dist/"
+cp wasm/dist/omelettehedron.wasm wasm/dist/omelettehedron-threads.wasm \
+    wasm/dist/omelettehedron-threads-medium.wasm "$output/dist/"
 # (GitHub Pages: no Jekyll processing)
 touch "$output/.nojekyll"
 printf 'Pages site: %s\n' "$output"

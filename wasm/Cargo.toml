@@ -9,6 +9,11 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+# The threads build with 2 GiB of memory instead of 1 GiB, for the medium tables
+# (omelettehedron-threads-medium.wasm, see build.rs and scripts/build-wasm.sh).
+medium = []
+
 [dependencies]
 omelettehedron = { path = ".." }
 rayon = "1"
