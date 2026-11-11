@@ -288,9 +288,14 @@ fn rotation_labels() -> &'static Vec<Stickers> {
 /// True if `solution` solves the position of `scramble` as a pure FTO, where every piece and
 /// every centre triangle is unique (not only up to colour), up to a whole-puzzle rotation.
 pub fn solves_pure(scramble: &[PhysMove], solution: &[PhysMove]) -> bool {
-    let id: Stickers = std::array::from_fn(|i| i as u8);
-    let end = apply_physical(&apply_physical(&id, scramble), solution);
+    let end = apply_physical(&pure_stickers(scramble), solution);
     rotation_labels().contains(&end)
+}
+
+/// The pure FTO after `moves` from solved: which sticker of the solved puzzle is in each place.
+pub fn pure_stickers(moves: &[PhysMove]) -> Stickers {
+    let id: Stickers = std::array::from_fn(|i| i as u8);
+    apply_physical(&id, moves)
 }
 
 #[cfg(test)]

@@ -23,8 +23,11 @@ use super::coords::*;
 use crate::cube::*;
 use crate::fast::{fast, masks, FastTables};
 use crate::preflight::{check_plan, MemGuard, Planned};
-use crate::prune::{bfs, Graph, Table2};
-use crate::tables::{ae_targets, build_ae, prefetch_at, AeIndex, AeSym};
+use crate::prune::{bfs, Graph, Table2, TableFile};
+use crate::tables::{
+    ae_targets, build_ae, prefetch_at, AeIndex, AeSym, AE_CHIRAL_ENTRIES, AE_CHIRAL_FILE,
+    AE_TRIPLES_ENTRIES, AE_TRIPLES_FILE,
+};
 use std::path::{Path, PathBuf};
 
 /// Most lookups per position of any tier (the search's scratch arrays have this many slots).
@@ -47,12 +50,44 @@ pub enum OptTier {
 }
 
 impl OptTier {
+    /// The tiers, smallest first.
+    pub const ALL: [OptTier; 3] = [OptTier::Small, OptTier::Medium, OptTier::Large];
+
     pub fn name(self) -> &'static str {
         match self {
             OptTier::Small => "small",
             OptTier::Medium => "medium",
             OptTier::Large => "large",
         }
+    }
+
+    /// The table files of the tier in the metric of `moves` (the names [`OptTables::load`]
+    /// reads), with their entries; `None` if the tier cannot be used with `moves` on this
+    /// target (the large tier with slices, or a tier beyond small on a 32-bit target).
+    pub fn files(self, moves: MoveSet) -> Option<Vec<TableFile>> {
+        if unsupported(self, moves).is_some() {
+            return None;
+        }
+        let sfx = moves.table_suffix();
+        let file = |name: &str, entries: u64| TableFile {
+            name: format!("{name}{sfx}.prun"),
+            entries,
+        };
+        let (ae, own) = match self {
+            OptTier::Small => (
+                file(AE_TRIPLES_FILE, AE_TRIPLES_ENTRIES),
+                file(EDGES_FILE, N_EPERM as u64),
+            ),
+            OptTier::Medium => (
+                file(AE_CHIRAL_FILE, AE_CHIRAL_ENTRIES),
+                file(CE_FILE, CE_ENTRIES),
+            ),
+            OptTier::Large => (
+                file(AE_CHIRAL_FILE, AE_CHIRAL_ENTRIES),
+                file(CBE_FILE, CBE_ENTRIES),
+            ),
+        };
+        Some(vec![file(CC_FILE, CC_ENTRIES), ae, own])
     }
 }
 
@@ -316,6 +351,12 @@ const CC_FILE: &str = "opt-cc-sym24";
 const EDGES_FILE: &str = "opt-edges";
 const CE_FILE: &str = "opt-ce-sym48";
 const CBE_FILE: &str = "opt-cbe-sym6";
+
+/// Entries of the tables (as the file headers give them), so that table files can be judged
+/// without building the indices (`tier_entries_match_the_indices` checks them).
+const CC_ENTRIES: u64 = 18_849_600;
+const CE_ENTRIES: u64 = 9_580_032_000;
+const CBE_ENTRIES: u64 = 83_913_984_000;
 
 fn load_or_build(
     path: &Path,
@@ -914,6 +955,49 @@ mod tests {
     use super::*;
     use crate::coord::N_MSET;
     use rand::SeedableRng;
+
+    /// The entries [`OptTier::files`] expects are the indices' sizes, and the names are the
+    /// ones [`OptTables::load`] reads. (64-bit only: the larger indices exceed 2^32 entries.)
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn tier_entries_match_the_indices() {
+        assert_eq!(cc_size(&CcIndex::new()) as u64, CC_ENTRIES);
+        assert_eq!(CeIndex::new().size() as u64, CE_ENTRIES);
+        assert_eq!(CbeIndex::new().size() as u64, CBE_ENTRIES);
+        let names = |t: OptTier, slice: bool| -> Option<Vec<String>> {
+            let moves = MoveSet {
+                slice,
+                ..MoveSet::FACE
+            };
+            Some(t.files(moves)?.into_iter().map(|f| f.name).collect())
+        };
+        assert_eq!(
+            names(OptTier::Small, false).unwrap(),
+            [
+                "opt-cc-sym24.prun",
+                "ae-sym288-triples.prun",
+                "opt-edges.prun"
+            ]
+        );
+        assert_eq!(
+            names(OptTier::Medium, true).unwrap(),
+            [
+                "opt-cc-sym24-slice.prun",
+                "ae-sym288-chiral-slice.prun",
+                "opt-ce-sym48-slice.prun"
+            ]
+        );
+        assert_eq!(
+            names(OptTier::Large, false).unwrap(),
+            [
+                "opt-cc-sym24.prun",
+                "ae-sym288-chiral.prun",
+                "opt-cbe-sym6.prun"
+            ]
+        );
+        // the large tier has no slice tables
+        assert_eq!(names(OptTier::Large, true), None);
+    }
 
     /// Each tier's lookup order is a permutation of its lookups.
     #[test]
