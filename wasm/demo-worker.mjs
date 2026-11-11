@@ -6,26 +6,28 @@
 //
 // Adapted from egg-solver's wasm/demo-worker.mjs (same author).
 
-import { FtoSolver } from './omelettehedron.mjs';
+import { FtoSolver, wasmFile } from './omelettehedron.mjs';
 
 let solver = null;
 
 const commands = {
-  /** Start the module: the threads build if `threads` > 1. Returns `{ threads, control }`. */
-  async init({ threads, channel }) {
+  /**
+   * Start the module: the threads build if `threads` > 1, the one with room for the tables
+   * `tier` ('small' or 'medium'). Returns `{ threads, control }`.
+   */
+  async init({ threads, channel, tier = 'small' }) {
     solver?.close();
     solver = null;
-    const name = threads > 1 ? 'omelettehedron-threads.wasm' : 'omelettehedron.wasm';
-    const wasm = new URL(`dist/${name}`, import.meta.url);
+    const wasm = new URL(`dist/${wasmFile(tier, threads)}`, import.meta.url);
     solver = await FtoSolver.create({ wasm, threads: threads > 1 ? threads : undefined, channel });
     // (the control array goes to the page for `cancel`, if it can be shared)
     const shared =
       typeof SharedArrayBuffer !== 'undefined' && solver.control.buffer instanceof SharedArrayBuffer;
     return { threads: solver.threads, control: shared ? solver.control : null };
   },
-  /** Generate the tables (progress on the channel), then warm the engine up. */
-  async generate() {
-    const info = solver.generate();
+  /** Generate the tables `tier` (progress on the channel), then warm the engine up. */
+  async generate({ tier = 'small' } = {}) {
+    const info = solver.generate({ tier });
     await solver.warmUp();
     return info;
   },
@@ -43,6 +45,8 @@ const commands = {
   random: ({ seed }) => solver.randomScramble({ seed }),
   isSolved: ({ moves }) => solver.isSolved(moves),
   bench: (args) => solver.bench(args),
+  /** The module's memory: `{ bytes, fixed }` (fixed: the threads build, whose memory never grows). */
+  memory: () => ({ bytes: solver.memory.buffer.byteLength, fixed: solver.hasThreads }),
 };
 
 onmessage = async ({ data: { id, cmd, ...args } }) => {
