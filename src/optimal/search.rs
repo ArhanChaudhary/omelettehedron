@@ -222,6 +222,8 @@ struct Eval {
     hs: [[u8; MAX_K]; N_MOVES],
     /// each child's bound (the largest of its values read so far)
     mx: [u8; N_MOVES],
+    /// each child's [`Bounds::pre`] value of the current stage
+    pre: [u32; N_MOVES],
     sel: [u8; N_MOVES],
 }
 
@@ -234,6 +236,7 @@ impl Eval {
             idx: [[0; MAX_K]; N_MOVES],
             hs: [[0; MAX_K]; N_MOVES],
             mx: [0; N_MOVES],
+            pre: [0; N_MOVES],
             sel: [0; N_MOVES],
         }
     }
@@ -367,9 +370,14 @@ impl<B: Bounds> Shared<'_, B> {
             let k = k % MAX_K;
             ctr.lookups += alive as u64;
             let tab = self.b.table(k);
+            // (two passes: the first prefetches what the indices read first, see Bounds::pre)
             for j in 0..alive {
                 let u = usize::from(ev.sel[j % N_MOVES]) % N_MOVES;
-                let ix = self.b.index(k, &ev.ys[u]);
+                ev.pre[u] = self.b.pre(k, &ev.ys[u]);
+            }
+            for j in 0..alive {
+                let u = usize::from(ev.sel[j % N_MOVES]) % N_MOVES;
+                let ix = self.b.index_with(k, &ev.ys[u], ev.pre[u]);
                 ev.idx[u][k] = ix;
                 prefetch_at(&tab.data, ix >> 5);
             }
