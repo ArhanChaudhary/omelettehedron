@@ -135,11 +135,21 @@ async function sameBytes(a, b) {
   return true;
 }
 
-/** An optimal solve of a random position, cancelled after `after` ms from this thread. */
+/**
+ * An optimal solve of a random position, cancelled after `after` ms from this thread; as a
+ * scramble, then as a pattern (a stopped pattern solve once reported about 10,000,000 s).
+ */
 async function cancelled(w, control, label, after = 1000) {
   const { scramble } = await w.call('random', { seed: 7 });
+  const { pattern } = await w.call('pattern', { scramble });
+  for (const [kind, call, args] of [['solve', 'solve', { scramble }], ['pattern', 'solvePattern', { pattern }]]) {
+    await cancelledOne(w, control, `${label} (${kind})`, after, call, args);
+  }
+}
+
+async function cancelledOne(w, control, label, after, call, args) {
   const t0 = performance.now();
-  const solving = w.call('solve', { scramble });
+  const solving = w.call(call, args);
   await sleep(after);
   check(cancel(control), `${label}: cancel refused`);
   const t1 = performance.now();
