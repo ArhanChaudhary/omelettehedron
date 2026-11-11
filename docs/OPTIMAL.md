@@ -371,6 +371,13 @@ thread, 10 x 15-move face-turn scrambles (seed 1717): mean optimal length 13.6 w
 minutes on the busy machine): 139,550,571 nodes on the same set (0.108x the small tier, 120x
 the face metric's 1,162,092), same lengths, 1.37 lookups per node.
 
+Face turns pay little for the slices: the move tables have a column for every move (the corner
+table too, a slice keeping the corner id), so the hot path has no branch on the move kind, and
+the search is compiled once per move count. Face-metric time against main (4c96995), medium
+tier, quiet machine, three interleaved rounds: 1 thread, 17-move set 8.241 -> 8.341 s (1.012x;
+rounds 1.009, 1.012, 1.015); 48 threads, 19-move set 32.13 -> 32.89 s (1.024x; 1.023, 1.026,
+1.020); same nodes. (With a branch in the corner move it was 1.083x / 1.059x.)
+
 ## Optimisation round 2: a bound for the nodes with 9 to 11 moves left
 
 **Estimate before building.** With medium + AE, the expanded nodes of the 13-move set (10
