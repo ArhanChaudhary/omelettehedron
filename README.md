@@ -259,7 +259,7 @@ target/release/omelettehedron optimal solve --tier medium --moves slice "..."  #
 |---|---|---|
 | `small` | 195 MB | corners x centres (both orbits, 24 symmetries), edge permutation, and the two-phase A-centre/edge-triple table on both sides |
 | `medium` | 3.4 GB | corners x centres, corners x edges (48 symmetries), and the two-phase A-centre/edge table on both sides |
-| `large` | 24.4 GB | the medium tier and corners x B-centres x the edges of one face, to solved (21 GB, 6 symmetries, read for all 8 faces); `optimal gen --tier large` takes about 2 minutes on 48 cores (`--min-free-memory GB` stops it cleanly if memory runs low) |
+| `large` | 22.0 GB | the two-phase A-centre/edge table on both sides and corners x B-centres x the edges of one face, to solved (21 GB, 6 symmetries, read for all 8 faces); `optimal gen --tier large` takes about 2 minutes on 48 cores (`--min-free-memory GB` stops it cleanly if memory runs low) |
 
 Stopping rules: none (first optimal solution), `-n N` (up to N optimal solutions), `-t T`
 (time limit; prints the lower bound proven so far), `-l L` (give up above L moves). Positions

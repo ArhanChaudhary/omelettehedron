@@ -210,7 +210,7 @@ enum Cmd {
 #[derive(clap::Args, Clone)]
 struct OptTableArgs {
     /// Table size (required; there is no default): small (~195 MB), medium (~3.4 GB, fewer
-    /// nodes) or large (~24.4 GB, fewest nodes)
+    /// nodes) or large (~22.0 GB, fewest nodes)
     #[arg(long, value_enum)]
     tier: OptTier,
     /// Directory for the tables (default: $FTO_TABLES or ./tables)

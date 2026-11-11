@@ -114,7 +114,7 @@ Tiers (`--tier`):
 |---|---|---|
 | `small` | edges, corners x B-centres, corners x A-centres, A-centres/edge triples on both sides | 195 MB |
 | `medium` | corners x edges, corners x B-centres, corners x A-centres, A-centres/edges (with chirality) on both sides | 3.4 GB |
-| `large` | corners x edges, A-centres/edges (with chirality) on both sides, and corners x B-centres x edge triple to solved for the 4 A-triples and the 4 B-triples (no corner x centre lookups: a triple lookup is never below the corner x centre value of its orbit) | 24.4 GB |
+| `large` | A-centres/edges (with chirality) on both sides, and corners x B-centres x edge triple to solved for the 4 A-triples and the 4 B-triples (no corner x centre lookups: a triple lookup is never below the corner x centre value of its orbit; no corners x edges: it costs more than it prunes) | 22.0 GB |
 
 (The corner x edge table subsumes the edge table: every corner x edge path is an edge path.)
 
@@ -593,6 +593,13 @@ symmetries, 1450 tasks; depth 20 7.44e8 nodes (1.8 s), 21 1.07e10 (25.2 s), 22 1
 s, complete), 23 2.34e11 until the first solution (803.0 s); 3.97e11 nodes in all, against
 1.9e13. Solution `B' D F' U' D R BR' D' U' F BL' D' L' F BL' D B' L BL U' L BL' U'`, checked
 with `omelettehedron pattern`.
+
+**The large tier without corners x edges (`optimal/large-noce`).** After the A-centre/edge and
+triple lookups, corners x edges prunes 0.3% of the children (the pruning statistics of round 3),
+so it is left out: 22.0 GB instead of 24.4, lookups per node 2.36 -> 2.27 (17-move set), nodes
+1.028x to the first solution on the 17-move set (1.007x for the full tree) and 1.001x on the
+19-move set, time 0.979x (1 thread, 17-move set; rounds 0.971, 0.970, 0.988) and 0.954x (48
+threads, 19-move set; 0.950, 0.956, 0.956).
 
 ## Open
 
