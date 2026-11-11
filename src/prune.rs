@@ -252,7 +252,7 @@ pub trait Graph: Sync {
 /// medium depth 11 (ratio 3.4) forward 4.7 s vs backward 5.4 s, CBE depth 8 (ratio 6.6)
 /// backward 15.3 s vs forward 20.6 s; small-tier AE depth 10 (2.4) and CB depth 6 (3.0)
 /// differ by at most 0.1 s either way.
-const FORWARD_RATIO: u64 = 4;
+const FORWARD_RATIO: u64 = 2;
 
 /// Indices per work item (a multiple of 32, so that work items own whole words).
 const CH: usize = 1 << 14;
