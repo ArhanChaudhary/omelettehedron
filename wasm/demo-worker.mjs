@@ -11,7 +11,7 @@ let solver = null;
 const commands = {
   /**
    * Start the module: the threads build if `threads` > 1, the one with room for the tables
-   * `tier` ('small' or 'medium'). Returns `{ threads, control }`.
+   * `tier` ('tiny', 'small' or 'medium'). Returns `{ threads, control }`.
    */
   async init({ threads, channel, tier = 'small' }) {
     solver?.close();

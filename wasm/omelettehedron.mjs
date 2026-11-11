@@ -6,10 +6,10 @@
 //   solver.solve("U R' BL F D B' L BR");        // optimal: { solution, length, optimal, ... }
 //   solver.solve(scramble, { seconds: 5 });     // the best solution found in 5 s
 //
-// Two sets of tables (`TIERS`, the native tiers of the same names): small (134 MB) and
-// medium (1.04 GB; fewer positions to search, so faster solves). The single-thread module
-// takes either; the threads build comes in two modules, one per set (`wasmFile`), since its
-// memory is fixed (see wasm/build.rs).
+// Three sets of tables (`TIERS`, the native tiers of the same names): tiny (42 MB; quick to
+// make, slower solves), small (134 MB) and medium (1.04 GB; fewer positions to search, so
+// faster solves). The single-thread module takes any; the threads build comes in two modules
+// (`wasmFile`: tiny and small share one), since its memory is fixed (see wasm/build.rs).
 //
 // The module is built for WASI (wasm32-wasip1, or wasm32-wasip1-threads for several
 // threads): this file provides the few WASI functions it imports (clock, console output,
@@ -333,6 +333,7 @@ async function startWorker(module, memory, control, slot, channel) {
  * files) and the threads module with room for it.
  */
 export const TIERS = {
+  tiny: { code: 2, ae: 'ae-pair48-split96.prun', cb: 'cb-sym24.prun', threadsWasm: 'omelettehedron-threads.wasm' },
   small: { code: 0, ae: 'ae-sym288-triples.prun', cb: 'cb-sym24.prun', threadsWasm: 'omelettehedron-threads.wasm' },
   medium: { code: 1, ae: 'ae-sym288-chiral.prun', cb: 'cb-sym24.prun', threadsWasm: 'omelettehedron-threads-medium.wasm' },
 };
@@ -340,7 +341,7 @@ export const TIERS = {
 /** The module file (in `dist/`) for the tables `tier` on `threads` threads (> 1: a threads build). */
 export function wasmFile(tier = 'small', threads = 1) {
   const t = TIERS[tier];
-  if (!t) throw new Error(`omelettehedron: no tables called ${tier} (small or medium)`);
+  if (!t) throw new Error(`omelettehedron: no tables called ${tier} (tiny, small or medium)`);
   return threads > 1 ? t.threadsWasm : 'omelettehedron.wasm';
 }
 
@@ -461,14 +462,15 @@ export class FtoSolver {
   }
 
   /**
-   * Generate the tables of `tier` ('small' or 'medium', see `TIERS`) in memory: natively on
-   * one core ~30 s for small and ~3 min for medium; more threads: faster. The threads module
+   * Generate the tables of `tier` ('tiny', 'small' or 'medium', see `TIERS`) in memory:
+   * natively on one core ~5 s for tiny, ~30 s for small and ~3 min for medium; more threads:
+   * faster. The threads module
    * must be the one for the tier (`wasmFile`). Progress lines go to stderr (`onLine(2,
    * line)`). Returns `{ tier, ae_bytes, cb_bytes, seconds }`.
    */
   generate({ tier = 'small' } = {}) {
     const t = TIERS[tier];
-    if (!t) throw new Error(`omelettehedron: no tables called ${tier} (small or medium)`);
+    if (!t) throw new Error(`omelettehedron: no tables called ${tier} (tiny, small or medium)`);
     this.tables = null;
     this.tables = this.call('fto_generate', t.code);
     return this.tables;
@@ -476,7 +478,7 @@ export class FtoSolver {
 
   /**
    * Load the two table files of a tier (`TIERS[tier].ae` and `cb-sym24.prun`, from the native
-   * `gen --tier small` or `--tier medium`, or from `exportTables`): each a path (Bun), URL,
+   * `gen --tier tiny`, `small` or `medium`, or from `exportTables`): each a path (Bun), URL,
    * Blob or bytes. The tier is that of the first file; the checksums are checked. Blobs and
    * Bun's files are copied into the module in pieces (no second whole copy in JavaScript's
    * memory). Returns `{ tier, ae_bytes, cb_bytes, seconds }`.

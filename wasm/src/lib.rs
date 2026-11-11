@@ -8,10 +8,11 @@
 //! `fto_table_buffer`, then checked and installed by `fto_load`; `fto_export` hands out the
 //! generated tables in the same format.
 //!
-//! Two sets of tables (the native tiers of the same names), chosen by a number: 0 for the
-//! small tier (the 129 MB A-centre/edge table without edge chirality) and 1 for the medium
-//! tier (the full 1.03 GB A-centre/edge table, 4.13e9 entries: its indices fit 32 bits), each
-//! with the 4.7 MB corner/B-centre table. The large tier needs 8 GB, beyond wasm32's 4 GB.
+//! Three sets of tables (the native tiers of the same names), chosen by a number: 0 for the
+//! small tier (the 129 MB A-centre/edge table without edge chirality), 1 for the medium tier
+//! (the full 1.03 GB A-centre/edge table, 4.13e9 entries: its indices fit 32 bits) and 2 for
+//! the tiny tier (the 37 MB pair and split tables of `omelettehedron::light`), each with the
+//! 4.7 MB corner/B-centre table. The large tier needs 8 GB, beyond wasm32's 4 GB.
 //!
 //! Two builds (scripts/build-wasm.sh): `wasm32-wasip1` runs on one thread anywhere, and
 //! `wasm32-wasip1-threads` runs rayon's pool on wasi-threads (in a browser: a cross-origin
@@ -36,6 +37,7 @@
 
 use omelettehedron::bench;
 use omelettehedron::cube::{defs, solved_stickers, MoveSet};
+use omelettehedron::light::AeLight;
 use omelettehedron::mem::HugeBuf;
 use omelettehedron::notation::{
     apply_physical, format_moves, is_solved_physical, parse_moves, scramble_to_cube, Frame,
@@ -84,26 +86,52 @@ pub extern "C" fn _initialize() {
     }
 }
 
-/// The tier of number `code` (0: small, 1: medium).
+/// The tier of number `code` (0: small, 1: medium, 2: tiny).
 fn tier_of(code: u32) -> Result<Tier, String> {
     match code {
         0 => Ok(Tier::Small),
         1 => Ok(Tier::Medium),
-        _ => Err(format!("tables {code}: 0 (small) or 1 (medium)")),
+        2 => Ok(Tier::Tiny),
+        _ => Err(format!("tables {code}: 0 (small), 1 (medium) or 2 (tiny)")),
     }
 }
 
-/// The A-centre/edge index of a tier (small or medium).
+/// The A-centre/edge index of the small or medium tier.
 fn ae_index(tier: Tier) -> AeSym {
     AeSym::new(tier != Tier::Small)
 }
 
-/// The name of the tier of `t` (as the native `--tier`).
-fn tier_name(t: &Tables<AeSym>) -> &'static str {
-    if t.ae_ix.chiral {
-        "medium"
-    } else {
-        "small"
+/// The tables of a tier: the small or medium tier's A-centre/edge index, or the tiny tier's.
+enum AnyTables {
+    Sym(Box<Tables<AeSym>>),
+    Light(Box<Tables<AeLight>>),
+}
+
+/// Evaluate `$body` with `$t` bound to the tables of `$any` (an `&AnyTables`), whatever
+/// their index (the search is compiled for each).
+macro_rules! with_tables {
+    ($any:expr, |$t:ident| $body:expr) => {
+        match $any {
+            AnyTables::Sym(b) => {
+                let $t = &**b;
+                $body
+            }
+            AnyTables::Light(b) => {
+                let $t = &**b;
+                $body
+            }
+        }
+    };
+}
+
+impl AnyTables {
+    /// The name of the tier (as the native `--tier`).
+    fn tier(&self) -> &'static str {
+        match self {
+            AnyTables::Sym(t) if t.ae_ix.chiral => "medium",
+            AnyTables::Sym(_) => "small",
+            AnyTables::Light(_) => "tiny",
+        }
     }
 }
 
@@ -118,7 +146,7 @@ struct Incoming {
 struct State {
     /// Threads of the global pool (0 before `fto_init`).
     threads: usize,
-    tables: Option<Tables<AeSym>>,
+    tables: Option<AnyTables>,
     /// Table files being copied in by the caller (`fto_table_buffer`): AE, then CB.
     incoming: [Option<Incoming>; 2],
     /// The header of the table file last exported (`fto_export`).
@@ -181,7 +209,7 @@ fn ensure_pool(state: &mut State, threads: usize) -> Result<usize, String> {
 }
 
 /// The tables, or an error if there are none yet.
-fn tables(state: &State) -> Result<&Tables<AeSym>, String> {
+fn tables(state: &State) -> Result<&AnyTables, String> {
     state
         .tables
         .as_ref()
@@ -242,11 +270,12 @@ pub extern "C" fn fto_init(threads: u32) -> i32 {
 }
 
 /// `{"tier":..,"ae_bytes":..,"cb_bytes":..}` of the tables, plus `extra`'s fields.
-fn tables_json(t: &Tables<AeSym>, extra: &serde_json::Value) -> String {
+fn tables_json(t: &AnyTables, extra: &serde_json::Value) -> String {
+    let (ae, cb) = with_tables!(t, |t| (t.ae.bytes(), t.cb.tab.bytes()));
     let mut v = json!({
-        "tier": tier_name(t),
-        "ae_bytes": t.ae.bytes(),
-        "cb_bytes": t.cb.tab.bytes(),
+        "tier": t.tier(),
+        "ae_bytes": ae,
+        "cb_bytes": cb,
     });
     if let (Some(v), Some(extra)) = (v.as_object_mut(), extra.as_object()) {
         v.extend(extra.clone());
@@ -259,14 +288,19 @@ fn tables_json(t: &Tables<AeSym>, extra: &serde_json::Value) -> String {
 /// single-thread module grows to 352 MiB for the small tier's 123 MiB table).
 const GENERATION_EXTRA: usize = 256 << 20;
 
-/// An error unless a table of `n` entries and [`GENERATION_EXTRA`] fit in the module's memory,
+/// [`GENERATION_EXTRA`] for the tiny tier, whose generation needs neither the edge symmetry
+/// tables nor the 288-symmetry class table (measured: with no reserve, the single-thread module
+/// grows to 216 MiB generating its 36 MiB of tables).
+const GENERATION_EXTRA_TINY: usize = 128 << 20;
+
+/// An error unless a table of `n` entries and `extra` bytes fit in the module's memory,
 /// so that a module without room says so instead of trapping when generating. In the threads
 /// build, whose memory is fixed, the sum must not exceed it; and the memory is tried by
 /// allocating it (the single-thread build grows its memory for it, and keeps it for the
 /// tables). The allocation's address goes through `black_box`: an allocation that is freed
 /// unused may be removed by the compiler, success assumed.
-fn ensure_room(n: usize, tier: &str) -> Result<(), String> {
-    let bytes = n.div_ceil(32) * 8 + GENERATION_EXTRA;
+fn ensure_room(n: usize, extra: usize, tier: &str) -> Result<(), String> {
+    let bytes = n.div_ceil(32) * 8 + extra;
     let err = || {
         format!(
             "not enough memory for the {tier} tables (about {} MiB; this module has {} MiB)",
@@ -293,7 +327,7 @@ fn module_memory() -> u64 {
     pages << 16
 }
 
-/// Generate the tables of `tier` (0: small, 1: medium) in memory, replacing the current ones
+/// Generate the tables of `tier` (0: small, 1: medium, 2: tiny) in memory, replacing the current ones
 /// (progress lines go to stderr). Output: `{"tier":..,"ae_bytes":..,"cb_bytes":..,
 /// "seconds":..}`.
 #[unsafe(no_mangle)]
@@ -303,10 +337,16 @@ pub extern "C" fn fto_generate(tier: u32) -> i32 {
         ensure_pool(state, 1)?;
         state.tables = None;
         state.incoming = [None, None];
-        let ae_ix = ae_index(tier);
-        ensure_room(ae_ix.size(), if ae_ix.chiral { "medium" } else { "small" })?;
         let start = Instant::now();
-        let t = Tables::generate(ae_ix, MoveSet::FACE, true);
+        let t = if tier == Tier::Tiny {
+            let ae_ix = AeLight::new();
+            ensure_room(ae_ix.size(), GENERATION_EXTRA_TINY, tier.name())?;
+            AnyTables::Light(Box::new(Tables::generate(ae_ix, MoveSet::FACE, true)))
+        } else {
+            let ae_ix = ae_index(tier);
+            ensure_room(ae_ix.size(), GENERATION_EXTRA, tier.name())?;
+            AnyTables::Sym(Box::new(Tables::generate(ae_ix, MoveSet::FACE, true)))
+        };
         let info = tables_json(&t, &json!({ "seconds": start.elapsed().as_secs_f64() }));
         state.tables = Some(t);
         Ok(info)
@@ -314,7 +354,8 @@ pub extern "C" fn fto_generate(tier: u32) -> i32 {
 }
 
 /// A buffer of `len` bytes for the file of table `which` (0: the A-centre/edge table,
-/// `ae-sym288-triples.prun` or `ae-sym288-chiral.prun`; 1: `cb-sym24.prun`), which the caller
+/// `ae-sym288-triples.prun`, `ae-sym288-chiral.prun` or `ae-pair48-split96.prun`; 1:
+/// `cb-sym24.prun`), which the caller
 /// fills before `fto_load`. Drops the current tables first. Returns 0 if out of memory.
 #[unsafe(no_mangle)]
 pub extern "C" fn fto_table_buffer(which: u32, len: usize) -> *mut u8 {
@@ -380,6 +421,26 @@ fn parse_table(file: Option<Incoming>, n: usize, name: &str) -> Result<Table2, S
     })
 }
 
+/// The tables of an index, from its A-centre/edge file and the corner/B-centre table.
+fn tables_of<I: AeIndex>(
+    ae_ix: I,
+    ae_file: Option<Incoming>,
+    cb: CbTable,
+) -> Result<Tables<I>, String> {
+    let ae_name = format!("{}.prun", ae_ix.name());
+    let ae = parse_table(ae_file, ae_ix.size(), &ae_name)?;
+    Ok(Tables {
+        ae_targets: ae_targets(&ae_ix),
+        ae_ix,
+        ae,
+        cb,
+        p2: Phase2::new(),
+        cbe: None,
+        cbs: None,
+        moves: MoveSet::FACE,
+    })
+}
+
 /// The entry count in the header of a table file being copied in, if it has one.
 fn entries(file: Option<&Incoming>) -> Option<usize> {
     file.and_then(|f| f.words.get(1))
@@ -387,7 +448,7 @@ fn entries(file: Option<&Incoming>) -> Option<usize> {
 }
 
 /// Install the table files copied into the `fto_table_buffer`s (both must be filled), after
-/// checking their format, size and checksums; the tier (small or medium) is that of the
+/// checking their format, size and checksums; the tier (small, medium or tiny) is that of the
 /// A-centre/edge table's size. Output: `{"tier":..,"ae_bytes":..,"cb_bytes":..,"seconds":..}`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fto_load() -> i32 {
@@ -397,29 +458,23 @@ pub extern "C" fn fto_load() -> i32 {
         let start = Instant::now();
         let [ae_file, cb_file] = std::mem::take(&mut state.incoming);
         let n = entries(ae_file.as_ref());
-        let ae_ix = [Tier::Small, Tier::Medium]
-            .into_iter()
-            .map(ae_index)
-            .find(|ix| Some(ix.size()) == n)
-            .ok_or(
-                "the A-centre/edge table file is neither ae-sym288-triples.prun nor \
-                    ae-sym288-chiral.prun of this version",
-            )?;
-        let ae_name = format!("{}.prun", ae_ix.name());
         let cb = parse_table(cb_file, N_CB, "cb-sym24.prun")?;
-        let ae = parse_table(ae_file, ae_ix.size(), &ae_name)?;
-        let t = Tables {
-            ae_targets: ae_targets(&ae_ix),
-            ae_ix,
-            ae,
-            cb: CbTable {
-                tab: cb,
-                attach: CbTable::attach_targets(),
-            },
-            p2: Phase2::new(),
-            cbe: None,
-            cbs: None,
-            moves: MoveSet::FACE,
+        let cb = CbTable {
+            tab: cb,
+            attach: CbTable::attach_targets(),
+        };
+        let t = if n == usize::try_from(omelettehedron::tables::AE_LIGHT_ENTRIES).ok() {
+            AnyTables::Light(Box::new(tables_of(AeLight::new(), ae_file, cb)?))
+        } else {
+            let ae_ix = [Tier::Small, Tier::Medium]
+                .into_iter()
+                .map(ae_index)
+                .find(|ix| Some(ix.size()) == n)
+                .ok_or(
+                    "the A-centre/edge table file is none of ae-sym288-triples.prun, \
+                     ae-sym288-chiral.prun and ae-pair48-split96.prun of this version",
+                )?;
+            AnyTables::Sym(Box::new(tables_of(ae_ix, ae_file, cb)?))
         };
         let info = tables_json(&t, &json!({ "seconds": start.elapsed().as_secs_f64() }));
         state.tables = Some(t);
@@ -435,11 +490,11 @@ pub extern "C" fn fto_load() -> i32 {
 pub extern "C" fn fto_export(which: u32) -> i32 {
     with_state(|state| {
         let t = tables(state)?;
-        let (name, tab) = match which {
+        let (name, tab) = with_tables!(t, |t| match which {
             0 => (format!("{}.prun", t.ae_ix.name()), &t.ae),
             1 => ("cb-sym24.prun".to_string(), &t.cb.tab),
             _ => return Err(format!("table {which}: 0 (AE) or 1 (CB)")),
-        };
+        });
         // (as `prune::save_words` writes it)
         let mut h = Vec::with_capacity(32 + 8 * tab.hist.len());
         h.extend_from_slice(b"FTOPRUN2");
@@ -513,7 +568,7 @@ pub unsafe extern "C" fn fto_solve(
         } else {
             Report::Improvements
         };
-        let o = solve(t, cube, frame, &limits, report);
+        let o = with_tables!(t, |t| solve(t, cube, frame, &limits, report));
         let events: Vec<(f64, usize)> = o.events.iter().map(|e| (e.time, e.length)).collect();
         Ok(json!({
             "solution": o.solution.as_deref().map(format_moves),
@@ -546,7 +601,13 @@ pub extern "C" fn fto_random_scramble(seed: u32) -> i32 {
             cancel_after: Some(NO_LIMIT),
             ..Limits::default()
         };
-        let o = solve(t, cube, Frame::identity(), &limits, Report::Quiet);
+        let o = with_tables!(t, |t| solve(
+            t,
+            cube,
+            Frame::identity(),
+            &limits,
+            Report::Quiet
+        ));
         let s = o.solution.ok_or("cancelled")?;
         let scramble: Vec<PhysMove> = s
             .iter()
@@ -595,15 +656,15 @@ pub extern "C" fn fto_bench(count: u32, seed: u32, seconds: f64, scramble_len: u
             time,
             ..Limits::default()
         };
-        let s = bench::run(
-            t,
-            tier_name(t),
+        let s = with_tables!(t, |tt| bench::run(
+            tt,
+            t.tier(),
             count as usize,
             u64::from(seed),
             (scramble_len > 0).then_some(scramble_len as usize),
             &limits,
             false,
-        );
+        ));
         serde_json::to_string(&s).map_err(|e| e.to_string())
     })
 }
@@ -703,7 +764,7 @@ pub unsafe extern "C" fn fto_solve_pattern(
         } else {
             Report::Improvements
         };
-        let o = solve(t, cube, Frame::identity(), &limits, report);
+        let o = with_tables!(t, |t| solve(t, cube, Frame::identity(), &limits, report));
         let events: Vec<(f64, usize)> = o.events.iter().map(|e| (e.time, e.length)).collect();
         let scramble = o
             .solution

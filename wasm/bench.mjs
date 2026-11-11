@@ -2,13 +2,13 @@
 // Timings of the WebAssembly build in Bun (a browser-like engine: JavaScriptCore, as Safari),
 // comparable with the native `bench`:
 //
-//   bun wasm/bench.mjs [--tier small|medium] [--threads N] [--tables DIR] [--count 10]
+//   bun wasm/bench.mjs [--tier tiny|small|medium] [--threads N] [--tables DIR] [--count 10]
 //                      [--seed 2026] [--seconds 5]
 //
-// --tier T      the tables: small (default) or medium
+// --tier T      the tables: tiny, small (default) or medium
 // --threads N   the threads build with N threads (default: the single-thread build)
-// --tables DIR  load the tier's files from DIR (ae-sym288-triples.prun or
-//               ae-sym288-chiral.prun, and cb-sym24.prun) instead of generating
+// --tables DIR  load the tier's files from DIR (ae-pair48-split96.prun, ae-sym288-triples.prun
+//               or ae-sym288-chiral.prun, and cb-sym24.prun) instead of generating
 //
 // Prints the table generation (or load) time and the module's memory, the optimal solves of
 // short scrambles (those of test.mjs), then the native `bench` summary for `count` seeded
