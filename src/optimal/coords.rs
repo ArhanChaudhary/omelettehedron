@@ -76,10 +76,13 @@ pub struct OptMoves {
     shuf_e: [[u8; 16]; 32],
     shuf_a: [[u8; 16]; 32],
     shuf_b: [[u8; 16]; 32],
-    /// corner id after each move (a slice moves no corner: the same id), padded to 32 moves
-    /// and 1024 ids so that `& 31` and `& 1023` replace bounds checks; no branch on the move
-    /// kind in the hot path (with one, face-turn searches took 1.03-1.08x the time)
-    corner: Box<[[u16; 32]; 1024]>,
+    /// corner id after each move: rows 0..1024 the face turns (16 columns, the first 32 KB,
+    /// all that the face metric reads), rows 1024..2048 the slices (a slice moves no corner:
+    /// the same id; 16 columns, the padding moves too); row `(c & 1023) | ((m & 16) << 6)`,
+    /// column `m & 15`, so no branch on the move kind and no bounds check (with a branch,
+    /// face-turn searches took 1.03-1.08x the time; with one 64-byte row of 32 moves per id,
+    /// 1.01-1.02x)
+    corner: Box<[[u16; 16]; 2048]>,
 }
 
 fn gather(src: &[u8; 12]) -> [u8; 16] {
@@ -93,20 +96,15 @@ impl OptMoves {
         let d = defs();
         let cs = corners();
         #[allow(clippy::large_stack_arrays)] // 64 KB, once at startup
-        let mut corner = Box::new([[0u16; 32]; 1024]);
+        let mut corner = Box::new([[0u16; 16]; 2048]);
         for (id, &(cp, co)) in cs.id_to_state.iter().enumerate() {
             let cube = Cube {
                 cp,
                 co,
                 ..Cube::solved()
             };
-            corner[id] = std::array::from_fn(|m| {
-                if m < N_MOVES {
-                    cs.id(&cube.apply(m))
-                } else {
-                    id as u16
-                }
-            });
+            corner[id] = std::array::from_fn(|m| cs.id(&cube.apply(m)));
+            corner[1024 + id] = [id as u16; 16];
         }
         // (moves 24..32 are padding: the identity)
         let id: [u8; 12] = std::array::from_fn(|p| p as u8);
@@ -142,7 +140,7 @@ impl OptMoves {
     /// Corner id after move `m` (a slice moves no corner).
     #[inline(always)]
     pub fn corner(&self, c: u16, m: usize) -> u16 {
-        self.corner[c as usize & 1023][m & 31]
+        self.corner[(c as usize & 1023) | ((m & 16) << 6)][m & 15]
     }
 
     /// Apply move `m` to the corners and B-centres only.
