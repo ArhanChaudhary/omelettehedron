@@ -9,12 +9,14 @@
 //!   state);
 //! * [`coords`]: positions as byte vectors, and the indices of the tables;
 //! * [`tables`]: the pattern databases (distance to solved of a projection) and the tiers;
+//! * [`cbe`]: the large tier's corner x B-centre x edge-triple table;
 //! * [`search`]: IDA* with canonical move order and a parallel task split;
 //! * [`bench`]: the benchmark harness.
 //!
 //! See docs/OPTIMAL.md.
 
 pub mod bench;
+pub mod cbe;
 pub mod coords;
 pub mod search;
 pub mod sym;

@@ -110,6 +110,7 @@ Tiers (`--tier`):
 |---|---|---|
 | `small` | edges, corners x B-centres, corners x A-centres, A-centres/edge triples on both sides | 195 MB |
 | `medium` | corners x edges, corners x B-centres, corners x A-centres, A-centres/edges (with chirality) on both sides | 3.4 GB |
+| `large` | the medium tier's five, and corners x B-centres x edge triple to solved for the 4 A-triples and the 4 B-triples | 24.4 GB |
 
 (The corner x edge table subsumes the edge table: every corner x edge path is an edge path.)
 
@@ -152,6 +153,14 @@ repositioning, which preserve `H_A` but not the solved state).
 * An AE-to-solved table (A-centres x edge triples x chirality) can use only the symmetries
   that fix the front corner (4 class-preserving ones): it includes no corners, so no `R`.
   That is 2.7e11 entries (68 GB), not built.
+* **Corners x B-centres x edge triple** (large tier, `optimal/cbe.rs`): the table follows the
+  three edges of A-face 0 in order, so only the 6 class-preserving symmetries that fix A-face 0
+  reduce it: 172 corner classes. A lookup for A-face `k` conjugates with a symmetry that maps
+  A-face `k` onto A-face 0 (the 6 such symmetries give the same classes), and a lookup for a
+  B-face composes `SWAP_AB` in front, as for the A-centres above: eight lookups, one table.
+  The index maps the corner state to its representative, the B- (or A-) colouring by two
+  shuffles and a multiset rank, and the three edges' positions by the symmetry's position map
+  (the pieces that the symmetry sends onto triple 0, in triple 0's order).
 
 ### Checks
 
@@ -161,6 +170,15 @@ repositioning, which preserve `H_A` but not the solved state).
   indices are invariant (up to equivalent indices) under their symmetries; ranks round-trip.
 * `optimal/tables.rs`: the reduced corner x centre table equals an unreduced 89 MB BFS on
   3,000 random positions and all their neighbours, through both centre orbits.
+* `optimal/cbe.rs`: every lookup's symmetry maps the corner state onto its representative
+  and the lookup's triple onto triple 0; the eight lookups of a position and of each of its
+  48 conjugates agree (up to order and equivalent indices); a decoded entry has its own index;
+  the B-face lookups equal the A-face lookups of the `SWAP_AB` conjugate. **Brute force:** a
+  sparse BFS over the table's own indices (the generator's steps and equivalents) to depth 5
+  gives every position within 5 moves (all of them for lookup 0, an eighth for the others) the
+  distance of its raw projection, computed independently from that ball of positions.
+  (`--ignored`, with the 21 GB table: 3,000 sampled entries walk down to solved, equivalent
+  entries agree, every entry was reached.)
 * On load, every table is walked down from random positions to the solved entry (a file of
   another layout fails), besides the size and checksum checks of `prune::Table2::load`.
 
@@ -180,6 +198,9 @@ repositioning, which preserve `H_A` but not the solved state).
 * Tables: decoded child values equal walked exact values, values change by at most one per
   move, only the solved state is 0 in every lookup, the bound never exceeds the true distance;
   the edge table's first levels equal an independent BFS.
+* Large tier (`--ignored`, needs its tables): lengths equal the brute force on 36 scrambles of
+  0-12 moves, every bound is at most the brute-force distance (300 positions up to 10 moves
+  out), the first five lookups equal the medium tier's, and the tables are consistent.
 
 ## Measured node counts
 
@@ -285,6 +306,37 @@ on the 15-move set (0.9998x), 147,723,722 -> 144,410,408 on the 17-move set (0.9
 so the table, which halved the two-phase solver's phase-1 tree near its leaves, prunes little
 here: 2% fewer nodes for 7 GB more.
 
+## Optimisation round 2: a bound for the nodes with 9 to 11 moves left
+
+**Estimate before building.** With medium + AE, the expanded nodes of the 13-move set (10
+scrambles, seed 1717: 18,582 nodes, 1,425 expansions, one thread) sit at 10 and 11 moves left
+(498 and 682 expansions; 38 at 9). Each candidate table was evaluated exactly on that recorded
+search, without building it: a breadth-first ball of radius 6 around the solved projection,
+and for every expansion a depth-first search (bounded by the tier's own tables) that decides
+whether the projection's distance fits in the moves left. The search order does not change
+and the bounds are admissible, so a node is kept iff every ancestor passes, and the new node
+count is exact on the set (`optimal/estimate`, an experiment branch: a recording hook in the
+search and `examples/estimate.rs`).
+
+| candidate (to solved) | entries | size | nodes | cut at 9 / 10 / 11 moves left |
+|---|---|---|---|---|
+| today (medium + AE) | | | 18,582 | of 38 / 498 / 682 expansions |
+| A-centres x edge A-triples x chirality, both sides | 2.75e11 | 68.7 GB | 0.340x | 22 / 442 / 477 |
+| the same without chirality | 3.43e10 | 8.6 GB | 0.679x | 22 / 348 / 89 |
+| both centre orbits (A x B colourings), 8 symmetries | 1.37e10 | 4.3 GB | 0.880x | |
+| **corners x B-centres x ordered positions of an A-face's edges, 4 triples x 2 sides** | 8.39e10 | 21.0 GB | **0.342x** | 28 / 483 / 430 |
+| the same with the positions as a set + chirality (the two-phase CBE layout) | 2.80e10 | 7.0 GB | 0.616x | 28 / 474 / 47 |
+| the same with two of the three edges, ordered | 8.39e9 | 2.1 GB | 0.706x | 27 / 389 / 4 |
+| A-centres of two colours x edge A-triples x chirality, both sides | 1.37e10 | 3.4 GB | 0.808x | 15 / 245 / 13 |
+
+(The corner x B-centre x triple tables keep the 6 symmetries that fix A-face 0: 172 corner
+classes x 369,600 colourings x 1,320 ordered positions (440 as a set + chirality); one table
+serves all eight lookups. Without the corners, an A-centre/edge table keeps only the 4
+frame-fixing symmetries.) Dropping the chirality loses most of the A-centre/edge table's
+gain at 11 moves left (477 -> 89 cuts), and the table that keeps it does not fit next to the
+proofs; the ordered triple table is as strong at a third of the size. The set + chirality
+variant (7.0 GB, 0.62x) is the fallback for smaller machines.
+
 ## Missing (v0)
 
 * Timings: the machine was busy with long two-phase proofs, so only node counts are measured.
@@ -300,11 +352,10 @@ here: 2% fewer nodes for 7 GB more.
    frame it keeps only the 4 class-preserving symmetries that fix the front corner (it has no
    corners, so no re-fixing rotation): 2.7e11 entries (68 GB) with chirality, 3.4e10 (8.5 GB)
    without.
-2. **Corners x B-centres x one A-face's edges, to solved** ("CBE-to-solved"): 960 x 369,600 x
-   1,320 ordered positions of 3 edges, reduced by the 24 class-preserving symmetries (about 2e10
-   entries, 4.9 GB), looked up four times (each A-face mapped to face 0 by a symmetry) and four
-   more times through `SWAP_AB` (A-centres with a B-face's edges). The two-phase solver's
-   joint table of this shape halved its nodes.
+2. **Corners x B-centres x one A-face's edges, to solved** ("CBE-to-solved"): round 2 (the
+   `large` tier, above). Only the 6 symmetries that fix A-face 0 reduce it (the others move the
+   triple), so it has 172 x 369,600 x 1,320 = 8.39e10 entries (21.0 GB), looked up four times
+   (each A-face mapped to face 0 by a symmetry) and four more times through `SWAP_AB`.
 3. **Timing, once the machine is free** (node counts unchanged): lanes (several depth-first
    stacks per worker, so the misses of different nodes overlap, not only those of siblings) or
    the two-phase solver's sibling pipeline; staged lookups with an early exit (corners x edges

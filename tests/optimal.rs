@@ -413,6 +413,76 @@ fn medium_tier_matches_brute_force() {
     }
 }
 
+/// The large tier (the medium tier and the 21 GB corner x B-centre x edge-triple table: loaded
+/// from `$FTO_TABLES`, generated if missing): the same optimal lengths as the brute force,
+/// bounds never above the brute-force distance (admissible), consistent tables, and the
+/// medium tier's bounds in its first five lookups.
+#[test]
+#[ignore = "needs the large tier's tables (24.4 GB; `omelettehedron optimal gen --tier large`)"]
+fn large_tier_matches_brute_force() {
+    let dir = omelettehedron::tables::table_dir(None);
+    let t = OptTables::load(&dir, OptTier::Large, false).unwrap();
+    let b = t.large().unwrap();
+    let medium = t.medium().unwrap();
+    let mt = opt_moves();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(108);
+    assert_eq!(exact(&b, &Pos::solved()), Some([0; MAX_K]));
+    for len in [0usize, 2, 4, 6, 8, 9, 10, 11, 12] {
+        for _ in 0..4 {
+            let scr = random_scramble(&mut rng, len);
+            let (c, fr) = scramble_to_cube(&scr);
+            let Some(truth) = mitm().distance(&c) else {
+                continue;
+            };
+            let h = exact(&b, &Pos::of(&c)).unwrap();
+            assert!(h.iter().all(|&x| usize::from(x) <= truth));
+            let o = pool(8).install(|| solve(&b, c, fr, &Limits::default(), false));
+            assert_eq!(o.length, Some(truth), "scramble {}", format_moves(&scr));
+            check_solution(&scr, &o.solutions[0]);
+        }
+    }
+    // admissible: never above the brute-force distance (positions up to 10 moves out)
+    let mut tight = 0;
+    for _ in 0..300 {
+        let n = rng.gen_range(1..=10);
+        let c = Cube::solved().apply_seq(
+            &(0..n)
+                .map(|_| rng.gen_range(0..N_MOVES))
+                .collect::<Vec<_>>(),
+        );
+        let Some(d) = mitm().distance(&c) else {
+            continue;
+        };
+        let h = exact(&b, &Pos::of(&c)).unwrap();
+        assert!(
+            h.iter().all(|&x| usize::from(x) <= d),
+            "bound above distance {d}"
+        );
+        tight += usize::from(
+            h[MediumBounds::K..LargeBounds::K]
+                .iter()
+                .any(|&x| usize::from(x) == d),
+        );
+    }
+    assert!(tight > 0);
+    for _ in 0..100 {
+        let p = Pos::of(&Cube::random(&mut rng));
+        let h = exact(&b, &p).unwrap();
+        assert_eq!(
+            h[..MediumBounds::K],
+            exact(&medium, &p).unwrap()[..MediumBounds::K]
+        );
+        for m in 0..N_MOVES {
+            let q = mt.apply(&p, m);
+            let hq = exact(&b, &q).unwrap();
+            for k in 0..LargeBounds::K {
+                assert!(h[k].abs_diff(hq[k]) <= 1);
+                assert_eq!(decode(h[k], b.table(k).get(b.index(k, &q))), hq[k]);
+            }
+        }
+    }
+}
+
 /// Symmetric start: on symmetric positions the filtered search (default) finds the same
 /// optimal lengths as the brute force and as the unfiltered search (`-n` keeps every task). The
 /// positions: every position within 5 moves (breadth-first, in a fixed order) that some of the

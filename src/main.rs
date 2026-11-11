@@ -209,8 +209,8 @@ enum Cmd {
 /// Table options of the optimal solver.
 #[derive(clap::Args, Clone)]
 struct OptTableArgs {
-    /// Table size (required; there is no default): small (~195 MB) or medium (~3.4 GB, fewer
-    /// nodes)
+    /// Table size (required; there is no default): small (~195 MB), medium (~3.4 GB, fewer
+    /// nodes) or large (~24.4 GB, fewest nodes)
     #[arg(long, value_enum)]
     tier: OptTier,
     /// Directory for the tables (default: $FTO_TABLES or ./tables)
@@ -226,6 +226,11 @@ struct OptTableArgs {
     /// Generate missing tables even if the disk or memory check says they do not fit
     #[arg(long)]
     force: bool,
+    /// Memory (GB) to leave to the rest of the machine: required free on top of the tables
+    /// before generating, and the large tier's generation stops (writing nothing) if the
+    /// free memory falls below it
+    #[arg(long, value_name = "GB", default_value_t = 0.0)]
+    min_free_memory: f64,
 }
 
 /// Stopping rules of the optimal solver (without any: the first optimal solution).
@@ -538,6 +543,10 @@ fn read_positions(
 fn load_opt(tab: &OptTableArgs) -> Result<OptTables, Error> {
     let dir = table_dir(tab.tables.as_deref());
     omelettehedron::preflight::set_force(tab.force);
+    // (an `as` cast saturates: negative or NaN -> 0, too large -> u64::MAX)
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let floor = (tab.min_free_memory * 1e9) as u64;
+    omelettehedron::preflight::set_memory_floor(floor);
     OptTables::load(&dir, tab.tier, tab.verbose).map_err(|e| table_error(&dir, &e))
 }
 
@@ -552,6 +561,10 @@ macro_rules! opt_bounds {
             }
             OptTier::Medium => {
                 let $b = $t.medium().ok_or_else(missing)?;
+                $body
+            }
+            OptTier::Large => {
+                let $b = $t.large().ok_or_else(missing)?;
                 $body
             }
         }
@@ -643,6 +656,12 @@ fn run_optimal(cmd: OptCmd) -> Result<(), Error> {
                 }
                 if let Some((_, ce)) = &t.ce {
                     eprintln!("corners x edges depth histogram {:?}", ce.hist);
+                }
+                if let Some((_, cbe, _)) = &t.cbe {
+                    eprintln!(
+                        "corners x B-centres x edge triple depth histogram {:?}",
+                        cbe.hist
+                    );
                 }
                 eprintln!(
                     "A-centre/edge (to H_A, two-phase table) depth histogram {:?}",
