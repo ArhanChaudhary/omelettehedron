@@ -11,8 +11,9 @@
 
 use super::sym::*;
 use crate::coord::{corners, mset, N_CORNER, N_MSET};
+use crate::coord::{parity3, triple_pieces};
 use crate::cube::*;
-use crate::fast::{fast, masks, mset_labels, shuffle, FastTables};
+use crate::fast::{fast, masks, mset_labels, shuffle, FastTables, Fc};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -471,6 +472,109 @@ impl CeIndex {
     }
 }
 
+/// The two-phase solver's coordinates ([`Fc`]: centre colourings, edge A-triple labels and
+/// chirality, corner id) of a position and of its `SWAP_AB` conjugate, so that the two-phase
+/// tables (distances to `H_A`) can bound the distance to solved: solved is in `H_A`, and the
+/// conjugate's distance to `H_A` is the position's distance to `H_B`, which holds solved too.
+pub struct FcMaps {
+    /// A-triple label of each edge piece (a shuffle turns the permutation into the labels)
+    atri: [u8; 16],
+    /// the pieces of each A-triple, ascending
+    tp: [[u8; 3]; 4],
+    /// the conjugate's edges: piece relabelling and position gather
+    e_relab: [u8; 16],
+    e_gath: [u8; 16],
+    /// the conjugate's A-centres from the B-centres, and its B-centres from the A-centres
+    a_relab: [u8; 16],
+    a_gath: [u8; 16],
+    b_relab: [u8; 16],
+    b_gath: [u8; 16],
+    /// the conjugate's corner id (padded to 1024)
+    corner: Box<[u16; 1024]>,
+}
+
+impl FcMaps {
+    pub fn new() -> FcMaps {
+        let d = defs();
+        let s = sym48();
+        let w = s.swap;
+        let mut m = FcMaps {
+            atri: [0; 16],
+            tp: triple_pieces(),
+            e_relab: [0; 16],
+            e_gath: [0x80; 16],
+            a_relab: [0; 16],
+            a_gath: [0x80; 16],
+            b_relab: [0; 16],
+            b_gath: [0x80; 16],
+            corner: Box::new([0; 1024]),
+        };
+        m.atri[..12].copy_from_slice(&d.edge_atri);
+        m.e_relab[..12].copy_from_slice(&s.epos[w]);
+        // (SWAP_AB fixes the front corner: no re-fixing rotation, so positions move by it too)
+        m.a_relab[..4].copy_from_slice(&s.ccol[w][1]);
+        m.b_relab[..4].copy_from_slice(&s.ccol[w][0]);
+        for p in 0..12 {
+            m.e_gath[s.epos[w][p] as usize] = p as u8;
+            m.a_gath[s.cpos[w][1][p] as usize] = p as u8;
+            m.b_gath[s.cpos[w][0][p] as usize] = p as u8;
+        }
+        for c in 0..N_CORNER {
+            m.corner[c] = s.conj[w][c].0;
+        }
+        m
+    }
+
+    /// Chirality bits of an edge permutation (bit t: the parity of the positions of A-triple
+    /// t's pieces, as `coord::edge_chirality`).
+    #[inline(always)]
+    fn ebits(&self, ep: &[u8; 16]) -> u8 {
+        let mut pos = [0u8; 16];
+        for p in 0..12 {
+            pos[usize::from(ep[p] & 15)] = p as u8;
+        }
+        let mut bits = 0;
+        for t in 0..4 {
+            let [a, b, c] = self.tp[t];
+            bits |= parity3(pos[a as usize], pos[b as usize], pos[c as usize]) << t;
+        }
+        bits
+    }
+
+    /// Edge A-triple labels of an edge permutation (lanes 12..16 zero, as in [`Fc`]).
+    #[inline(always)]
+    fn labels(&self, ep: &[u8; 16]) -> [u8; 16] {
+        let mut e = shuffle(&self.atri, ep);
+        e[12..].fill(0);
+        e
+    }
+
+    /// The position's two-phase coordinates.
+    #[inline(always)]
+    pub fn fc(&self, p: &Pos) -> Fc {
+        Fc {
+            a: p.xa,
+            b: p.xb,
+            e: self.labels(&p.ep),
+            c: p.c,
+            ebits: self.ebits(&p.ep),
+        }
+    }
+
+    /// The two-phase coordinates of the position conjugated by `SWAP_AB`.
+    #[inline(always)]
+    pub fn fc_swap(&self, p: &Pos) -> Fc {
+        let ep = shuffle(&shuffle(&self.e_relab, &p.ep), &self.e_gath);
+        Fc {
+            a: shuffle(&shuffle(&self.a_relab, &p.xb), &self.a_gath),
+            b: shuffle(&shuffle(&self.b_relab, &p.xa), &self.b_gath),
+            e: self.labels(&ep),
+            c: self.corner[p.c as usize & 1023],
+            ebits: self.ebits(&ep),
+        }
+    }
+}
+
 /// Multiset rank of a labelling (lanes 0..12), for tests and code off the hot path.
 pub fn mset_rank(x: &[u8; 16]) -> u32 {
     let mut l = [0u8; 12];
@@ -552,6 +656,21 @@ mod tests {
         let mut eq = vec![];
         ix.equivalents(ix.target(), &mut eq);
         assert!(eq.iter().all(|&j| j == ix.target()));
+    }
+
+    /// The two-phase coordinates of a position and of its `SWAP_AB` conjugate equal the
+    /// two-phase solver's own construction (`fast().of`).
+    #[test]
+    fn fc_maps_match_two_phase_coordinates() {
+        let m = FcMaps::new();
+        let f = fast();
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(9);
+        for _ in 0..500 {
+            let c = Cube::random(&mut rng);
+            let p = Pos::of(&c);
+            assert_eq!(m.fc(&p), f.of(&c));
+            assert_eq!(m.fc_swap(&p), f.of(&c.conjugate(&SWAP_AB).unwrap()));
+        }
     }
 
     /// The A lookup equals the B lookup of the `SWAP_AB` conjugate; the B index depends only on
