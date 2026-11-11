@@ -828,8 +828,16 @@ fn run(cli: Cli) -> Result<(), Error> {
                     if let Some(cbe) = &t.cbe {
                         eprintln!("CBE depth histogram {:?}", cbe.hist);
                     }
-                    if let Some(cbs) = &t.cbs {
-                        eprintln!("CBE-to-solved depth histogram {:?}", cbs.hist);
+                    // (read it now: `gen` checks every table of the tier)
+                    if let (Some(lazy), Some(cbe)) = (&t.cbs, &t.cbe) {
+                        let Some(cbs) = lazy.get(&cbe.ix) else {
+                            return Err(format!(
+                                "{}: unusable distance-to-solved table",
+                                lazy.path().display()
+                            )
+                            .into());
+                        };
+                        eprintln!("distance-to-solved depth histogram {:?}", cbs.hist);
                     }
                 });
                 Ok(())

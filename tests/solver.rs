@@ -546,7 +546,9 @@ fn optimal_matches_brute_force_many() {
 fn large_tier_optimal_matches_brute_force() {
     let dir = table_dir(None);
     let t = Tables::load_with(&dir, AeSym::new(true), true, MoveSet::FACE, false).unwrap();
-    assert!(t.cbs.is_some());
+    // (read it now, so that every search below can use it)
+    let cbe = t.cbe.as_ref().unwrap();
+    assert!(t.cbs.as_ref().unwrap().get(&cbe.ix).is_some());
     let mitm = Mitm::new(MoveSet::FACE);
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(2029);
     let pool = rayon::ThreadPoolBuilder::new()

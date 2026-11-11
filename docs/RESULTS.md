@@ -48,6 +48,24 @@ before the merged traversal): the proven lengths agree.
 | 2 | 21 | 24 @ 3 ms | 61.8 s (64.6 s; 481 s) | 216.0 s (316.2 s) |
 | 3 | 20 | 23 @ 6 ms | 4.96 s (5.2 s; 39 s) | 17.0 s (26.1 s) |
 
+### With the distance-to-solved bound (`opt/tosolved`)
+
+The large tier's 3.5 GB distance-to-solved table (optimal mode only; see
+[PHASES.md](PHASES.md#4-search)), main c1dfbd3 against the branch, quiet machine, each run
+alone under the bench lock, two interleaved rounds (random positions: one run each):
+
+| | main | with the bound | ratio |
+|---|---|---|---|
+| 10 x 17-move scrambles, 1 thread (time per position) | 0.297 s | 0.233 s | 0.784x (nodes 0.743x) |
+| 10 x 19-move scrambles, 48 threads | 0.833 s | 0.701 s | 0.841x (nodes 0.806x) |
+| random position, seed 1 (21) | 71.5 s | 64.2 s | 0.897x |
+| random position, seed 2 (21) | 69.4 s | 58.2 s | 0.838x |
+| random position, seed 3 (20) | 5.90 s | 4.83 s | 0.819x |
+| time-limited search, nodes/s (48 / 1 threads) | | | 0.992x / 1.001x (unchanged: not used) |
+
+All proven lengths are identical. (These main times are above the table above, measured on an
+earlier main and a quieter day.)
+
 ## Move sets (`--moves`)
 
 Large tier; wide turns never shorten a solution, so only slices are measured.
@@ -79,14 +97,18 @@ scrambles, i.e. the inverse positions, which in the normal FTO need not have the
 | tri_adj+edge_adj | 23 | 23 | 11,877 s (3.3 h, 1.9e13 nodes) |
 | tri_adj-[Uf_Fu;Db_Bd] | 23 | 23 | 10,942 s (3.0 h, 1.7e13 nodes) |
 | tri_adj+[UB_FD,NL_MR] | 23 | 23 | 8,397 s (2.3 h, 1.3e13 nodes) |
-| edge_hard | 21 | 21 | 74 s |
-| pure_corn_6flip | >= 24 (pure) | 20 | 661 s (`--lower-bound 19`, after an earlier run excluded 18) |
+| edge_hard | 21 | 21 | 74 s (64.3 s with the distance-to-solved bound) |
+| pure_corn_6flip | >= 24 (pure) | 20 | 661 s (`--lower-bound 19`, after an earlier run excluded 18); 117.2 s from scratch with the distance-to-solved bound |
 
 The corner 6-flip undoes itself, so it is the same position either way. Its normal-FTO optimum is
 20 (no solution of at most 19 moves after 620 s, a 20-move solution at 661 s; verified on the
 sticker model); the solution exchanges centres of a colour, so it does not bear on the pure
 count of at least 24. With edges and centres solved, the A-centre/edge table bounds it by 0 and
-only the corner tables prune: each target pass costs about 9 times the previous one.
+only the corner tables prune: each target pass costs about 9 times the previous one. The
+distance-to-solved bound of optimal mode (`opt/tosolved`, large tier: corners, B-centres and an
+edge triple together, to solved) proves it from scratch in 117.2 s at 48 threads (6.45e10
+nodes; passes 18 and 19 complete at 8.2 s and 90.4 s), against 626.5 s (7.97e11 nodes) without
+it, a 5.3x speed-up; edge_hard 75.6 -> 64.3 s (1.18e11 -> 9.41e10 nodes), same solutions.
 
 All four positions listed at 23 are 23 in the normal FTO too (two-phase solver, optimal mode,
 2026-11-10/11; every solution checked: scramble plus solution leaves each face one colour):
@@ -108,6 +130,7 @@ building the move and symmetry tables; `bench` leaves it out of its per-position
 |---|---|---|
 | small | 0.41 s | 0.13 s |
 | large | 1.38 s | 0.26 s |
+| large with the distance-to-solved table (`opt/tosolved`; same session: 1.71 / 0.27 s without) | 2.13 s | 0.34 s |
 
 ## Tables
 
@@ -115,8 +138,8 @@ building the move and symmetry tables; `bench` leaves it out of its per-position
 |---|---|---|---|---|
 | small | 134 MB | 1.2 s | 27 s | 0.38 GB |
 | medium | 1.04 GB | 6.6 s | 167 s | 1.26 GB |
-| large | 8.1 GB | 30 s | — | 8.1 GB |
-| huge | 30 GB | 3 min 14 s (incl. writing 30 GB) | — | 29.4 GB |
+| large | 11.6 GB (8.1 GB before `opt/tosolved`) | 30 s + 20 s | — | 18.3 GB |
+| huge | 33.5 GB | 3 min 14 s (incl. writing 30 GB) + about 20 s (not measured) | — | 29.4 GB before `opt/tosolved` (not measured since) |
 
 The huge tier holds the same A-centre/edge values as medium with a cheaper index and is measured
 slower than large (0.85x nodes/s), so large is the fastest tier. Tables are generated on first use

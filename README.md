@@ -197,18 +197,22 @@ with a message if not.
 |---|---|---|---|
 | `small` | ~135 MB | ~1 s | A-centre/edge table without edge chirality |
 | `medium` | ~1.0 GB | ~7 s | full A-centre/edge table (288-fold symmetry) |
-| `large` | ~8 GB | ~30 s | medium + joint corner/B-centre/edge-triple table (about 2x fewer nodes) |
-| `huge` | ~30 GB | ~3 min | relabel-only A-centre/edge table (cheaper lookups) + the joint table |
+| `large` | ~11.6 GB | ~50 s | medium + joint corner/B-centre/edge-triple table (about 2x fewer nodes) + a 3.5 GB distance-to-solved table on the same index (optimal mode: about 0.8x proof time) |
+| `huge` | ~34 GB | ~3.5 min | relabel-only A-centre/edge table (cheaper lookups) + the joint and distance-to-solved tables |
 
 With `FTO_HUGE1G=1`, tables of 256 MB or more are placed on 1 GiB pages when the system has
 reserved them (`echo N > /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages` as root; the
-large tier needs 9): optimal proofs about 4% faster with the A-centre/edge table on a 1 GiB page.
+large tier needs 13): optimal proofs about 4% faster with the A-centre/edge table on a 1 GiB page.
 Without reserved pages the tables use transparent huge pages.
 
 All tiers also use the 4.7 MB corner/B-centre table and the in-memory phase-2 table. With
 `--moves slice` every tier has its own set of tables of the same sizes (names ending in
-`-slice`); `gen --tier T --moves slice` generates them ahead of time.
-Generation needs about the memory of the tier (peak 8.1 GB for `large`, 29 GB for `huge`); on
+`-slice`), except the distance-to-solved table, which is for face turns only; `gen --tier T
+--moves slice` generates them ahead of time. The distance-to-solved table is read only when an
+optimal solve can use it (on a background thread, while the search goes on), so time-limited
+solves and short proofs start as fast as without it.
+Generation needs about the memory of the tier, plus 7 GB while the distance-to-solved table is
+made (peak 18.3 GB for `large`; `huge` 29.4 GB without that table, not measured with it); on
 one core it takes ~30 s for `small` and ~3 min for `medium`. Writing the 30 GB of `huge` to
 disk is a large part of its time.
 

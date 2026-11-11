@@ -846,8 +846,8 @@ pub struct Tables<I: AeIndex> {
     pub p2: Phase2,
     pub cbe: Option<crate::cbe::CbeTable>,
     /// distances to solved on the joint table's index (large and huge tiers, face turns): a
-    /// bound for optimal mode (see `search.rs`)
-    pub cbs: Option<crate::cbe::CbsTable>,
+    /// bound for optimal mode (see `search.rs`), read when first needed
+    pub cbs: Option<std::sync::Arc<crate::cbe::LazyCbs>>,
 }
 
 pub fn table_dir(dir: Option<&Path>) -> PathBuf {
@@ -1008,42 +1008,33 @@ impl<I: AeIndex> Tables<I> {
         } else {
             None
         };
+        // The distance-to-solved table is read only when a search can use it (see `LazyCbs`);
+        // a missing one is generated now.
         let cbs = match (&cbe, with_cbs) {
-            (Some(cbe), true) => {
-                let path = cbs_path;
-                let t = match crate::cbe::CbsTable::load(&cbe.ix, &path) {
-                    Ok(t) => {
-                        if verbose {
-                            eprintln!(
-                                "loaded {} ({:.1} MB)",
-                                path.display(),
-                                t.bits.len() as f64 * 8e-6
-                            );
-                        }
-                        t
+            (Some(cbe), true) => Some(std::sync::Arc::new(
+                if std::fs::metadata(&cbs_path).is_ok() {
+                    if verbose {
+                        eprintln!(
+                            "found {} (read when optimal mode can use it)",
+                            cbs_path.display()
+                        );
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        if verbose {
-                            eprintln!("generating {} ...", path.display());
-                        }
-                        let t = crate::cbe::CbsTable::build(&cbe.ix, verbose);
-                        t.save(&cbe.ix, &path)?;
-                        t
+                    crate::cbe::LazyCbs::new(cbs_path)
+                } else {
+                    if verbose {
+                        eprintln!("generating {} ...", cbs_path.display());
                     }
-                    Err(e) => return Err(e),
-                };
-                if !t.check_walks(&cbe.ix) {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!(
-                            "{}: not a distance-to-solved table for this version's layout \
-                             (made by a different version?); delete it to regenerate",
-                            path.display()
-                        ),
-                    ));
-                }
-                Some(t)
-            }
+                    let t = crate::cbe::CbsTable::build(&cbe.ix, verbose);
+                    t.save(&cbe.ix, &cbs_path)?;
+                    if !t.check_walks(&cbe.ix) {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("{}: generated table fails its checks", cbs_path.display()),
+                        ));
+                    }
+                    crate::cbe::LazyCbs::with(cbs_path, t)
+                },
+            )),
             _ => None,
         };
         let t = Tables {

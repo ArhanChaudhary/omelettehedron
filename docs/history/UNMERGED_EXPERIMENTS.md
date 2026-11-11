@@ -35,6 +35,7 @@ scrambles / 1 thread, 17-move scrambles).
 
 | Experiment | Date | Summary |
 |---|---|---|
+| <a id="ref-archive-tosolved-est"></a>`archive/tosolved-est` | 2026-11-11 | Two-phase solver: exact estimate of a distance-to-solved bound on the joint table's index before building it (feature `est`: ball of radius 8 + radius-9 bit set around the solved projection, canonical search above, per-candidate subtree accounting; also cross-checks the built table, 0 mismatches in 549,999 children). 17-move set: exact distances 0.760x nodes, one side only 0.820x, 2-bit codes of base 8 / 9 / 10 / 11: 0.800x / 0.760x / 0.761x / 0.935x. Led to `opt/tosolved` |
 | <a id="ref-archive-childorder-wip"></a>`archive/childorder-wip` | 2026-11-10 | First child-ordering attempt (its key used deferred CB values); superseded by `neg/childorder2` |
 | <a id="ref-neg-slicelast"></a>`neg/slicelast` | 2026-11-10 | With slices, the last proof iteration (and depth T of a target pass) restricted to phase-1 paths ending in a slice: correct (check-optimal large slice) but neutral, since few nodes reach the last level (48T node counts within 0.1%; slice optimal 17-move set 0.97x at 48T, 15-move set 1.05x at 1T, time-limited unchanged) |
 | <a id="ref-neg-pgo"></a>`neg/pgo` | 2026-11-10 | Profile-guided build (`scripts/build-pgo.sh`): neutral to worse (time-limited nodes/s 0.987x at 48T, 0.947x at 1T; optimal 1.002x / 0.978x time; two interleaved rounds) |

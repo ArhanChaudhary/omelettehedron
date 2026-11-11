@@ -150,9 +150,12 @@ struct Shared<'a, I: AeIndex, const N: usize> {
     mv: [[usize; 32]; 2],
     /// largest CB distance (8): with at least this many moves left CB cannot prune
     cb_max: u8,
-    /// the distance-to-solved table and the joint table (for its index), in optimal mode
-    /// (see `finish`)
-    cbs: Option<(&'a crate::cbe::CbsTable, &'a crate::cbe::CbeTable)>,
+    /// the distance-to-solved table (read when first needed) and the joint table (for its
+    /// index), in optimal mode (see `finish`)
+    cbs: Option<(
+        &'a std::sync::Arc<crate::cbe::LazyCbs>,
+        &'a crate::cbe::CbeTable,
+    )>,
 }
 
 /// A node of the top levels of the search tree (see [`Shared::tasks`]).
@@ -1044,12 +1047,14 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
         // positions (four triples per side) is at least `CBS_MIN` from solved and fewer moves
         // are left. The search's other bounds keep almost no child with fewer than
         // `CBS_MIN` - 1 moves left, and at `CBS_MIN` - 1 this cuts about 96% of the children
-        // that pass them (1T nodes 0.775x / 0.803x on the 17 / 19-move sets; time 0.843x /
-        // 0.874x at 1T / 48T, opt/tosolved, measured with the equivalent 2-bit codes).
+        // that pass them (opt/tosolved: 1T nodes 0.743x / 0.771x on the 17 / 19-move sets;
+        // time 0.784x at 1T on the 17-move set, 0.841x at 48T on the 19-move set, random
+        // positions 0.82x-0.90x, corner 6-flip 5.3x faster). The table is read when the first
+        // search can use it (`LazyCbs`); until it is ready this is skipped.
         if B && n > 0 && budget > 0 {
-            if let Some((cbs, cbe)) = self.cbs {
-                let lim = ctr.prune_len.saturating_sub(g + 2);
-                if lim < usize::from(crate::cbe::CBS_MIN) {
+            let lim = ctr.prune_len.saturating_sub(g + 2);
+            if let (Some((lazy, cbe)), true) = (self.cbs, lim < usize::from(crate::cbe::CBS_MIN)) {
+                if let Some(cbs) = lazy.loaded() {
                     for &i in &sel[..n] {
                         let u = usize::from(i) % N;
                         for s in 0..2 {
@@ -1600,6 +1605,14 @@ fn solve_n<I: AeIndex, const N: usize>(
             n.saturating_mul(16)
         });
         let inline = threads == 1 || predicted < serial_nodes();
+        // Start reading the distance-to-solved table once this iteration can use it: some
+        // child with budget left (depth at most depth - 1) and fewer than `CBS_MIN` moves left
+        // for the whole solution, i.e. prune_len - depth < `CBS_MIN`.
+        if let Some((lazy, _)) = sh.cbs {
+            if sh.prune_len.load(Ordering::Relaxed) < depth + usize::from(crate::cbe::CBS_MIN) {
+                lazy.start();
+            }
+        }
         // Enough tasks to balance the load, but no more than the iteration's work warrants
         // (each extra split level costs a parallel expansion of the tree).
         let want = if threads == 1 {

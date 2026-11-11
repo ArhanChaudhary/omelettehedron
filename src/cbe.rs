@@ -23,7 +23,9 @@ use crate::sym::*;
 use crate::tables::{prefetch_at, CbTable, Phase2};
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 /// 220 position sets x 1 chirality bit
 pub const N_E1: usize = 440;
@@ -662,6 +664,100 @@ impl CbsTable {
     }
 }
 
+/// A tier's [`CbsTable`], read from its file only when a search can use it: optimal mode, once
+/// some child may have fewer than `CBS_MIN` moves left (see `search.rs`). Time-limited solves
+/// and proofs that end before that never read its 3.5 GB (start-up of the large tier 1.71 ->
+/// 2.13 s at 1T, 0.27 -> 0.34 s at 48T when it was read with the other tables). The first such
+/// search starts reading it on a background thread and goes on without the bound; the
+/// workers use it from the moment it is ready, and later searches from their start.
+pub struct LazyCbs {
+    path: PathBuf,
+    cell: OnceLock<Option<CbsTable>>,
+    started: AtomicBool,
+}
+
+impl LazyCbs {
+    /// A table that is read later from `path`.
+    pub fn new(path: PathBuf) -> LazyCbs {
+        LazyCbs {
+            path,
+            cell: OnceLock::new(),
+            started: AtomicBool::new(false),
+        }
+    }
+
+    /// A table already in memory (just generated).
+    pub fn with(path: PathBuf, t: CbsTable) -> LazyCbs {
+        let l = LazyCbs::new(path);
+        let _ = l.cell.set(Some(t));
+        l.started.store(true, Ordering::Relaxed);
+        l
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The table if it has been read (`None` while it is being read, or if it failed its
+    /// checks).
+    #[inline]
+    pub fn loaded(&self) -> Option<&CbsTable> {
+        self.cell.get().and_then(Option::as_ref)
+    }
+
+    /// The table, read now if no one has yet (another caller waits for the first). `None` if the
+    /// file cannot be read or fails its checks; a message on stderr says why, and the bound is
+    /// then off (the searches stay correct without it).
+    pub fn get(&self, ix: &CbeIndex) -> Option<&CbsTable> {
+        self.started.store(true, Ordering::Relaxed);
+        self.cell
+            .get_or_init(|| {
+                let fail = |why: String| {
+                    eprintln!(
+                        "{}: {why}; the distance-to-solved bound is off (delete the file to \
+                         regenerate it)",
+                        self.path.display()
+                    );
+                    None
+                };
+                match CbsTable::load(ix, &self.path) {
+                    Ok(t) if t.check_walks(ix) => Some(t),
+                    Ok(_) => {
+                        fail("not a distance-to-solved table for this version's layout".into())
+                    }
+                    Err(e) => fail(e.to_string()),
+                }
+            })
+            .as_ref()
+    }
+
+    /// Start reading the table on a background thread (one thread, so that it takes one core
+    /// from the search for the 0.4 s or so it needs), unless that has started already.
+    pub fn start(self: &Arc<Self>) {
+        if self.started.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let me = Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name("cbe-solved".into())
+            .spawn(move || {
+                let read = || {
+                    let ix = CbeIndex::new();
+                    me.get(&ix).is_some()
+                };
+                // (its parallel loops on one thread of their own, not on the search's pool)
+                match rayon::ThreadPoolBuilder::new().num_threads(1).build() {
+                    Ok(p) => p.install(read),
+                    Err(_) => read(),
+                }
+            });
+        if spawned.is_err() {
+            // no threads (e.g. WebAssembly without them): the bound stays off
+            self.started.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
 /// The even bits of `x` (bits 0, 2, .., 62; the odd bits must be clear) packed into bits 0..32.
 fn unspread(mut x: u64) -> u64 {
     x = (x | x >> 1) & 0x3333_3333_3333_3333;
@@ -748,6 +844,34 @@ mod tests {
                 assert_eq!(fy.c, conj_renorm_corner(x.c, m).unwrap().0);
             }
         }
+    }
+
+    /// A missing or broken distance-to-solved file turns the bound off (`None`) instead of
+    /// failing, read at once or on the background thread.
+    #[test]
+    fn lazy_table_failures_turn_the_bound_off() {
+        let ix = CbeIndex::new();
+        let dir = std::env::temp_dir().join(format!("fto-lazy-cbs-{:016x}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("cbe-solved11.prun");
+        let l = LazyCbs::new(p.clone());
+        assert!(l.loaded().is_none());
+        assert!(l.get(&ix).is_none());
+        std::fs::write(&p, b"FTOPRUN2 not a table").unwrap();
+        assert!(LazyCbs::new(p.clone()).get(&ix).is_none());
+        // (WebAssembly test runs have no threads: `start` then leaves the bound off)
+        if cfg!(not(target_family = "wasm")) {
+            let l = Arc::new(LazyCbs::new(p));
+            l.start();
+            l.start();
+            let t0 = std::time::Instant::now();
+            while l.cell.get().is_none() && t0.elapsed().as_secs() < 120 {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            assert!(l.cell.get().is_some(), "background read did not finish");
+            assert!(l.loaded().is_none());
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `unspread` packs the even bits.
