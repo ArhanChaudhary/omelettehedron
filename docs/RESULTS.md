@@ -76,7 +76,7 @@ scrambles, i.e. the inverse positions, which in the normal FTO need not have the
 | position | listed | proven optimum (normal FTO) | proof | optimal solver, large tier |
 |---|---|---|---|---|
 | tri_adj+edge_opp | 23 | 23 | 8,866 s (2.5 h, 1.4e13 nodes) | **23 in 266.5 s** (1.2e11 nodes) |
-| tri_adj+edge_adj | 23 | 23 | 11,877 s (3.3 h, 1.9e13 nodes) | |
+| tri_adj+edge_adj | 23 | 23 | 11,877 s (3.3 h, 1.9e13 nodes) | **23 in 803.0 s** (4.0e11 nodes) |
 | tri_adj-[Uf_Fu;Db_Bd] | 23 | 23 | 10,942 s (3.0 h, 1.7e13 nodes) | |
 | tri_adj+[UB_FD,NL_MR] | 23 | 23 | 8,397 s (2.3 h, 1.3e13 nodes) | |
 | edge_hard | 21 | 21 | 74 s | 21 in 344.7 s |
@@ -105,8 +105,10 @@ complete, no solution, at 152.8 s; a 23-move solution at 266.5 s), against 8,866
 two-phase solver; solution `B D' L R' D L' B U L BL' F' BL D U BR B' R' BR L' B' U' BL D'`
 (exchanges centres of a colour; scramble plus solution leaves each face one colour). It proves
 the corner 6-flip 20 in 0.48 s (9.6e7 nodes), against 626.5 s for the two-phase solver without
-a lower bound, and edge_hard 21 in 344.7 s (its corners are solved, so the triple table adds
-little; the two-phase solver: 71-74 s). The other three 23-move positions are next. (Optimal
+a lower bound, tri_adj+edge_adj 23 in 803.0 s (depth 22 complete at 345.1 s; the two-phase
+solver: 11,877 s; solution `B' D F' U' D R BR' D' U' F BL' D' L' F BL' D B' L BL U' L BL' U'`,
+checked on the sticker model), and edge_hard 21 in 344.7 s (its corners are solved, so the triple table adds
+little; the two-phase solver: 71-74 s). The other two 23-move positions are next. (Optimal
 solver times on the quiet machine, 48 threads; the two-phase proofs ran on the same machine.)
 
 ## Start-up

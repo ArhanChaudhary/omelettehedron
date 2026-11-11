@@ -588,6 +588,12 @@ moves), 23 5.56e10 until the first solution (266.5 s); 1.23e11 nodes in all, aga
 the two-phase solver. Solution `B D' L R' D L' B U L BL' F' BL D U BR B' R' BR L' B' U' BL
 D'`; `omelettehedron pattern` of scramble plus solution prints each face in one colour.
 
+**tri_adj+edge_adj proven 23 in 803.0 s** (same setting; the two-phase solver: 11,877 s). 24
+symmetries, 1450 tasks; depth 20 7.44e8 nodes (1.8 s), 21 1.07e10 (25.2 s), 22 1.52e11 (345.1
+s, complete), 23 2.34e11 until the first solution (803.0 s); 3.97e11 nodes in all, against
+1.9e13. Solution `B' D F' U' D R BR' D' U' F BL' D' L' F BL' D B' L BL U' L BL' U'`, checked
+with `omelettehedron pattern`.
+
 ## Open
 
 * Printing improvements (`-p`) has no use here (the first solution is optimal); resuming a
