@@ -618,6 +618,21 @@ impl CbsTable {
         }
     }
 
+    /// Index of triple `k` of `x` (edge masks `em`), its word prefetched.
+    #[inline(always)]
+    pub fn prefetch_one(
+        &self,
+        ix: &CbeIndex,
+        f: &FastTables,
+        x: &Fc,
+        em: &[u16; 4],
+        k: usize,
+    ) -> usize {
+        let i = ix.index(f, x, em, k);
+        prefetch_at(&self.bits, i >> 6);
+        i
+    }
+
     /// Whether some of the four triples (indices `idx`) is at least [`CBS_MIN`] from solved.
     #[inline(always)]
     pub fn any_far(&self, idx: &[usize; 4]) -> bool {

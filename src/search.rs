@@ -156,6 +156,8 @@ struct Shared<'a, I: AeIndex, const N: usize> {
         &'a std::sync::Arc<crate::cbe::LazyCbs>,
         &'a crate::cbe::CbeTable,
     )>,
+    /// (tuning) issue the first distance-to-solved lookups in `stage2`
+    cbs_early: bool,
 }
 
 /// A node of the top levels of the search tree (see [`Shared::tasks`]).
@@ -206,6 +208,11 @@ const CHECK_EVERY: u64 = 1 << 14;
 /// only as part of it: +10% / +14% nodes/s).
 const AE_FIRST: usize = 6;
 
+/// The triple of the first distance-to-solved lookup on each side, and the other three (see
+/// `finish`).
+const CBS_FIRST: usize = 2;
+const CBS_REST: [usize; 3] = [0, 1, 3];
+
 /// No deferred CB lookup (see `finish`).
 const NO_CB: usize = usize::MAX;
 
@@ -230,6 +237,10 @@ struct Scratch<const N: usize> {
     cbi: [[usize; N]; 2],
     pend: [[usize; N]; 2],
     ci: [[[usize; 4]; N]; 2],
+    /// the index of each child's first distance-to-solved lookup (triple `CBS_FIRST`) on both
+    /// sides, if `stage2` issued them (`cs_done`; see `finish`)
+    cs: [[usize; N]; 2],
+    cs_done: bool,
     /// the children still alive after each stage (indices into the arrays above). Stages
     /// compact this list without branching on the prune decision, instead of copying
     /// positions (neutral when added: -1.5% nodes/s at 1T, within noise).
@@ -258,6 +269,8 @@ impl<const N: usize> Scratch<N> {
             cbi: [[0; N]; 2],
             pend: [[NO_CB; N]; 2],
             ci: [[[0; 4]; N]; 2],
+            cs: [[0; N]; 2],
+            cs_done: false,
             sel: [0; N],
             n: 0,
             k: 0,
@@ -701,12 +714,15 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             h_cb: fh_cb,
             min_ha: fmin_ha,
             cbe_done,
+            cs,
+            cs_done,
             ..
         } = fr;
         let n = *n;
         let mut k = 0;
         let mut h_cb = h_cb;
         *cbe_done = false;
+        *cs_done = false;
         if budget >= AE_FIRST {
             let mut min_ha = [u8::MAX; 2];
             for i in 0..n {
@@ -769,6 +785,21 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                     let i = usize::from(i) % N;
                     cbi[o][i] = CbTable::index_fast(f, &ys[o][i]);
                     prefetch_at(&t.cb.tab.data, cbi[o][i] >> 5);
+                }
+            }
+            // (tuning) the first distance-to-solved lookups issued here
+            if B && k > 0 && self.cbs_early && lim < usize::from(crate::cbe::CBS_MIN) {
+                if let Some((lazy, cbe)) = self.cbs {
+                    if let Some(cbs) = lazy.loaded() {
+                        for &i in &sel[..k] {
+                            let i = usize::from(i) % N;
+                            for s in 0..2 {
+                                let em = masks(&ys[s][i].e);
+                                cs[s][i] = cbs.prefetch_one(&cbe.ix, f, &ys[s][i], &em, CBS_FIRST);
+                            }
+                        }
+                        *cs_done = true;
+                    }
                 }
             }
             // The joint table goes before reading the CB words, so their latency overlaps it
@@ -853,6 +884,8 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             cbi,
             pend,
             ci,
+            cs,
+            cs_done,
             sel,
             n: _,
             k,
@@ -1055,17 +1088,45 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             let lim = ctr.prune_len.saturating_sub(g + 2);
             if let (Some((lazy, cbe)), true) = (self.cbs, lim < usize::from(crate::cbe::CBS_MIN)) {
                 if let Some(cbs) = lazy.loaded() {
-                    for &i in &sel[..n] {
-                        let u = usize::from(i) % N;
-                        for s in 0..2 {
-                            cbs.prefetch_all(&cbe.ix, f, &ys[s][u], &mut ci[s][u]);
+                    // First the strongest lookup on each side (triple `CBS_FIRST`: the two cut
+                    // 72% of the checked children, against 96% for all eight), then the other
+                    // three triples of both sides for the children still alive.
+                    if !*cs_done {
+                        for &i in &sel[..n] {
+                            let u = usize::from(i) % N;
+                            for s in 0..2 {
+                                let em = masks(&ys[s][u].e);
+                                cs[s][u] = cbs.prefetch_one(&cbe.ix, f, &ys[s][u], &em, CBS_FIRST);
+                            }
                         }
                     }
                     let mut k = 0;
                     for j in 0..n {
                         let i = sel[j];
                         let u = usize::from(i) % N;
-                        let ok = !(cbs.any_far(&ci[0][u]) || cbs.any_far(&ci[1][u]));
+                        let ok = !(cbs.far(cs[0][u]) || cbs.far(cs[1][u]));
+                        if !ok {
+                            live[u] = 0;
+                        }
+                        sel[k % N] = i;
+                        k += usize::from(ok);
+                    }
+                    n = k;
+                    for &i in &sel[..n] {
+                        let u = usize::from(i) % N;
+                        for s in 0..2 {
+                            let em = masks(&ys[s][u].e);
+                            for (j, t) in CBS_REST.into_iter().enumerate() {
+                                ci[s][u][j] = cbs.prefetch_one(&cbe.ix, f, &ys[s][u], &em, t);
+                            }
+                        }
+                    }
+                    let mut k = 0;
+                    for j in 0..n {
+                        let i = sel[j];
+                        let u = usize::from(i) % N;
+                        let far = |s: usize| ci[s][u][..3].iter().any(|&x| cbs.far(x));
+                        let ok = !(far(0) || far(1));
                         if !ok {
                             live[u] = 0;
                         }
@@ -1480,6 +1541,7 @@ fn solve_n<I: AeIndex, const N: usize>(
             }
             _ => None,
         },
+        cbs_early: env_usize("FTO_CBS_EARLY", 0) == 1,
     };
     let lo = (0..2)
         .map(|s| sh.root.h_ae[s].max(sh.root.h_cb[s]) as usize)
