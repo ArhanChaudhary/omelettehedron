@@ -56,6 +56,7 @@
   .switch { margin: 0.6rem 0 0.3rem; }
   .switch label { margin-right: 1rem; }
   #pattern-help { margin: 0.2rem 0 0.4rem; }
+  details.pattern-about { margin: 0.4rem 0; padding: 0.2rem 0.6rem; }
   #pattern-scramble pre { margin-top: 0.2rem; }
   .bad { color: #c0177f; }
   @media (prefers-color-scheme: dark) { .bad { color: #ff7ac8; } }
@@ -87,17 +88,15 @@ anticlockwise.</p>
 </div>
 
 <div id="pattern-input" hidden>
-  <p id="pattern-help" class="note">Hold your puzzle with a corner pointing at you and colour the
-  front picture as you see it: U at the top, R on the right, F at the bottom, L on the left. Then
-  turn the whole puzzle around, keeping the top at the top, and colour the back picture: B at the
-  top, BL on the right, D at the bottom, BR on the left. Pick a colour, then click or drag over the
-  stickers. The colours under the picture are your solved puzzle as you usually hold it to
-  scramble: at first the standard colours held the standard way, white on U and green on F (red
-  R, purple L, blue B, orange BL, yellow D, grey BR), as on Diansheng, Dayan and most FTOs. For a
-  LanLan FTO (red and green swapped) choose LanLan colours; for any other puzzle or hold, press
-  Change colours and set each face's colour. Solutions are right whatever the colours; they only
-  matter for the scramble from your usual hold.</p>
+  <p id="pattern-help" class="note">Point a corner at you and paint the front as you see it. Then
+  turn the puzzle around, top still on top, and paint the back.</p>
   <div id="pattern-picture"></div>
+  <details class="pattern-about">
+    <summary>About the colours</summary>
+    <p class="note">The colours under the picture are your solved puzzle, white on U and green on
+    F: the standard scheme (Diansheng, Dayan and most FTOs). LanLan: pick LanLan colours. They
+    only affect the scramble shown with the solution, never the solution itself.</p>
+  </details>
   <div class="row">
     <button id="pattern-solved" type="button">Solved puzzle</button>
     <button id="pattern-blank" type="button">All blank</button>
@@ -494,19 +493,16 @@ const showPatternScramble = (sc) => {
   const hold = `${pi.colourName(sc.start[0])} on U and ${pi.colourName(sc.start[2])} on F`;
   const parts = [];
   if (sc.usual !== null && sc.exact) {
-    parts.push([`A scramble that makes this pattern, from your solved puzzle held the usual way (${pi.usualHold}):`, sc.usual]);
+    parts.push([`Scramble (start solved, ${pi.usualHold}):`, sc.usual]);
     if (sc.usual !== sc.moves) {
-      parts.push([`Or, without the whole-puzzle turns at the start, from your solved puzzle held with ${hold}:`, sc.moves]);
+      parts.push([`Without the rotations (start solved, ${hold}):`, sc.moves]);
     }
   } else {
-    parts.push([`A scramble that makes this pattern, from your solved puzzle held with ${hold}:`, sc.moves]);
+    parts.push([`Scramble (start solved, ${hold}):`, sc.moves]);
     if (sc.usual !== null) {
-      parts.push([`No scramble from your usual hold (${pi.usualHold}) makes the pattern exactly as you entered it, because `
-        + 'you were holding the puzzle another way round. From your usual hold, this scramble makes the '
-        + 'same puzzle; then turn the whole puzzle until it matches the picture:', sc.usual]);
+      parts.push([`From ${pi.usualHold} (makes the same puzzle, turned: you entered it held another way):`, sc.usual]);
     } else {
-      parts.push(["For a scramble from your usual hold, set your puzzle's colours under the picture "
-        + '(Change colours).', null]);
+      parts.push(["For one from your usual hold, set your colours (Change colours).", null]);
     }
   }
   box.replaceChildren(...parts.flatMap(([text, moves]) => {
