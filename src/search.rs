@@ -150,6 +150,12 @@ struct Shared<'a, I: AeIndex, const N: usize> {
     mv: [[usize; 32]; 2],
     /// largest CB distance (8): with at least this many moves left CB cannot prune
     cb_max: u8,
+    /// the distance-to-solved table (read when first needed) and the joint table (for its
+    /// index), in optimal mode (see `finish`)
+    cbs: Option<(
+        &'a std::sync::Arc<crate::cbe::LazyCbs>,
+        &'a crate::cbe::CbeTable,
+    )>,
 }
 
 /// A node of the top levels of the search tree (see [`Shared::tasks`]).
@@ -1035,6 +1041,41 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             }
             n = k;
         }
+        // Distance-to-solved bound (optimal mode, large and huge tiers): a solution through a
+        // child at depth g+1 has at least g+1+d moves, d its distance to solved, so a child is
+        // dropped (on both sides) when one of the eight joint-index projections of its two
+        // positions (four triples per side) is at least `CBS_MIN` from solved and fewer moves
+        // are left. The search's other bounds keep almost no child with fewer than
+        // `CBS_MIN` - 1 moves left, and at `CBS_MIN` - 1 this cuts about 96% of the children
+        // that pass them (opt/tosolved: 1T nodes 0.743x / 0.771x on the 17 / 19-move sets;
+        // time 0.784x at 1T on the 17-move set, 0.841x at 48T on the 19-move set, random
+        // positions 0.82x-0.90x, corner 6-flip 5.3x faster). The table is read when the first
+        // search can use it (`LazyCbs`); until it is ready this is skipped.
+        if B && n > 0 && budget > 0 {
+            let lim = ctr.prune_len.saturating_sub(g + 2);
+            if let (Some((lazy, cbe)), true) = (self.cbs, lim < usize::from(crate::cbe::CBS_MIN)) {
+                if let Some(cbs) = lazy.loaded() {
+                    for &i in &sel[..n] {
+                        let u = usize::from(i) % N;
+                        for s in 0..2 {
+                            cbs.prefetch_all(&cbe.ix, f, &ys[s][u], &mut ci[s][u]);
+                        }
+                    }
+                    let mut k = 0;
+                    for j in 0..n {
+                        let i = sel[j];
+                        let u = usize::from(i) % N;
+                        let ok = !(cbs.any_far(&ci[0][u]) || cbs.any_far(&ci[1][u]));
+                        if !ok {
+                            live[u] = 0;
+                        }
+                        sel[k % N] = i;
+                        k += usize::from(ok);
+                    }
+                    n = k;
+                }
+            }
+        }
         // Ordering statistic of the task: how close its subtree gets to the phase-1 targets.
         for &i in &sel[..n] {
             let i = usize::from(i) % N;
@@ -1431,6 +1472,14 @@ fn solve_n<I: AeIndex, const N: usize>(
         mb: swap_moves::<N>(),
         mv: [std::array::from_fn(|m| m), swap_moves::<N>()],
         cb_max: (t.cb.tab.hist.len() - 1) as u8,
+        cbs: match (&t.cbs, &t.cbe) {
+            (Some(s), Some(e))
+                if limits.is_optimal() && std::env::var_os("FTO_NO_CBS").is_none() =>
+            {
+                Some((s, e))
+            }
+            _ => None,
+        },
     };
     let lo = (0..2)
         .map(|s| sh.root.h_ae[s].max(sh.root.h_cb[s]) as usize)
@@ -1556,6 +1605,14 @@ fn solve_n<I: AeIndex, const N: usize>(
             n.saturating_mul(16)
         });
         let inline = threads == 1 || predicted < serial_nodes();
+        // Start reading the distance-to-solved table once this iteration can use it: some
+        // child with budget left (depth at most depth - 1) and fewer than `CBS_MIN` moves left
+        // for the whole solution, i.e. prune_len - depth < `CBS_MIN`.
+        if let Some((lazy, _)) = sh.cbs {
+            if sh.prune_len.load(Ordering::Relaxed) < depth + usize::from(crate::cbe::CBS_MIN) {
+                lazy.start();
+            }
+        }
         // Enough tasks to balance the load, but no more than the iteration's work warrants
         // (each extra split level costs a parallel expansion of the tree).
         let want = if threads == 1 {

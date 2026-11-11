@@ -48,6 +48,7 @@ fn null_tables(moves: MoveSet) -> Tables<AeSym> {
         },
         p2: Phase2::new(),
         cbe: None,
+        cbs: None,
     }
 }
 

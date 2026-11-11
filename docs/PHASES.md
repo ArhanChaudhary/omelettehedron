@@ -175,9 +175,11 @@ optimisation.
   - Nearly all of the remaining work is interior nodes that never reach H_A (a 19-move proof
     visits billions of nodes but only a handful of phase-2 positions), and with 9 or more moves
     left only the A-centre/edge table (and its class-B twin) can prune. Bounds that measure the
-    distance to solved directly (tried: edges, corners), joint tables with a smaller maximum and
-    per-iteration "forced route" bounds add almost nothing; see
-    [history/UNMERGED_EXPERIMENTS.md](history/UNMERGED_EXPERIMENTS.md).
+    distance to solved directly from edges or corners alone, joint tables with a smaller maximum
+    and per-iteration "forced route" bounds add almost nothing; see
+    [history/UNMERGED_EXPERIMENTS.md](history/UNMERGED_EXPERIMENTS.md). The joint
+    corner/B-centre/edge-triple projection's distance to *solved* does help in optimal mode
+    (the *distance-to-solved bound* below).
 * **Threads.** Split the phase-1 trees of all variants into subtrees at depth 3–4,
   handed out from a work queue. The best length is shared atomically so every
   thread prunes against it.
@@ -197,7 +199,32 @@ optimisation.
     in the limit won (`neg/tlpasses`). A cancellation deadline (the WebAssembly demo's Stop
     button) is not a stopping rule and keeps them;
   * `--lower-bound L` resumes a long proof: the search finds a first solution, then starts its
-    passes at L (from a previous run's "pass L − 1 complete" log line).
+    passes at L (from a previous run's "pass L − 1 complete" log line);
+  * a *distance-to-solved bound* (large and huge tiers, face turns): optimal mode only looks for
+    solutions shorter than a known length (the best, or T + 1 in pass T), so a child whose
+    distance to *solved* exceeds the moves left can go, wherever it is relative to `H_A` and
+    `H_B`. A 3.5 GB table on the joint table's index (corners, B-centre colouring, the position
+    set and chirality of one A-face's edge triple; `cbe-solved11.prun`) holds one bit per entry:
+    whether that projection is at least 11 moves from solved (distances 0–13, mean 10.51). The
+    distance to solved is unchanged by the class-preserving symmetries, the re-fixing rotations
+    and `SWAP_AB`, so one table serves the four A-triples of both sides: eight lookups, read for
+    the children that pass every other bound with at most 10 moves left for the whole solution.
+    The other bounds leave almost no child with fewer than 10 moves left, and at 10 this cuts
+    96% of those they keep. An exact estimate on the 17-move set (ball of radius 8 and a
+    radius-9 bit set around the solved projection, plus search; `archive/tosolved-est`) gave
+    0.76x nodes for exact distances and for 2-bit codes of distances 9–12. Reading those codes
+    with 11 moves left too (about 4x as many lookups, for 0.95x of the nodes) was slower
+    (0.900x / 0.933x time at 1T / 48T, against 0.843x / 0.874x), so only "at least 11" is kept.
+    Measured: 1T nodes 0.743x / 0.771x (17 / 19-move sets), time 0.788x (1T, 17-move set) and
+    0.853x (48T, 19-move set) with the table read on first use; random positions 0.82–0.90x,
+    edge_hard 0.85x, corner 6-flip see
+    [RESULTS.md](RESULTS.md). The table is read when the first search reaches an iteration
+    that can use it, on a background thread while the search goes on without it, so time-limited
+    solves and short proofs never read it. `FTO_NO_CBS=1` turns it off. Checks: the table's
+    bits equal the estimate's exact distances on all 1,684,303 children it was read for in the
+    17-move searches, an ignored test compares them with search on random positions, the large
+    tier gives the brute force's optimal lengths (ignored test), and regenerating it with 16
+    threads gives the same bytes.
   `FTO_FULL_PROOF=1` turns the early end and the passes off; `scripts/check-optimal.sh` checks
   that the proven lengths agree.
 
@@ -325,7 +352,8 @@ axes such as `BLw' B' BLw' BRw' BLw' = BRw' BLw' BRw' B' BRw'` (internal moves),
 consecutive moves cannot see.
 
 **Tables.** The phase-1 tables hold distances to `H_A` in the move metric, so slices have their
-own AE, CB and CBE tables (`*-slice.prun`, same sizes). The symmetry reductions stay valid: the
+own AE, CB and CBE tables (`*-slice.prun`, same sizes); the distance-to-solved table of optimal
+mode (section 4) exists for face turns only, so with slices that bound is off. The symmetry reductions stay valid: the
 8 slice moves are mapped to slice moves by all 48 symmetries. Slices are not in `H_A`, so phase 2
 (A-moves only) and its table are unchanged. The class-B variant conjugates by `SWAP_AB`, which
 fixes the front corner and maps back faces to back faces, so it maps slices to slices.
