@@ -77,6 +77,8 @@ pub struct Outcome {
     pub nodes: u64,
     pub elapsed: f64,
     pub iterations: Vec<Iteration>,
+    /// how many of the 48 symmetries fix the position (1: only the identity)
+    pub symmetries: usize,
 }
 
 /// Moves allowed after each move (index `N_MOVES`: no previous move), as bit masks.
@@ -109,6 +111,11 @@ const STAT_W: [f32; 32] = {
     }
     w
 };
+
+/// Symmetric start (see [`Shared::dedup`]); `FTO_OPT_SYMSTART=0` turns it off (to compare).
+fn sym_start() -> bool {
+    std::env::var("FTO_OPT_SYMSTART").map_or(true, |v| v != "0")
+}
 
 /// Deepest level of the task split.
 pub const MAX_SPLIT: usize = 4;
@@ -190,6 +197,9 @@ struct Shared<'a, B: Bounds> {
     stop: AtomicBool,
     nodes: AtomicU64,
     sols: Mutex<Vec<Vec<usize>>>,
+    /// symmetric start: the symmetries (other than the identity) that fix the root, if the
+    /// task levels are filtered (see [`Shared::dedup`]); empty otherwise
+    symmetries: Vec<usize>,
 }
 
 impl<B: Bounds> Shared<'_, B> {
@@ -279,9 +289,39 @@ impl<B: Bounds> Shared<'_, B> {
                 .iter()
                 .flat_map(|t| self.expand(t, bound, ctr))
                 .collect();
+            if !self.symmetries.is_empty() {
+                front = self.dedup(front);
+            }
             k += 1;
         }
         front
+    }
+
+    /// Symmetric start: of the tasks of one level (in the order of their move prefixes) whose
+    /// positions are conjugate under the root's symmetries, keep the first. Conjugate positions
+    /// are equally far from solved, so only one optimal solution is needed per class (the
+    /// filter is off when `-n` asks for more):
+    /// let `g` be the smallest prefix of its length of a canonical optimal solution, and `q`
+    /// a smaller task conjugate to it; `q` followed by an optimal solution of its position is
+    /// optimal, and its canonical form starts with `q`, or with `q`'s last move replaced by a
+    /// smaller one (a wide turn followed by the single turn of its axis is reordered, single
+    /// first; a merge would give a shorter solution): a smaller prefix of a canonical optimal
+    /// solution than `g`, a contradiction. So `g` is the first of its class, at every level.
+    /// The key of a class is the least conjugate under the root's symmetry group (a group:
+    /// the stabiliser of the root).
+    fn dedup(&self, tasks: Vec<Task>) -> Vec<Task> {
+        let sym = super::sym::sym48();
+        let key = |t: &Task| {
+            let c = t.p.to_cube();
+            self.symmetries
+                .iter()
+                .map(|&k| sym.conj_by_maps(&c, k))
+                .chain([c])
+                .map(|x| (x.cp, x.co, x.ep, x.xa, x.xb))
+                .min()
+        };
+        let mut seen = std::collections::HashSet::new();
+        tasks.into_iter().filter(|t| seen.insert(key(t))).collect()
     }
 
     /// Depth-first search below a node at depth `g` (its distances `h`, `last` the move that
@@ -394,11 +434,20 @@ pub fn solve<B: Bounds>(
         nodes: 0,
         elapsed: 0.0,
         iterations: vec![],
+        symmetries: 1,
     };
     let Some(h0) = exact(b, &p) else {
         out.elapsed = start.elapsed().as_secs_f64();
         return out;
     };
+    // the symmetries of the octahedron (other than the identity) that fix the position
+    let root_syms: Vec<usize> = {
+        let sym = super::sym::sym48();
+        (1..super::sym::N_SYM)
+            .filter(|&k| sym.conj_by_maps(&cube, k) == cube)
+            .collect()
+    };
+    out.symmetries = root_syms.len() + 1;
     let sh = Shared {
         b,
         mt: opt_moves(),
@@ -409,6 +458,11 @@ pub fn solve<B: Bounds>(
         stop: AtomicBool::new(false),
         nodes: AtomicU64::new(0),
         sols: Mutex::new(vec![]),
+        symmetries: if limits.max_solutions.is_none() && sym_start() {
+            root_syms.clone()
+        } else {
+            vec![]
+        },
     };
     let root = Task {
         path: [0; MAX_SPLIT],
@@ -421,14 +475,15 @@ pub fn solve<B: Bounds>(
         let names: Vec<String> = (0..B::K)
             .map(|k| format!("{} {}", b.name(k), h0[k]))
             .collect();
-        // (for a future symmetric-start filter: a symmetric position has equivalent subtrees)
-        let sym = super::sym::sym48();
-        let n_sym = (0..super::sym::N_SYM)
-            .filter(|&k| sym.conj_by_maps(&cube, k) == cube)
-            .count();
         eprintln!(
-            "root bounds: {} (search from depth {lo}); symmetries of the position: {n_sym} of 48",
-            names.join(", ")
+            "root bounds: {} (search from depth {lo}); symmetries of the position: {} of 48{}",
+            names.join(", "),
+            root_syms.len() + 1,
+            if sh.symmetries.is_empty() {
+                ""
+            } else {
+                " (symmetric start on)"
+            }
         );
     }
     let threads = rayon::current_num_threads();

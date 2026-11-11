@@ -412,3 +412,65 @@ fn medium_tier_matches_brute_force() {
         }
     }
 }
+
+/// Symmetric start: on symmetric positions the filtered search (default) finds the same
+/// optimal lengths as the brute force and as the unfiltered search (`-n` keeps every task). The
+/// positions: every position within 5 moves (breadth-first, in a fixed order) that some of the
+/// 47 non-trivial symmetries fix, at distance 3 or more.
+#[test]
+fn symmetric_start_keeps_optimal_lengths() {
+    use omelettehedron::optimal::sym::{sym48, N_SYM};
+    let s48 = sym48();
+    let mut seen: HashSet<Cube> = HashSet::from([Cube::solved()]);
+    let mut front = vec![(Cube::solved(), vec![])];
+    let mut symmetric: Vec<(Cube, Vec<usize>)> = vec![];
+    for d in 1..=5 {
+        let mut next = vec![];
+        for (c, path) in &front {
+            for m in 0..N_MOVES {
+                let y = c.apply(m);
+                if seen.insert(y) {
+                    let mut p: Vec<usize> = path.clone();
+                    p.push(m);
+                    if d >= 3 && (1..N_SYM).any(|k| s48.conj_by_maps(&y, k) == y) {
+                        symmetric.push((y, p.clone()));
+                    }
+                    next.push((y, p));
+                }
+            }
+        }
+        front = next;
+    }
+    assert!(symmetric.len() >= 10, "{}", symmetric.len());
+    let (mut filtered_nodes, mut full_nodes) = (0u64, 0u64);
+    for (c, path) in symmetric.iter().take(60) {
+        let scr = solution_to_physical(Frame::identity(), path, false);
+        // (the physical scramble ends in the frame its wide internal moves turned to)
+        let (c2, fr) = scramble_to_cube(&scr);
+        assert_eq!(c2, *c);
+        let o = solve_on(1, *c, fr, &Limits::default());
+        assert!(o.symmetries > 1);
+        let truth = mitm().distance(c).unwrap();
+        assert_eq!(o.length, Some(truth), "{}", format_moves(&scr));
+        check_solution(&scr, &o.solutions[0]);
+        let full = solve_on(
+            1,
+            *c,
+            fr,
+            &Limits {
+                max_solutions: Some(1_000_000),
+                ..Limits::default()
+            },
+        );
+        assert_eq!(full.length, Some(truth));
+        let m = solve_on(8, *c, fr, &Limits::default());
+        assert_eq!(m.length, Some(truth));
+        filtered_nodes += o.nodes;
+        full_nodes += full.nodes;
+    }
+    eprintln!(
+        "{} symmetric positions: {filtered_nodes} nodes, unfiltered (-n) {full_nodes}",
+        symmetric.len()
+    );
+    assert!(filtered_nodes < full_nodes);
+}
