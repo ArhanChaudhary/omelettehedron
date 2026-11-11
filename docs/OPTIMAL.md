@@ -110,7 +110,7 @@ Tiers (`--tier`):
 |---|---|---|
 | `small` | edges, corners x B-centres, corners x A-centres, A-centres/edge triples on both sides | 195 MB |
 | `medium` | corners x edges, corners x B-centres, corners x A-centres, A-centres/edges (with chirality) on both sides | 3.4 GB |
-| `large` | the medium tier's five, and corners x B-centres x edge triple to solved for the 4 A-triples and the 4 B-triples | 24.4 GB |
+| `large` | corners x edges, A-centres/edges (with chirality) on both sides, and corners x B-centres x edge triple to solved for the 4 A-triples and the 4 B-triples (no corner x centre lookups: a triple lookup is never below the corner x centre value of its orbit) | 24.4 GB |
 
 (The corner x edge table subsumes the edge table: every corner x edge path is an edge path.)
 

@@ -415,8 +415,9 @@ fn medium_tier_matches_brute_force() {
 
 /// The large tier (the medium tier and the 21 GB corner x B-centre x edge-triple table: loaded
 /// from `$FTO_TABLES`, generated if missing): the same optimal lengths as the brute force,
-/// bounds never above the brute-force distance (admissible), consistent tables, and the
-/// medium tier's bounds in its first five lookups.
+/// bounds never above the brute-force distance (admissible), consistent tables, the medium
+/// tier's corner x edge and A-centre/edge values, and triple lookups never below the corner x
+/// centre values they replace.
 #[test]
 #[ignore = "needs the large tier's tables (24.4 GB; `omelettehedron optimal gen --tier large`)"]
 fn large_tier_matches_brute_force() {
@@ -458,20 +459,18 @@ fn large_tier_matches_brute_force() {
             h.iter().all(|&x| usize::from(x) <= d),
             "bound above distance {d}"
         );
-        tight += usize::from(
-            h[MediumBounds::K..LargeBounds::K]
-                .iter()
-                .any(|&x| usize::from(x) == d),
-        );
+        tight += usize::from(h[3..LargeBounds::K].iter().any(|&x| usize::from(x) == d));
     }
     assert!(tight > 0);
     for _ in 0..100 {
         let p = Pos::of(&Cube::random(&mut rng));
         let h = exact(&b, &p).unwrap();
-        assert_eq!(
-            h[..MediumBounds::K],
-            exact(&medium, &p).unwrap()[..MediumBounds::K]
-        );
+        let hm = exact(&medium, &p).unwrap();
+        // corners x edges and the A-centre/edge lookups are the medium tier's; each A-triple
+        // lookup is at least corners x B-centres, each B-triple lookup corners x A-centres
+        assert_eq!([h[0], h[1], h[2]], [hm[0], hm[3], hm[4]]);
+        assert!(h[3..7].iter().all(|&x| x >= hm[1]));
+        assert!(h[7..11].iter().all(|&x| x >= hm[2]));
         for m in 0..N_MOVES {
             let q = mt.apply(&p, m);
             let hq = exact(&b, &q).unwrap();

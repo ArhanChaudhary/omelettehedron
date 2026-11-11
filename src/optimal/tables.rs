@@ -28,7 +28,7 @@ use crate::tables::{ae_targets, build_ae, prefetch_at, AeIndex, AeSym};
 use std::path::{Path, PathBuf};
 
 /// Most lookups per position of any tier (the search's scratch arrays have this many slots).
-pub const MAX_K: usize = 13;
+pub const MAX_K: usize = 11;
 
 /// Table size of the optimal solver (`omelettehedron optimal ... --tier`).
 #[derive(
@@ -458,16 +458,10 @@ impl OptTables {
         use rand::SeedableRng;
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0x0071_ab1e);
         let positions: Vec<Pos> = (0..8).map(|_| Pos::of(&Cube::random(&mut rng))).collect();
-        // (lookup 0 is the tier's own table, 1 and 2 share the corner x centre table, 3 and 4
-        // the A-centre/edge table, 5.. the large tier's corner x B-centre x edge-triple table)
-        let bad = |k: usize| -> std::io::Error {
-            let file = paths[match k {
-                0 => 0,
-                1 | 2 => 1,
-                3 | 4 => 2,
-                _ => 3,
-            }
-            .min(paths.len().saturating_sub(1))];
+        // (the file of a failing lookup: 0 the tier's own table, 1 the corner x centre table, 2
+        // the A-centre/edge table, 3 the large tier's triple table)
+        let bad = |f: usize| -> std::io::Error {
+            let file = paths[f.min(paths.len().saturating_sub(1))];
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
@@ -477,10 +471,32 @@ impl OptTables {
                 ),
             )
         };
+        // small and medium: lookup 0 the tier's own table, 1 and 2 the corner x centre table,
+        // 3 and 4 the A-centre/edge table
+        let medium_file = |k: usize| match k {
+            0 => 0,
+            1 | 2 => 1,
+            _ => 2,
+        };
+        // large: lookup 0 corners x edges, 1 and 2 the A-centre/edge table, 3.. the triples
+        let large_file = |k: usize| match k {
+            0 => 0,
+            1 | 2 => 2,
+            _ => 3,
+        };
         let r = match self.tier {
-            OptTier::Small => self.small().map(|b| check_walks_of(&b, &positions)),
-            OptTier::Medium => self.medium().map(|b| check_walks_of(&b, &positions)),
-            OptTier::Large => self.large().map(|b| check_walks_of(&b, &positions)),
+            OptTier::Small => self
+                .small()
+                .map(|b| check_walks_of(&b, &positions).map_err(medium_file)),
+            OptTier::Medium => self
+                .medium()
+                .map(|b| check_walks_of(&b, &positions).map_err(medium_file)),
+            // (the medium lookups too, for the corner x centre file)
+            OptTier::Large => self.medium().zip(self.large()).map(|(m, l)| {
+                check_walks_of(&m, &positions)
+                    .map_err(medium_file)
+                    .and_then(|()| check_walks_of(&l, &positions).map_err(large_file))
+            }),
         }
         .unwrap_or(Err(0));
         r.map_err(bad)
@@ -613,8 +629,13 @@ impl Bounds for MediumBounds<'_> {
     }
 }
 
-/// The large tier: the medium tier's five lookups, then the corner x B-centre x edge-triple
-/// table on the four A-triples and, through `SWAP_AB`, the four B-triples.
+/// The large tier: corners x edges, the A-centre/edge table on the position and on its
+/// `SWAP_AB` conjugate (the medium tier's lookups 0, 3 and 4), then the corner x B-centre x
+/// edge-triple table on the four A-triples and, through `SWAP_AB`, the four B-triples. The
+/// medium tier's corner x centre lookups are left out: an A-triple lookup projects onto the
+/// corners and B-centres and more, so it is never below the corner x B-centre value (and a
+/// B-triple lookup never below the corner x A-centre value); the bound is the same without
+/// them (on the 17-move set they prune no child that the others keep).
 pub struct LargeBounds<'a> {
     m: MediumBounds<'a>,
     cbe_ix: &'a CbeIndex,
@@ -622,34 +643,39 @@ pub struct LargeBounds<'a> {
     cbe_targets: &'a [usize],
 }
 
+/// The medium tier's lookups that the large tier keeps, as its lookups 0, 1, 2.
+const LARGE_FROM_MEDIUM: [usize; 3] = [0, 3, 4];
+/// The large tier's first corner x B-centre x edge-triple lookup.
+const LARGE_CBE: usize = LARGE_FROM_MEDIUM.len();
+
 impl Bounds for LargeBounds<'_> {
-    const K: usize = MediumBounds::K + N_LOOKUPS;
+    const K: usize = LARGE_CBE + N_LOOKUPS;
     #[inline(always)]
     fn index(&self, k: usize, p: &Pos) -> usize {
-        if k < MediumBounds::K {
-            self.m.index(k, p)
+        if k < LARGE_CBE {
+            self.m.index(LARGE_FROM_MEDIUM[k], p)
         } else {
-            self.cbe_ix.index(k - MediumBounds::K, p)
+            self.cbe_ix.index(k - LARGE_CBE, p)
         }
     }
     #[inline(always)]
     fn table(&self, k: usize) -> &Table2 {
-        if k < MediumBounds::K {
-            self.m.table(k)
+        if k < LARGE_CBE {
+            self.m.table(LARGE_FROM_MEDIUM[k])
         } else {
             self.cbe
         }
     }
     fn is_target(&self, k: usize, i: usize) -> bool {
-        if k < MediumBounds::K {
-            self.m.is_target(k, i)
+        if k < LARGE_CBE {
+            self.m.is_target(LARGE_FROM_MEDIUM[k], i)
         } else {
             self.cbe_targets.contains(&i)
         }
     }
     fn name(&self, k: usize) -> &'static str {
-        if k < MediumBounds::K {
-            self.m.name(k)
+        if k < LARGE_CBE {
+            self.m.name(LARGE_FROM_MEDIUM[k])
         } else {
             [
                 "CBE A-triple 0",
@@ -660,7 +686,7 @@ impl Bounds for LargeBounds<'_> {
                 "CBE B-triple 1",
                 "CBE B-triple 2",
                 "CBE B-triple 3",
-            ][(k - MediumBounds::K).min(7)]
+            ][(k - LARGE_CBE).min(7)]
         }
     }
 }
