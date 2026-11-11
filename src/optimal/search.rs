@@ -248,6 +248,60 @@ impl<const N: usize> Eval<N> {
     }
 }
 
+/// A level of a lane's explicit search stack: a node, its prepared children and how far its
+/// survivors have been searched (see [`Shared::run_lanes`]).
+#[derive(Clone)]
+struct Level<const N: usize> {
+    /// the node's children (prepared: generated, first-stage entries prefetched) in
+    /// `ev[slot]`; the other frame holds the next sibling's, prepared ahead (sibling pipeline,
+    /// as in [`Shared::enter`])
+    ev: [Eval<N>; 2],
+    /// number of children, per frame
+    n: [usize; 2],
+    /// the node's exact values, per frame
+    h: [[u8; MAX_K]; 2],
+    /// the frame of the node being searched
+    slot: usize,
+    /// survivors, and the next one to search
+    kk: usize,
+    j: usize,
+    /// whether the node's children have been bounded
+    expanded: bool,
+}
+
+/// One lane of a worker's interleaved searches: a task's depth-first search as an explicit
+/// stack, advanced a node at a time.
+struct Lane<const N: usize> {
+    /// the task being searched
+    task: Option<usize>,
+    levels: Vec<Level<N>>,
+    /// active levels (the top node is `levels[d - 1]`)
+    d: usize,
+    path: Vec<u8>,
+    stat: f32,
+}
+
+impl<const N: usize> Lane<N> {
+    fn new(depth: usize) -> Self {
+        let level = Level {
+            ev: [Eval::new(), Eval::new()],
+            n: [0; 2],
+            h: [[0; MAX_K]; 2],
+            slot: 0,
+            kk: 0,
+            j: 0,
+            expanded: false,
+        };
+        Lane {
+            task: None,
+            levels: vec![level; depth + 2],
+            d: 0,
+            path: Vec::with_capacity(64),
+            stat: 0.0,
+        }
+    }
+}
+
 /// The state shared by the threads of one solve, with `N` internal moves (16, or 24 with
 /// slices).
 struct Shared<'a, B: Bounds, const N: usize> {
@@ -635,6 +689,178 @@ impl<B: Bounds, const N: usize> Shared<'_, B, N> {
             n_cur = n_next;
         }
     }
+
+    /// Start task `i` (`t`) in `lane`: its node's children prepared (or, for a task at the
+    /// depth bound, the solved test).
+    fn lane_start(&self, lane: &mut Lane<N>, i: usize, t: &Task, bound: usize, ctr: &mut Counter) {
+        lane.path.clear();
+        lane.path.extend_from_slice(&t.path[..usize::from(t.len)]);
+        lane.stat = 0.0;
+        lane.task = Some(i);
+        let g = lane.path.len();
+        if g >= bound {
+            if t.p == self.solved {
+                self.found(&lane.path, ctr);
+            }
+            lane.d = 0;
+            return;
+        }
+        let Some(lv) = lane.levels.first_mut() else {
+            lane.d = 0;
+            return;
+        };
+        lv.n[0] = self.prepare(&t.p, t.last(), bound - g - 1, &mut lv.ev[0]);
+        lv.h[0] = t.h;
+        lv.slot = 0;
+        lv.expanded = false;
+        lane.d = 1;
+    }
+
+    /// Advance `lane` to its next prepared node (whose first-stage entries are then in
+    /// flight), or to the end of its task (`false`). The same tree in the same order as
+    /// [`Shared::enter`] within a task.
+    fn lane_step(&self, lane: &mut Lane<N>, bound: usize, ctr: &mut Counter) -> bool {
+        loop {
+            if lane.d == 0 || ctr.stop {
+                lane.d = 0;
+                return false;
+            }
+            let d = lane.d - 1;
+            let g = lane.path.len();
+            let (upper, lower) = lane.levels.split_at_mut(d + 1);
+            let Some(lv) = upper.last_mut() else {
+                lane.d = 0;
+                return false;
+            };
+            let budget = bound - g - 1;
+            let sl = lv.slot & 1;
+            if !lv.expanded {
+                lv.expanded = true;
+                lv.j = 0;
+                lv.kk = 0;
+                let n = lv.n[sl];
+                self.count(ctr, n);
+                ctr.stats.left(budget, n);
+                let ev = &mut lv.ev[sl];
+                if budget == 0 {
+                    // leaves: only a solved child can pass (see Shared::enter)
+                    for i in 0..n {
+                        if ev.ys[i % N] == self.solved {
+                            lane.path.push(ev.ms[i % N]);
+                            self.found(&lane.path, ctr);
+                            lane.path.pop();
+                        }
+                    }
+                } else {
+                    lv.kk = self.bound_children(ev, n, lv.h[sl], budget, ctr, true);
+                    for j in 0..lv.kk {
+                        let u = usize::from(ev.sel[j % N]) % N;
+                        lane.stat += STAT_W[usize::from(ev.mx[u]) & 31];
+                    }
+                }
+            }
+            if lv.j < lv.kk {
+                let j = lv.j;
+                lv.j += 1;
+                let Some(clv) = lower.first_mut() else {
+                    lane.d = 0;
+                    return false;
+                };
+                let ev = &lv.ev[sl];
+                let child = |j: usize| usize::from(ev.sel[j % N]) % N;
+                // the children of survivor j are in the child level's frame j & 1: prepared
+                // now for the first survivor, ahead (with the one before) for the others; the
+                // next survivor's are prepared now, so their misses overlap survivor j's
+                // subtree (their children have budget - 1 moves left)
+                if j == 0 {
+                    let i = child(0);
+                    clv.n[0] =
+                        self.prepare(&ev.ys[i], usize::from(ev.ms[i]), budget - 1, &mut clv.ev[0]);
+                    clv.h[0] = ev.hs[i];
+                }
+                if j + 1 < lv.kk {
+                    let i = child(j + 1);
+                    let f = (j + 1) & 1;
+                    clv.n[f] =
+                        self.prepare(&ev.ys[i], usize::from(ev.ms[i]), budget - 1, &mut clv.ev[f]);
+                    clv.h[f] = ev.hs[i];
+                }
+                clv.slot = j & 1;
+                clv.expanded = false;
+                lane.path.push(ev.ms[child(j)]);
+                lane.d += 1;
+                return true;
+            }
+            // the node is done
+            lane.d -= 1;
+            if lane.d > 0 {
+                lane.path.pop();
+            }
+        }
+    }
+
+    /// A worker that searches `L` tasks at once, interleaved a node at a time: after a lane
+    /// prepares a node (its children's first-stage entries prefetched), the other lanes advance
+    /// before that node's entries are read, so the misses overlap their work. (Within a task the
+    /// same tree in the same order; the tasks' interleaving changes where the first solution is
+    /// found.)
+    fn run_lanes<const L: usize>(
+        &self,
+        tasks: &[Task],
+        next: &AtomicUsize,
+        task_stats: &[AtomicU64],
+        depth: usize,
+    ) {
+        let mut lanes: [Lane<N>; L] = std::array::from_fn(|_| Lane::new(depth));
+        let mut ctr = Counter::default();
+        let mut exhausted = false;
+        loop {
+            let mut active = 0;
+            for lane in &mut lanes {
+                if lane.task.is_none() {
+                    if exhausted || ctr.stop {
+                        continue;
+                    }
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= tasks.len() || self.stop.load(Ordering::Relaxed) || self.time_up() {
+                        exhausted = true;
+                        continue;
+                    }
+                    self.lane_start(lane, i, &tasks[i], depth, &mut ctr);
+                    active += 1;
+                    continue;
+                }
+                active += 1;
+                if !self.lane_step(lane, depth, &mut ctr) {
+                    if let Some(i) = lane.task.take() {
+                        if let Some(ts) = task_stats.get(i) {
+                            ts.store(u64::from(lane.stat.to_bits()), Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+            if active == 0 && (exhausted || ctr.stop) {
+                break;
+            }
+        }
+        self.nodes.fetch_add(ctr.nodes, Ordering::Relaxed);
+        self.lookups.fetch_add(ctr.lookups, Ordering::Relaxed);
+        self.stats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .add(&ctr.stats);
+    }
+}
+
+/// Lanes per worker (`FTO_OPT_LANES`: 1 to 4, 6 or 8; default 1: the plain recursive search).
+fn lanes() -> usize {
+    static L: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *L.get_or_init(|| {
+        std::env::var("FTO_OPT_LANES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1)
+    })
 }
 
 /// Solve one position optimally with the lower bounds `b`, in the metric of their move set
@@ -776,7 +1002,16 @@ fn solve_n<B: Bounds, const N: usize>(
         }
         let task_stats: Vec<AtomicU64> = (0..tasks.len()).map(|_| AtomicU64::new(0)).collect();
         let next = AtomicUsize::new(0);
+        let lanes = lanes();
         let worker = || {
+            match lanes {
+                2 => return sh.run_lanes::<2>(&tasks, &next, &task_stats, depth),
+                3 => return sh.run_lanes::<3>(&tasks, &next, &task_stats, depth),
+                4 => return sh.run_lanes::<4>(&tasks, &next, &task_stats, depth),
+                6 => return sh.run_lanes::<6>(&tasks, &next, &task_stats, depth),
+                8 => return sh.run_lanes::<8>(&tasks, &next, &task_stats, depth),
+                _ => {}
+            }
             let mut path: Vec<u8> = Vec::with_capacity(64);
             let mut frames = vec![[Eval::<N>::new(), Eval::<N>::new()]; depth + 1];
             let mut ctr = Counter::default();
