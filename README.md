@@ -200,8 +200,8 @@ target/release/omelettehedron optimal bench --tier medium -N 10 --scramble-len 1
 
 | `optimal --tier` | Memory | Tables |
 |---|---|---|
-| `small` | 65 MB | corners x centres (both orbits, 24 symmetries), edge permutation |
-| `medium` | 2.4 GB | corners x centres, corners x edges (48 symmetries) |
+| `small` | 195 MB | corners x centres (both orbits, 24 symmetries), edge permutation, and the two-phase A-centre/edge-triple table on both sides |
+| `medium` | 3.4 GB | corners x centres, corners x edges (48 symmetries), and the two-phase A-centre/edge table on both sides |
 
 Stopping rules: none (first optimal solution), `-n N` (up to N optimal solutions), `-t T`
 (time limit; prints the lower bound proven so far), `-l L` (give up above L moves). Positions

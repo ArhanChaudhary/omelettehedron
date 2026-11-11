@@ -101,4 +101,4 @@ follow when it is free.
 | v0: IDA* to solved; corners x centres (both orbits, one table) + edge permutation (small tier) | `optimal/v0` | 8.73e7 per position | (branch) |
 | Corners x edges table, 48 symmetries (medium tier) | `optimal/v0` | 2.87e6 (0.033x) | (branch) |
 | Symmetric start (keep the first task of each class of conjugate positions) | `optimal/v0` | random scrambles unchanged (no symmetry); hard positions with 48 / 24 / 16 / 8 symmetries 0.021x / 0.042x / 0.063x / 0.125x nodes (iterations to 15, 1 thread) | (branch) |
-| Experiment: the two-phase solver's AE-to-`H_A` table on the position and its `SWAP_AB` conjugate, added to medium | (not committed) | 1.16e5 (0.040x medium); 17-move set 1.48e7 per position (0.038x medium) | no (needs a decision: it reuses a two-phase table) |
+| The two-phase solver's AE-to-`H_A` table as two more lookups (the position and its `SWAP_AB` conjugate; small tier: the triples table, medium: with chirality) | `optimal/ae` | small 1.35e6 (0.0154x), medium 1.16e5 (0.0405x); 17-move set, medium: 1.48e7 per position (0.0383x); same lengths; the 6-flip unchanged (AE 0 at its root) | (branch) |

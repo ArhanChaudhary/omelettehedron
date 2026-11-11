@@ -182,7 +182,7 @@ enum Cmd {
 /// Table options of the optimal solver.
 #[derive(clap::Args, Clone)]
 struct OptTableArgs {
-    /// Table size (required; there is no default): small (~65 MB) or medium (~1.7 GB, fewer
+    /// Table size (required; there is no default): small (~195 MB) or medium (~3.4 GB, fewer
     /// nodes)
     #[arg(long, value_enum)]
     tier: OptTier,
@@ -552,6 +552,10 @@ fn run_optimal(cmd: OptCmd) -> Result<(), Error> {
                 if let Some((_, ce)) = &t.ce {
                     eprintln!("corners x edges depth histogram {:?}", ce.hist);
                 }
+                eprintln!(
+                    "A-centre/edge (to H_A, two-phase table) depth histogram {:?}",
+                    t.ae.tab.hist
+                );
                 Ok(())
             })
         }

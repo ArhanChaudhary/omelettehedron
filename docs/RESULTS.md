@@ -137,6 +137,9 @@ no timings yet). Same optimal lengths as the two-phase solver's optimal mode.
 | 10 x 15-move scrambles, seed 1717 | medium | 14.5 | 2.87e6 |
 | 10 x 17-move scrambles, seed 1717 | medium | 16.5 | 3.85e8 |
 | 10 x 19-move scrambles, seed 1919 (48 threads) | medium | 18.1 | 3.76e10 |
+| 10 x 15-move scrambles, seed 1717, with the two-phase AE table (`optimal/ae`) | small | 14.5 | 1.35e6 |
+| 10 x 15-move scrambles, seed 1717, with the two-phase AE table | medium | 14.5 | 1.16e5 |
+| 10 x 17-move scrambles, seed 1717, with the two-phase AE table | medium | 16.5 | 1.48e7 |
 
 Hard positions (`bench/hard.tsv`; 48 threads beside the two-phase proofs, medium tier,
 symmetric start): `pure_corn_6flip` proven optimal at 20 in 232 s (3.05e10 nodes; the
