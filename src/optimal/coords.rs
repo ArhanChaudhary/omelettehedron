@@ -528,7 +528,8 @@ mod tests {
     }
 
     /// The corner x edge index is invariant (up to equivalent indices) under all 48 symmetries,
-    /// and depends only on the corners and edges.
+    /// and depends only on the corners and edges. (64-bit only: the index exceeds 2^32.)
+    #[cfg(target_pointer_width = "64")]
     #[test]
     fn ce_index_is_symmetric() {
         let ix = CeIndex::new();
