@@ -422,8 +422,9 @@ impl CeIndex {
     }
 
     /// Entries: corner classes x even edge permutations.
+    /// (More than 2^32: 64-bit targets only; saturates elsewhere.)
     pub fn size(&self) -> usize {
-        self.rep.len() * N_EPERM
+        self.rep.len().saturating_mul(N_EPERM)
     }
 
     /// Rank of the edge permutation `ep` after symmetry pair (s, t).

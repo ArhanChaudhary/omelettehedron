@@ -14,7 +14,7 @@ use std::time::Duration;
 
 fn tables() -> &'static OptTables {
     static T: OnceLock<OptTables> = OnceLock::new();
-    T.get_or_init(|| OptTables::generate(OptTier::Small, false))
+    T.get_or_init(|| OptTables::generate(OptTier::Small, false).unwrap())
 }
 
 fn pool(threads: usize) -> &'static rayon::ThreadPool {

@@ -205,7 +205,16 @@ fn too_large(tier: OptTier) -> bool {
 
 impl OptTables {
     /// Build the tables of a tier in memory, without touching the disk.
-    pub fn generate(tier: OptTier, verbose: bool) -> OptTables {
+    ///
+    /// # Errors
+    ///
+    /// If the tier needs 64-bit indices on a 32-bit target.
+    pub fn generate(tier: OptTier, verbose: bool) -> std::io::Result<OptTables> {
+        if too_large(tier) {
+            return Err(std::io::Error::other(
+                "only --tier small is supported on 32-bit targets",
+            ));
+        }
         let cc_ix = CcIndex::new();
         let cc = build_cc(&cc_ix, verbose);
         let (edges, ce) = match tier {
@@ -216,7 +225,7 @@ impl OptTables {
                 (None, Some((ix, t)))
             }
         };
-        Self::assemble(tier, cc_ix, cc, edges, ce)
+        Ok(Self::assemble(tier, cc_ix, cc, edges, ce))
     }
 
     fn assemble(

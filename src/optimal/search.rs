@@ -421,7 +421,15 @@ pub fn solve<B: Bounds>(
         let names: Vec<String> = (0..B::K)
             .map(|k| format!("{} {}", b.name(k), h0[k]))
             .collect();
-        eprintln!("root bounds: {} (search from depth {lo})", names.join(", "));
+        // (for a future symmetric-start filter: a symmetric position has equivalent subtrees)
+        let sym = super::sym::sym48();
+        let n_sym = (0..super::sym::N_SYM)
+            .filter(|&k| sym.conj_by_maps(&cube, k) == cube)
+            .count();
+        eprintln!(
+            "root bounds: {} (search from depth {lo}); symmetries of the position: {n_sym} of 48",
+            names.join(", ")
+        );
     }
     let threads = rayon::current_num_threads();
     // ordering statistic of each task of the previous iteration, by its move prefix
