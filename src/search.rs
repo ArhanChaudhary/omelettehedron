@@ -226,9 +226,11 @@ const NO_CB: usize = usize::MAX;
 #[derive(Clone)]
 struct Scratch<const N: usize> {
     ys: [[Fc; N]; 2],
-    /// each child's edge label masks (`masks(&ys[s][i].e)`), computed once when the child is
-    /// generated and shared by its A-centre/edge index and the joint and distance-to-solved
-    /// tables' indices
+    /// each child's edge label masks (`masks(&ys[s][i].e)`), computed once and shared by its
+    /// A-centre/edge index and the joint and distance-to-solved tables' indices: in `expand`
+    /// for every child when the A-centre/edge stage comes first (`budget >= AE_FIRST`),
+    /// otherwise in `stage2` for the children that pass their CB stage, and with a class-B
+    /// side's positions where those are generated
     ems: [[[u16; 4]; N]; 2],
     ms: [u8; N],
     /// the sides each child is still alive on
@@ -636,11 +638,15 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             moves &= moves - 1;
             if on(S, 0) {
                 fr.ys[0][n % N] = f.apply_any::<N>(x[0], fw0.0, fw0.1, self.side_move(r, m as u8));
-                fr.ems[0][n % N] = masks(&fr.ys[0][n % N].e);
+                if budget >= AE_FIRST {
+                    fr.ems[0][n % N] = masks(&fr.ys[0][n % N].e);
+                }
             }
             if on(S, 1) {
                 fr.ys[1][n % N] = f.apply_any::<N>(x[1], fw1.0, fw1.1, self.mb[m & 31]);
-                fr.ems[1][n % N] = masks(&fr.ys[1][n % N].e);
+                if budget >= AE_FIRST {
+                    fr.ems[1][n % N] = masks(&fr.ys[1][n % N].e);
+                }
             }
             fr.ms[n % N] = m as u8;
             // (a node alive on one side has it in slot 0, and the moves are its leaf moves)
@@ -853,8 +859,14 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                 sel[k % N] = i as u8;
                 k += usize::from(c != 0);
             }
+            // (below `AE_FIRST` the masks are computed here, for the children that passed
+            // their CB stage only)
             for s in 0..2 {
                 if on(S, s) {
+                    for &i in &sel[..k] {
+                        let i = usize::from(i) % N;
+                        ems[s][i] = masks(&ys[s][i].e);
+                    }
                     t.ae_ix
                         .index_sel_pf_em(f, &ys[s], &ems[s], &sel[..k], &mut idx[s], &t.ae.data);
                 }

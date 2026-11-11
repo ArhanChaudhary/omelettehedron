@@ -321,6 +321,7 @@ impl AeIndex for AeSym {
     }
     #[inline(always)]
     fn index_entry_em(&self, f: &FastTables, x: &Fc, em: &[u16; 4], v: u32) -> usize {
+        debug_assert_eq!(*em, masks(&x.e), "stale edge masks");
         let (g, t) = (v >> 16 & 0xff, v >> 24);
         let (e, b) = f.sym_e(x, em, g as usize, t as usize);
         let c = (v & 0xffff) as usize;
