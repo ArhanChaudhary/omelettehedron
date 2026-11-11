@@ -248,7 +248,8 @@ reloads once; where a browser refuses, the demo runs on one thread.
   unsafe in V8 (see `wasm/build.rs`).
 * `wasm/omelettehedron.mjs` provides the WASI functions the module imports and a worker pool
   for its threads. `FtoSolver` generates or loads the tables, solves scrambles optimally or
-  with a time limit, makes random-state scrambles and checks solutions on the sticker model.
+  with a time limit, solves patterns, makes random-state scrambles and checks solutions on the
+  sticker model.
   A solve can be cancelled from another thread (`cancel`), which moves the module's clock past
   its time limit; this needs shared memory.
 * The page (`wasm/index.html`, run in a worker by `wasm/demo-worker.mjs`) starts with every core
@@ -256,6 +257,10 @@ reloads once; where a browser refuses, the demo runs on one thread.
   engine and keeps the tables in IndexedDB for later visits. The page shows each better solution
   while solving. **Stop** cancels a solve. Without shared memory, it restarts the worker and
   reloads the stored tables.
+* The page also solves a pattern (see [Patterns](#patterns)): the visitor colours a picture of
+  the front and the back (`wasm/pattern-picture.mjs`, `wasm/pattern-input.mjs`; the palette is
+  their colour scheme, kept in localStorage), and gets a solution and a scramble that makes the
+  pattern, with its start hold. Mistakes are explained and the stickers concerned outlined.
 * Tables can also be loaded from the native `gen --tier small` files: the formats are the same,
   and the module generates byte-identical files.
 
