@@ -576,7 +576,7 @@ impl CbsTable {
         });
         // (entries past the end hold code 3 in the BFS array: clear their bits)
         let n = ix.size();
-        if n % 64 != 0 {
+        if !n.is_multiple_of(64) {
             if let Some(last) = bits.last_mut() {
                 *last &= (1u64 << (n % 64)) - 1;
             }
