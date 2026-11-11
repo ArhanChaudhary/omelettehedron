@@ -26,6 +26,7 @@ use crate::coord::{corners, N_CORNER};
 use crate::cube::{perm_parity, Cube};
 use crate::geometry::{det, Mat};
 use crate::optimal::sym::{swaps_classes, sym48, N_SYM};
+use rayon::prelude::*;
 use std::collections::BTreeSet;
 
 /// A set of the 48 symmetries of [`sym48`]: bit `k` is symmetry `k` (bit 0, the identity).
@@ -519,15 +520,40 @@ pub fn least_conjugate(cube: &Cube, by: SymSet) -> (u128, Cube) {
 pub fn exact(group: SymSet) -> Option<Vec<Cube>> {
     let parts = fixed(group)?;
     let norm = normaliser(group);
+    // (in parallel over the edge parts; a position is kept if it is its least conjugate)
     let mut found: Vec<(u128, Cube)> = parts
-        .iter()
-        .flat_map(Fixed::cubes)
-        .filter(|c| stabiliser(c) == group)
-        .map(|c| least_conjugate(&c, norm))
+        .par_iter()
+        .flat_map(|p| {
+            (0..p.edges.len()).into_par_iter().flat_map_iter(move |e| {
+                (0..p.centres.len()).filter_map(move |x| {
+                    let c = p.cube(e, x);
+                    let k = key(&c);
+                    (stabiliser(&c) == group && least_conjugate(&c, norm).0 == k).then_some((k, c))
+                })
+            })
+        })
         .collect();
     found.sort_unstable_by_key(|&(k, _)| k);
-    found.dedup_by_key(|&mut (k, _)| k);
     Some(found.into_iter().map(|(_, c)| c).collect())
+}
+
+/// Where `cube` is listed: the index of its stabiliser's class in [`subgroup_classes`] and the
+/// position conjugate to it with exactly that class representative's symmetries (the one
+/// [`exact`] lists).
+pub fn identify(cube: &Cube) -> (usize, Cube) {
+    let stab = stabiliser(cube);
+    let classes = subgroup_classes();
+    for (i, c) in classes.iter().enumerate() {
+        if c.order != order(stab) {
+            continue;
+        }
+        // g stab g^-1 = rep: the conjugate of `cube` by g has exactly rep's symmetries
+        if let Some(g) = (0..N_SYM).find(|&g| conjugate(stab, g) == c.rep) {
+            let moved = sym48().conj_by_maps(cube, g);
+            return (i, least_conjugate(&moved, normaliser(c.rep)).1);
+        }
+    }
+    (classes.len().saturating_sub(1), *cube)
 }
 
 /// The number of positions (in the fixed-corner frame: one per position up to rotation).
@@ -553,7 +579,7 @@ pub struct Counts {
 pub fn census() -> Vec<(SubgroupClass, Counts)> {
     let classes = subgroup_classes();
     let fixed: Vec<u128> = classes
-        .iter()
+        .par_iter()
         .map(|c| fixed(c.rep).map_or(POSITIONS, |p| p.iter().map(Fixed::count).sum()))
         .collect();
     // every subgroup with its class, largest first
@@ -680,6 +706,12 @@ mod tests {
         }
         // (the position the given algorithm makes, its "inverse", has no symmetry: with
         // centres of a colour alike, the inverse depends on the sequence)
+        // `identify` finds each listed position at its place
+        for (i, c) in list.iter().enumerate() {
+            let (k, d) = identify(c);
+            assert_eq!(k, 0);
+            assert_eq!(list.iter().position(|x| *x == d), Some(i));
+        }
         // tri_adj+edge_adj: 24 symmetries
         let c = hard("tri_adj+edge_adj");
         let st = stabiliser(&c);

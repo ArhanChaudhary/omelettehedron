@@ -740,3 +740,118 @@ fn slice_optimal_matches_two_phase_optimal_mode() {
         check_solution(&scr, &o.solutions[0]);
     }
 }
+
+/// `start_depth`: the first iteration, at the start depth, finds any solution of at most that
+/// many moves, shorter ones too; when it has none, no solution has fewer than the start depth
+/// plus one moves. A start depth at or below the root bound changes nothing (the same tree).
+/// Random positions, symmetric ones near solved, and three 16-symmetric positions of 13 and 14
+/// moves whose root bounds are 3 to 6 below (symmetric start), on 1 and 8 threads.
+#[test]
+fn start_depth() {
+    use omelettehedron::optimal::sym::{sym48, N_SYM};
+    use omelettehedron::symsearch;
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(106);
+    let b = tables().small().unwrap();
+    // (position, its frame, the scramble that makes it if known)
+    let mut positions: Vec<(Cube, Frame, Option<Vec<PhysMove>>)> = (0..14)
+        .map(|i| {
+            let scr = random_scramble(&mut rng, 6 + i % 7);
+            let (c, fr) = scramble_to_cube(&scr);
+            (c, fr, Some(scr))
+        })
+        .collect();
+    // symmetric positions: the first 6 within 4 moves, at distance 3 or more, that some
+    // symmetry fixes (breadth-first)
+    let s48 = sym48();
+    let mut seen: HashSet<Cube> = HashSet::from([Cube::solved()]);
+    let mut front = vec![(Cube::solved(), vec![])];
+    let mut symmetric = 0;
+    for d in 1..=4 {
+        let mut next = vec![];
+        for (c, path) in &front {
+            for m in 0..N_MOVES {
+                let y = c.apply(m);
+                if seen.insert(y) {
+                    let mut p: Vec<usize> = path.clone();
+                    p.push(m);
+                    if d >= 3 && symmetric < 6 && (1..N_SYM).any(|k| s48.conj_by_maps(&y, k) == y) {
+                        let scr = solution_to_physical(Frame::identity(), &p, false);
+                        let (c2, fr) = scramble_to_cube(&scr);
+                        positions.push((c2, fr, Some(scr)));
+                        symmetric += 1;
+                    }
+                    next.push((y, p));
+                }
+            }
+        }
+        front = next;
+    }
+    assert_eq!(symmetric, 6);
+    // positions 1, 15 and 194 of the 16-symmetric list (`symmetric --subgroup 5`)
+    let d4h = symsearch::subgroup_classes()[4].rep;
+    let list = symsearch::exact(d4h).unwrap();
+    for i in [0, 14, 193] {
+        positions.push((list[i], Frame::identity(), None));
+    }
+    let lim = |start: usize, max: Option<usize>| Limits {
+        start_depth: Some(start),
+        max_length: max,
+        ..Limits::default()
+    };
+    let check = |c: &Cube, scr: &Option<Vec<PhysMove>>, o: &Outcome| {
+        assert_eq!(c.apply_seq(&o.internal[0]), Cube::solved());
+        if let Some(scr) = scr {
+            check_solution(scr, &o.solutions[0]);
+        }
+    };
+    let mut shorter = 0;
+    let mut proven = 0;
+    for (c, fr, scr) in &positions {
+        let (c, fr) = (*c, *fr);
+        let lo = usize::from(*exact(&b, &Pos::of(&c)).unwrap().iter().max().unwrap());
+        // (the optimum from the solver, checked against the brute force where it reaches)
+        let base = solve_on(1, c, fr, &Limits::default());
+        let truth = base.length.unwrap();
+        if let Some(d) = mitm().distance(&c) {
+            assert_eq!(d, truth);
+        }
+        // at or below the root bound: the same search
+        for d in [0, lo] {
+            let o = solve_on(1, c, fr, &lim(d, None));
+            assert_eq!(o.stop, Stop::Solved);
+            assert_eq!(o.internal, base.internal);
+            assert_eq!(o.nodes, base.nodes);
+            assert_eq!(o.lower_bound, truth);
+        }
+        for threads in [1, 8] {
+            for start in [truth, truth + 1, truth + 3] {
+                let o = solve_on(threads, c, fr, &lim(start, None));
+                let l = o.length.unwrap();
+                assert!(l >= truth && l <= start, "{c:?}: {l}");
+                check(&c, scr, &o);
+                assert!(o.internal.iter().all(|s| s.len() == l));
+                if start > lo && l > lo {
+                    assert_eq!(o.stop, Stop::Found);
+                    assert_eq!(o.lower_bound, lo);
+                } else {
+                    assert_eq!(o.stop, Stop::Solved);
+                    assert_eq!(o.lower_bound, l);
+                }
+                assert_eq!(o.iterations.len(), 1);
+                shorter += usize::from(l < start);
+            }
+            // between the root bound and the optimum, with -l: no solution, and the optimum is
+            // proven longer, from one iteration
+            for d in (lo + 1..truth).rev().take(2) {
+                let o = solve_on(threads, c, fr, &lim(d, Some(d)));
+                assert_eq!(o.stop, Stop::MaxLength);
+                assert!(o.solutions.is_empty());
+                assert_eq!(o.lower_bound, d + 1);
+                assert_eq!(o.iterations.len(), 1);
+                proven += 1;
+            }
+        }
+    }
+    // solutions shorter than the start depth were found, and bounds proven from one iteration
+    assert!(shorter > 0 && proven >= 6, "{shorter} {proven}");
+}
