@@ -75,10 +75,10 @@ scrambles, i.e. the inverse positions, which in the normal FTO need not have the
 
 | position | listed | proven optimum (normal FTO) | proof |
 |---|---|---|---|
-| tri_adj+edge_opp | 23 | (running) | |
+| tri_adj+edge_opp | 23 | 23 | 8,866 s (2.5 h, 1.4e13 nodes) |
 | tri_adj+edge_adj | 23 | 23 | 11,877 s (3.3 h, 1.9e13 nodes) |
 | tri_adj-[Uf_Fu;Db_Bd] | 23 | 23 | 10,942 s (3.0 h, 1.7e13 nodes) |
-| tri_adj+[UB_FD,NL_MR] | 23 | (running) | |
+| tri_adj+[UB_FD,NL_MR] | 23 | 23 | 8,397 s (2.3 h, 1.3e13 nodes) |
 | edge_hard | 21 | 21 | 74 s |
 | pure_corn_6flip | >= 24 (pure) | 20 | 661 s (`--lower-bound 19`, after an earlier run excluded 18) |
 
@@ -87,6 +87,17 @@ The corner 6-flip undoes itself, so it is the same position either way. Its norm
 sticker model); the solution exchanges centres of a colour, so it does not bear on the pure
 count of at least 24. With edges and centres solved, the A-centre/edge table bounds it by 0 and
 only the corner tables prune: each target pass costs about 9 times the previous one.
+
+All four positions listed at 23 are 23 in the normal FTO too (two-phase solver, optimal mode,
+2026-11-10/11; every solution checked: scramble plus solution leaves each face one colour):
+
+- tri_adj+edge_adj: BL' F BL' U F U L' D B L D' B' BL U' BR BL' F' R' L' R' L' D B
+- tri_adj-[Uf_Fu;Db_Bd]: F L B' BL D' R L' D L F BL' F' L' B R' U BL U BR F' U BL' BR'
+- tri_adj+[UB_FD,NL_MR]: B' BR BL L D' R' L' BR' U' BL BR' BL L' B' R' BR U' L R D' B D' L
+- tri_adj+edge_opp: F BR' U' BL' B' U' F L' R B' D L' BR U BR F R' BR R BR' U F BL'
+
+Each proof takes 2.3-3.3 hours on 48 threads (1.3-1.9e13 nodes), most of it in the last target
+pass (no solution of at most 22 moves).
 
 ## Start-up
 
