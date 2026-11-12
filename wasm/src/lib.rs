@@ -63,11 +63,13 @@ const THREADS: bool = cfg!(wasm_threads);
 const NO_LIMIT: Duration = Duration::from_secs(1_000_000);
 
 /// The WASI reactor initializer, which a Rust cdylib does not get from wasi-libc (its
-/// `crt1-reactor`): the host calls it once, on the main thread, before any other export
-/// (`omelettehedron.mjs` does). In the threads build it first sets up the main thread's
+/// `crt1-reactor`) before Rust 1.100 (`cfg(wasm_own_initialize)`, see build.rs; from 1.100 on
+/// the toolchain links wasi-libc's, which runs the constructors and, in its newer wasi-libc,
+/// needs no thread-pointer call): the host calls it once, on the main thread, before any other
+/// export (`omelettehedron.mjs` does). In the threads build it first sets up the main thread's
 /// pthread record (without it, wasi-libc's thread list grew from a zeroed record and threads
 /// could hang in their exit).
-#[cfg(target_family = "wasm")]
+#[cfg(all(target_family = "wasm", wasm_own_initialize))]
 #[unsafe(no_mangle)]
 pub extern "C" fn _initialize() {
     static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
