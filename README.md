@@ -561,9 +561,10 @@ reloads once; where a browser refuses, the demo runs on one thread.
   cannot be prepared (e.g. not enough memory), it goes back to the next smaller one and says
   so. The page shows each better solution while solving, and the proven lower bound
   ("shortest possible: at least N moves"). Three modes: best solution in a given time;
-  **keep improving** (no time limit: better and better solutions until the last is proven
-  shortest); and **shortest possible** (the fastest proof, but the first solution it shows is
-  already the shortest). **Stop** cancels a solve. Without shared memory, it restarts the worker and reloads
+  **keep improving** (shows better and better solutions, no time limit, until the last is
+  proven shortest; stop any time); and **shortest only** (shows just the final answer, but
+  its proof is about 2.6x faster on one thread). Run to the end, the last two give the
+  same answer; the labels say so because users took them for the same thing. **Stop** cancels a solve. Without shared memory, it restarts the worker and reloads
   the stored tables.
 * **Invert** turns the moves in the box around (reversed, each turned the other way), so a
   solution found elsewhere becomes a scramble of the position it solves; solve that to find
