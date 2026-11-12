@@ -634,14 +634,20 @@ mod tests {
         }
     }
 
-    /// 447,120 configurations; 460 pattern-view shapes; the configurations of each frame and
-    /// pattern shape are 81; `H'` is 972 of them; every allowed move can be undone (the tables'
+    /// 447,120 configurations; 460 pattern-view shapes and 37,260 pattern-view configurations;
+    /// the configurations of each frame and pattern shape are 81; `H'` is 972 of them; every allowed move can be undone (the tables'
     /// breadth-first search needs an undirected graph).
     #[test]
     fn configuration_counts() {
         let s = space();
         assert_eq!(s.cfgs.len(), N_CFG);
         assert_eq!(s.pshape_next.len(), N_PSHAPE);
+        // the pattern view: 37,260 configurations (460 shapes x 81), 1,611 symmetry classes
+        assert_eq!(s.pat.cfg.len(), 37_260);
+        assert_eq!(
+            s.pat.rep.len() * crate::coord::N_MSET,
+            crate::chen::tables::N_PX
+        );
         let mut per = HashMap::new();
         for c in 0..N_CFG {
             *per.entry((s.rot[c], s.pshape[c])).or_insert(0) += 1;

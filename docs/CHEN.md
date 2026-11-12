@@ -49,7 +49,7 @@ times the 1.3 x 10^13 that a closed set of configurations would give.
 |---|---|---:|---:|---:|---:|
 | AC: configuration x corners | `chen-ac.prun` | 429,235,200 | 107.3 MB | 13 | 10.05 |
 | PX: pattern-view configuration x B-centres, 24 symmetries (1,611 classes) | `chen-px.prun` | 595,425,600 | 148.9 MB | 15 | 11.97 |
-| CC: corners x B-centres, every move allowed (the optimal solver's) | `opt-cc-sym24.prun` | 18,849,600 | 4.7 MB | 11 | |
+| CC: corners x B-centres, every move allowed (the optimal solver's, 24 symmetries) | `opt-cc-sym24.prun` | 18,849,600 | 4.7 MB | 11 | 8.35 |
 | SB: pattern-view shape x B-centres (not used by default: PX is never lower) | `chen-sb.prun` | 170,016,000 | 42.5 MB | 13 | 9.72 |
 
 AC, PX and SB hold distances with the allowed moves (mod 3), so a search decodes each child's
@@ -59,9 +59,10 @@ top (phase 1 and the in-memory `H_A` table).
 ## Search choices (node counts)
 
 Measured on 4 seeded random positions (`--random 4 --seed 1`, small tier, one thread), as the
-phase-2 nodes to the first solution (they repeat exactly on one thread):
+nodes to the first solution (`-n 1`; all but a few thousand are phase-2 nodes; on one thread
+they repeat, up to the few thousand searched before the stop is seen):
 
-| Choice | Phase-2 nodes to the first solution | Lengths |
+| Choice | Nodes to the first solution | Lengths |
 |---|---|---|
 | PX, 2^18 nodes per phase-1 solution (default) | 1.7e6, 3.7e6, 8.2e6, 0.9e6 | 27, 28, 28, 28 |
 | no limit per phase-1 solution | 1.1e7, none in 1.6e7, 1.7e7, 1.2e8 | 29, -, 29, 31 |
