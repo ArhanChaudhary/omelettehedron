@@ -29,7 +29,7 @@ use crate::notation::*;
 use crate::progress::{rate, Bound, Watch};
 use crate::prune::decode;
 use crate::search::{Event, Limits, Outcome, Report};
-use crate::tables::{AeIndex, Tables};
+use crate::tables::{prefetch_at, AeIndex, Tables};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
@@ -298,37 +298,72 @@ impl<I: AeIndex> Shared<'_, I> {
         ctr.nodes2 += 1;
         let (s, f, ct) = (self.s, self.f, self.ct);
         let left = bound - g - 1;
-        // (Searching the children in order of their bound instead made no difference: first
-        // solutions of 4 random positions after 14.1M phase-2 nodes in all, against 14.4M.)
+        // The children and their table indices first, each table word prefetched as soon as
+        // its index is known, then the reads (MEASURE).
+        let mut kids = [*p; N_MOVES];
+        let mut ms = [0u8; N_MOVES];
+        let mut ix = [[0usize; N_TABLES]; N_MOVES];
+        let mut n = 0;
         for m in 0..N_MOVES {
             if !allowed_after(false, last, m) {
                 continue;
             }
             let Some(q) = p.apply(s, m) else { continue };
-            let ac = decode(h[0], ct.ac.get(ChenTables::ac_index(&q)));
+            let i = [
+                ChenTables::ac_index(&q),
+                ct.sb
+                    .as_ref()
+                    .map_or(0, |_| ChenTables::sb_index_with(s, f, &q)),
+                ct.px
+                    .as_ref()
+                    .map_or(0, |_| ChenTables::px_index_with(s, f, &q)),
+                ct.cc_index(&q),
+            ];
+            prefetch_at(&ct.ac.data, i[0] >> 5);
+            if let Some(t) = &ct.sb {
+                prefetch_at(&t.data, i[1] >> 5);
+            }
+            if let Some(t) = &ct.px {
+                prefetch_at(&t.data, i[2] >> 5);
+            }
+            prefetch_at(&ct.cc.data, i[3] >> 5);
+            kids[n] = q;
+            ms[n] = m as u8;
+            ix[n] = i;
+            n += 1;
+        }
+        // (Searching the children in order of their bound instead made no difference: first
+        // solutions of 4 random positions after 14.1M phase-2 nodes in all, against 14.4M.)
+        for k in 0..n {
+            let i = ix[k];
+            let ac = decode(h[0], ct.ac.get(i[0]));
             if ac as usize > left {
                 continue;
             }
-            let px = match &ct.px {
-                Some(t) => decode(h[2], t.get(ChenTables::px_index_with(s, f, &q))),
-                None => 0,
-            };
+            let px = ct.px.as_ref().map_or(0, |t| decode(h[2], t.get(i[2])));
             if px as usize > left {
                 continue;
             }
-            let sb = match &ct.sb {
-                Some(t) => decode(h[1], t.get(ChenTables::sb_index_with(s, f, &q))),
-                None => 0,
-            };
+            let sb = ct.sb.as_ref().map_or(0, |t| decode(h[1], t.get(i[1])));
             if sb as usize > left {
                 continue;
             }
-            let cc = decode(h[3], ct.cc.get(ct.cc_index(&q)));
+            let cc = decode(h[3], ct.cc.get(i[3]));
             if cc as usize > left {
                 continue;
             }
+            let m = usize::from(ms[k]);
             p2path.push(m);
-            if self.phase2(side, &q, [ac, sb, px, cc], bound, m, p1path, p2path, ctr) {
+            if self.phase2(
+                side,
+                &kids[k],
+                [ac, sb, px, cc],
+                bound,
+                m,
+                p1path,
+                p2path,
+                ctr,
+            ) {
                 return true;
             }
             p2path.pop();
