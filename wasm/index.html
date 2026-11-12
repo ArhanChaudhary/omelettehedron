@@ -37,6 +37,8 @@
   fieldset { border: 1px solid var(--line); border-radius: 6px; margin: 0.5rem 0 0.75rem; padding: 0.2rem 0.75rem 0.5rem; }
   legend { color: var(--muted); padding: 0 0.3rem; }
   fieldset label { display: block; white-space: normal; margin: 0.15rem 0; }
+  .modes { flex-basis: 100%; }
+  .modes label { display: block; white-space: normal; margin: 0.15rem 0; }
   fieldset .note { margin: 0.3rem 0 0; }
   input, button, textarea { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 0.2rem 0.4rem; }
   button { cursor: pointer; border-color: var(--accent); }
@@ -102,9 +104,11 @@ anticlockwise.</p>
   <button id="random" disabled>Random scramble</button>
   <button id="show-pattern" disabled>Show its pattern</button>
   <button id="invert" title="Moves reversed, each turned the other way: a solution becomes a scramble of the position it solves">Invert</button>
-  <label><input type="radio" name="mode" value="time" checked> best solution in <input id="seconds" type="number" min="0.1" step="any" value="10" style="width:4rem" aria-label="Time limit in seconds"> seconds</label>
-  <label><input type="radio" name="mode" value="improve"> keep improving (no time limit)</label>
-  <label><input type="radio" name="mode" value="optimal"> shortest possible (can be slow)</label>
+  <div class="modes">
+    <label><input type="radio" name="mode" value="time" checked> best solution in <input id="seconds" type="number" min="0.1" step="any" value="10" style="width:4rem" aria-label="Time limit in seconds"> seconds</label>
+    <label><input type="radio" name="mode" value="improve"> keep improving: shows better and better solutions; stop any time</label>
+    <label><input type="radio" name="mode" value="optimal"> shortest only: shows just the final answer, but gets there sooner</label>
+  </div>
   <button id="solve" class="primary" disabled>Solve</button>
   <button id="stop" disabled>Stop</button>
 </div>
