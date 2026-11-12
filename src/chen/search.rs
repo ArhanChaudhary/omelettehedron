@@ -110,6 +110,8 @@ struct Shared<'a, I: AeIndex> {
     best: Mutex<(Option<Vec<PhysMove>>, Vec<Event>)>,
     /// phase-2 nodes per leaf before it is given up (see `leaf_budget`)
     budget: u64,
+    /// `FTO_DEBUG`: a line per phase-2 iteration of each leaf on stderr
+    debug: bool,
 }
 
 impl<I: AeIndex> Shared<'_, I> {
@@ -251,7 +253,7 @@ impl<I: AeIndex> Shared<'_, I> {
             p2path.clear();
             let before = ctr.nodes2;
             let found = self.phase2(side, p, h, b2, last, path, &mut p2path, ctr);
-            if std::env::var_os("FTO_DEBUG").is_some() {
+            if self.debug {
                 eprintln!(
                     "  leaf side {side} d1 {d1} h {h:?} bound {b2}: {} nodes{}",
                     ctr.nodes2 - before,
@@ -514,6 +516,7 @@ pub fn solve<I: AeIndex>(
         watch: *watch,
         best: Mutex::new((None, vec![])),
         budget: leaf_budget(),
+        debug: std::env::var_os("FTO_DEBUG").is_some(),
     };
     let threads = rayon::current_num_threads();
     let mut depth = roots[0].1.min(roots[1].1) as usize;

@@ -43,8 +43,11 @@ pub const N_PX: usize = 1611 * N_MSET;
 /// 0..12).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct P2 {
+    /// configuration id ([`Space`])
     pub cfg: u32,
+    /// corner id ([`crate::coord::Corners`])
     pub c: u16,
+    /// B-centre colouring (labels 0..4 in lanes 0..12, zero padding)
     pub xb: [u8; 16],
 }
 
@@ -199,7 +202,9 @@ pub enum ChenTableError {
     /// Reading, writing or checking the file failed (wrong size, checksum or format included).
     #[error("{path}")]
     Io {
+        /// the file
         path: String,
+        /// what went wrong
         source: std::io::Error,
     },
     /// The files pass their checksums but are not distance tables of this layout (made by
@@ -208,13 +213,18 @@ pub enum ChenTableError {
         "{dir}: a chen-*.prun table is not a table of this version's layout (delete it to \
          regenerate)"
     )]
-    WrongLayout { dir: String },
+    WrongLayout {
+        /// the table directory
+        dir: String,
+    },
 }
 
 /// Which optional phase-2 tables to use (AC and CC are always used).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TableSet {
+    /// the SB table (pattern-view shape x B-centres)
     pub sb: bool,
+    /// the PX table (pattern-view configuration x B-centres)
     pub px: bool,
 }
 
@@ -224,10 +234,15 @@ pub const N_TABLES: usize = 4;
 
 /// The phase-2 tables, with what the search needs to use them.
 pub struct ChenTables {
+    /// configuration x corners
     pub ac: Table2,
+    /// pattern-view shape x B-centres, if loaded
     pub sb: Option<Table2>,
+    /// pattern-view configuration x B-centres (24 symmetries), if loaded
     pub px: Option<Table2>,
+    /// corners x B-centres with every move allowed (the optimal solver's table)
     pub cc: Table2,
+    /// the index of `cc`
     pub cc_ix: CcIndex,
     /// index of the solved state in each table (PX and CC: and its equivalents)
     sb_target: usize,
