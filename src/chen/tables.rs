@@ -3,8 +3,9 @@
 //! A phase-2 position is its configuration ([`super::space`]), its corner state and its
 //! B-centre colouring. Three tables bound its distance to solved with the allowed moves:
 //!
-//! * **AC** (`chen-ac.prun`): configuration x corner state (447,120 x 960 = 429M entries,
-//!   107 MB): the exact distance of that projection with the allowed moves;
+//! * **AC** (`chen-acs.prun`): configuration x corner state, in the pattern view under the 24
+//!   symmetries (1,611 classes x 11,520 corner states = 18.6M entries, 4.6 MB): the exact
+//!   distance of that projection with the allowed moves;
 //! * **SB** (`chen-sb.prun`): pattern-view shape x B-centre colouring (460 x 369,600 = 170M
 //!   entries, 42.5 MB), the same in the pattern view, read through the frame of the
 //!   configuration (whether a move is allowed depends only on the shape, so this is a
@@ -321,7 +322,7 @@ fn build_ac(verbose: bool) -> Table2 {
     let t = g.index(0, usize::from(space().corners.solved));
     let mut targets = vec![t];
     g.equivalents(t, &mut targets);
-    bfs(&g, N_AC, &targets, "chen-ac", verbose)
+    bfs(&g, N_AC, &targets, "chen-acs", verbose)
 }
 
 /// The SB table, by breadth-first search from solved in the pattern view.

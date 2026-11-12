@@ -29,7 +29,7 @@ use crate::notation::*;
 use crate::progress::{rate, Bound, Watch};
 use crate::prune::decode;
 use crate::search::{Event, Limits, Outcome, Report};
-use crate::tables::{prefetch_at, AeIndex, Tables};
+use crate::tables::{prefetch_at, AeIndex, Tables, ALL_IDS};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
@@ -199,18 +199,35 @@ impl<I: AeIndex> Shared<'_, I> {
             return;
         }
         ctr.nodes1 += 1;
-        let fw = self.f.flip_word(&masks(&x.e));
+        // The children's bounds through the index's batch interface: every first lookup issued
+        // before any is read, and with the budget as the cut, so that the tiny tier's index
+        // reads its second table only where the first does not prune (MEASURE).
+        let (t, f) = (self.t, self.f);
+        let fw = f.flip_word(&masks(&x.e));
+        let mut ys = [*x; N_MOVES];
+        let mut ms = [0u8; N_MOVES];
+        let mut n = 0;
         for m in 0..N_MOVES {
-            if !allowed_after(false, last, m) {
+            if allowed_after(false, last, m) {
+                ys[n] = f.apply_w(x, fw, m);
+                ms[n] = m as u8;
+                n += 1;
+            }
+        }
+        let cut = depth - g - 1;
+        let mut keys = [0usize; N_MOVES];
+        t.ae_ix
+            .keys_batch_pf::<N_MOVES>(f, &ys[..n], &mut keys[..n], &t.ae.data, cut);
+        t.ae_ix
+            .resolve::<N_MOVES>(f, &ys, &ALL_IDS, n, &mut keys, &t.ae.data, cut);
+        for i in 0..n {
+            let hy = t.ae_ix.value(&t.ae, h, keys[i]);
+            if usize::from(hy) > cut {
                 continue;
             }
-            let y = self.f.apply_w(x, fw, m);
-            let hy = self.ae_bound(&y, h);
-            if g + 1 + hy as usize > depth {
-                continue;
-            }
+            let m = usize::from(ms[i]);
             path.push(m);
-            self.phase1(side, &y, hy, path, depth, ctr);
+            self.phase1(side, &ys[i], hy, path, depth, ctr);
             path.pop();
             if ctr.stop {
                 return;

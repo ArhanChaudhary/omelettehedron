@@ -90,7 +90,7 @@ struct TableArgs {
     /// The solver: two-phase (phase 2 in the group of U, F, BR, BL; proves optimality without
     /// a stopping rule), or chen, the block split (phase 1 solves the A-centres and edges, phase
     /// 2 the rest with moves that keep their colour groups; reads the tier's A-centre/edge
-    /// table and 261 MB of phase-2 tables, generated on first use; face turns only; never
+    /// table and 158 MB of phase-2 tables, generated on first use; face turns only; never
     /// proves optimality; see docs/CHEN.md)
     #[arg(long, value_enum, default_value = "two-phase")]
     method: Method,

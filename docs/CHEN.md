@@ -47,7 +47,7 @@ times the 1.3 x 10^13 that a closed set of configurations would give.
 
 | Table | File | Entries | Size | Max | Mean |
 |---|---|---:|---:|---:|---:|
-| AC: configuration x corners | `chen-ac.prun` | 429,235,200 | 107.3 MB | 13 | 10.05 |
+| AC: configuration x corners, pattern view, 24 symmetries (1,611 x 11,520) | `chen-acs.prun` | 18,558,720 | 4.6 MB | 13 | ACSMEAN |
 | PX: pattern-view configuration x B-centres, 24 symmetries (1,611 classes) | `chen-px.prun` | 595,425,600 | 148.9 MB | 15 | 11.97 |
 | CC: corners x B-centres, every move allowed (the optimal solver's, 24 symmetries) | `opt-cc-sym24.prun` | 18,849,600 | 4.7 MB | 11 | 8.35 |
 | SB: pattern-view shape x B-centres (not used by default: PX is never lower) | `chen-sb.prun` | 170,016,000 | 42.5 MB | 13 | 9.72 |

@@ -444,7 +444,7 @@ moves or prints "no solution of at most 23 moves".
 `--method chen` (on `solve`, `bench` and `gen`) runs a second two-phase solver with another
 split, proposed by Chen Shuang: phase 1 only solves the A-centres and edges (at most 14 moves),
 phase 2 the rest with the moves that keep their colour groups, ending in the `H_A` table. It
-needs 261 MB of phase-2 tables of its own on top of the tier, and cannot prove optimality. See
+needs 158 MB of phase-2 tables of its own on top of the tier, and cannot prove optimality. See
 [docs/CHEN.md](docs/CHEN.md) for the design and its measurements against the two-phase solver.
 
 ```sh
