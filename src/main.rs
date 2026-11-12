@@ -511,6 +511,9 @@ fn check_method(tab: &TableArgs, two_phase_only: &[(bool, &str)]) -> anyhow::Res
 
 /// The block split's phase-2 tables with `--method chen` (generated if missing), else `None`.
 /// `FTO_CHEN_TABLES` chooses the optional ones (`sb`, `px`, comma-separated; default `px`).
+/// PX rather than the smaller SB: first solutions of 4 random positions (small tier, one
+/// thread) after 1.7e6, 3.7e6, 8.2e6 and 0.9e6 phase-2 nodes with PX; with SB after 1.2e7
+/// and 6.9e6 nodes for two, none within 1.5e7 and 2.3e7 nodes (100 s) for the other two.
 fn load_chen(tab: &TableArgs) -> anyhow::Result<Option<ChenTables>> {
     use anyhow::Context as _;
     if tab.method != Method::Chen {

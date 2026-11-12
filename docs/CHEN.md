@@ -55,3 +55,21 @@ times the 1.3 x 10^13 that a closed set of configurations would give.
 AC, PX and SB hold distances with the allowed moves (mod 3), so a search decodes each child's
 value from its parent's; the means are over table entries. The tier's two-phase tables come on
 top (phase 1 and the in-memory `H_A` table).
+
+## Search choices (node counts)
+
+Measured on 4 seeded random positions (`--random 4 --seed 1`, small tier, one thread), as the
+phase-2 nodes to the first solution (they repeat exactly on one thread):
+
+| Choice | Phase-2 nodes to the first solution | Lengths |
+|---|---|---|
+| PX, 2^18 nodes per phase-1 solution (default) | 1.7e6, 3.7e6, 8.2e6, 0.9e6 | 27, 28, 28, 28 |
+| no limit per phase-1 solution | 1.1e7, none in 1.6e7, 1.7e7, 1.2e8 | 29, -, 29, 31 |
+| 2^16 / 2^20 per phase-1 solution | 1.6e7 / 1.7e7 in all | 27-28 |
+| SB instead of PX | 1.2e7, none in 1.5e7, none in 2.3e7, 6.9e6 | 25, -, -, 27 |
+| an iteration's phase-1 solutions searched in order of their phase-2 bound | 1.5e7 in all | 27-28 |
+| phase-2 children searched in order of their bound | 1.4e7 in all | 27-29 |
+
+Without a limit per phase-1 solution, the first ones hold the search for long: their phase 2
+is about 16 moves, while the tables say about 11 (on the first random position the leaves start
+at a bound of 10 or 11, and the iteration at bound 16 needs 1-2 x 10^5 nodes).

@@ -59,6 +59,18 @@ struct Task {
     h: u8,
 }
 
+/// The tasks of one phase-1 depth.
+struct Level {
+    depth: usize,
+    tasks: Vec<Task>,
+    /// tasks handed out and finished
+    next: AtomicUsize,
+    done: AtomicUsize,
+    /// when it was made, and the node counts (phase 1, phase 2) then
+    t0: f64,
+    nodes: [u64; 2],
+}
+
 /// A phase-1 leaf in `H'`, ready for its phase-2 search.
 struct Leaf {
     side: usize,
@@ -427,6 +439,33 @@ impl<I: AeIndex> Shared<'_, I> {
         }
     }
 
+    /// A progress line for a level whose tasks are all done (the node counts include those of
+    /// the levels running at the same time).
+    fn level_done(&self, l: &Level, watch: &Watch) {
+        let Some(p) = watch.progress else { return };
+        let dt = self.start.elapsed().as_secs_f64() - l.t0;
+        let d1 = self.nodes1.load(Ordering::Relaxed) - l.nodes[0];
+        let d2 = self.nodes2.load(Ordering::Relaxed) - l.nodes[1];
+        let best = self.best_len.load(Ordering::Relaxed);
+        p.line(format_args!(
+            "phase-1 depth {} {} in {dt:.3} s: {} tasks, {d1:.3e} phase-1 nodes, {d2:.3e} \
+             phase-2 nodes since it began ({}); best {}",
+            l.depth,
+            if self.stop.load(Ordering::Relaxed) {
+                "stopped"
+            } else {
+                "done"
+            },
+            l.tasks.len(),
+            rate(d1 + d2, dt),
+            if best == usize::MAX {
+                "-".to_string()
+            } else {
+                best.to_string()
+            }
+        ));
+    }
+
     /// The tasks of the iteration with bound `depth`: the nodes `min(depth, SPLIT)` moves
     /// deep that fit the bound, the two sides interleaved.
     fn tasks(&self, roots: &[(Fc, u8); 2], depth: usize) -> Vec<Task> {
@@ -554,79 +593,87 @@ pub fn solve<I: AeIndex>(
         debug: std::env::var_os("FTO_DEBUG").is_some(),
     };
     let threads = rayon::current_num_threads();
-    let mut depth = roots[0].1.min(roots[1].1) as usize;
-    loop {
+    let first = roots[0].1.min(roots[1].1) as usize;
+    // Phase-1 depths as levels of tasks. A thread that finds no task left at any level makes
+    // the next level instead of waiting for the others to finish theirs: with few phase-1
+    // solutions per depth (9 at the first depth of a random position), waiting left most
+    // threads idle (MEASURE).
+    let levels: Mutex<Vec<std::sync::Arc<Level>>> = Mutex::new(vec![]);
+    let make_level = |depth: usize| -> Option<std::sync::Arc<Level>> {
         // a phase-1 path of `depth` moves gives at least `depth` moves
         if depth >= sh.best_len.load(Ordering::Relaxed)
             || limits.max_depth.is_some_and(|d| depth > d)
         {
-            break;
+            return None;
         }
-        let it_t0 = start.elapsed().as_secs_f64();
-        let (n1, n2) = (
-            sh.nodes1.load(Ordering::Relaxed),
-            sh.nodes2.load(Ordering::Relaxed),
-        );
-        let leaves0 = sh.leaves.each_ref().map(|l| l.load(Ordering::Relaxed));
-        let tasks = sh.tasks(&roots, depth);
-        let next = AtomicUsize::new(0);
-        let worker = || {
-            let mut ctr = Ctr::default();
-            let mut path = Vec::with_capacity(32);
-            loop {
-                let i = next.fetch_add(1, Ordering::Relaxed);
-                let Some(task) = tasks.get(i) else { break };
-                if sh.stop.load(Ordering::Relaxed) || sh.time_up() {
-                    break;
-                }
+        Some(std::sync::Arc::new(Level {
+            depth,
+            tasks: sh.tasks(&roots, depth),
+            next: AtomicUsize::new(0),
+            done: AtomicUsize::new(0),
+            t0: start.elapsed().as_secs_f64(),
+            nodes: [
+                sh.nodes1.load(Ordering::Relaxed),
+                sh.nodes2.load(Ordering::Relaxed),
+            ],
+        }))
+    };
+    // the next task: the first one not handed out, at the lowest level that has one
+    let claim = || -> Option<(std::sync::Arc<Level>, usize)> {
+        let mut lv = levels.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            // (a level as deep as the best can no longer improve on it)
+            let best = sh.best_len.load(Ordering::Relaxed);
+            if let Some(l) = lv
+                .iter()
+                .find(|l| l.depth < best && l.next.load(Ordering::Relaxed) < l.tasks.len())
+            {
+                let i = l.next.fetch_add(1, Ordering::Relaxed);
+                return Some((l.clone(), i));
+            }
+            let depth = lv.last().map_or(first, |l| l.depth + 1);
+            let l = make_level(depth)?;
+            let empty = l.tasks.is_empty();
+            lv.push(l.clone());
+            if empty {
+                sh.level_done(&l, watch);
+            }
+        }
+    };
+    let worker = || {
+        let mut ctr = Ctr::default();
+        let mut path = Vec::with_capacity(32);
+        while !sh.stop.load(Ordering::Relaxed) && !sh.time_up() {
+            let Some((l, i)) = claim() else { break };
+            if let Some(task) = l.tasks.get(i) {
                 path.clear();
                 path.extend_from_slice(&task.path);
-                sh.phase1(task.side, &task.x, task.h, &mut path, depth, &mut ctr);
+                sh.phase1(task.side, &task.x, task.h, &mut path, l.depth, &mut ctr);
             }
-            sh.nodes1.fetch_add(ctr.nodes1, Ordering::Relaxed);
-            sh.nodes2.fetch_add(ctr.nodes2, Ordering::Relaxed);
+            // (the counters go to the shared totals per task, for the progress lines)
+            sh.nodes1
+                .fetch_add(std::mem::take(&mut ctr.nodes1), Ordering::Relaxed);
+            sh.nodes2
+                .fetch_add(std::mem::take(&mut ctr.nodes2), Ordering::Relaxed);
             for s in 0..2 {
-                sh.leaves[s].fetch_add(ctr.leaves[s], Ordering::Relaxed);
+                sh.leaves[s].fetch_add(std::mem::take(&mut ctr.leaves[s]), Ordering::Relaxed);
             }
-        };
-        // (Collecting an iteration's leaves first and searching them in order of their phase-2
-        // bound made no difference: first solutions of 4 random positions after 14.8M phase-2
-        // nodes in all, against 14.4M.)
-        if threads == 1 || tasks.len() < 2 {
-            worker();
-        } else {
-            rayon::scope(|scope| {
-                for _ in 0..threads.min(tasks.len()) {
-                    scope.spawn(|_| worker());
-                }
-            });
+            if l.done.fetch_add(1, Ordering::Relaxed) + 1 == l.tasks.len() {
+                sh.level_done(&l, watch);
+            }
         }
-        let complete = !sh.stop.load(Ordering::Relaxed);
-        if let Some(p) = watch.progress {
-            let dt = start.elapsed().as_secs_f64() - it_t0;
-            let d1 = sh.nodes1.load(Ordering::Relaxed) - n1;
-            let d2 = sh.nodes2.load(Ordering::Relaxed) - n2;
-            let lv: u64 = (0..2)
-                .map(|s| sh.leaves[s].load(Ordering::Relaxed) - leaves0[s])
-                .sum();
-            let best = sh.best_len.load(Ordering::Relaxed);
-            p.line(format_args!(
-                "phase-1 depth {depth} {} in {dt:.3} s: {} tasks, {d1:.3e} phase-1 nodes, {lv} \
-                 leaves, {d2:.3e} phase-2 nodes ({}); best {}",
-                if complete { "done" } else { "stopped" },
-                tasks.len(),
-                rate(d1 + d2, dt),
-                if best == usize::MAX {
-                    "-".to_string()
-                } else {
-                    best.to_string()
-                }
-            ));
-        }
-        if !complete || sh.time_up() {
-            break;
-        }
-        depth += 1;
+    };
+    // (Collecting an iteration's leaves first and searching them in order of their phase-2
+    // bound made no difference: first solutions of 4 random positions after 14.8M phase-2
+    // nodes in all, against 14.4M.)
+    if threads == 1 {
+        worker();
+    } else {
+        rayon::scope(|scope| {
+            for _ in 0..threads {
+                scope.spawn(|_| worker());
+            }
+        });
     }
     let (sol, events) = sh.best.into_inner().unwrap_or_else(PoisonError::into_inner);
     let length = sol.as_ref().map(Vec::len);
