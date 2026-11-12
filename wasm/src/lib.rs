@@ -63,12 +63,15 @@ const THREADS: bool = cfg!(wasm_threads);
 const NO_LIMIT: Duration = Duration::from_secs(1_000_000);
 
 /// The WASI reactor initializer, which a Rust cdylib does not get from wasi-libc (its
-/// `crt1-reactor`) before Rust 1.100 (`cfg(wasm_own_initialize)`, see build.rs; from 1.100 on
-/// the toolchain links wasi-libc's, which runs the constructors and, in its newer wasi-libc,
-/// needs no thread-pointer call): the host calls it once, on the main thread, before any other
-/// export (`omelettehedron.mjs` does). In the threads build it first sets up the main thread's
-/// pthread record (without it, wasi-libc's thread list grew from a zeroed record and threads
-/// could hang in their exit).
+/// `crt1-reactor`) before Rust 1.100 (`cfg(wasm_own_initialize)`, see build.rs): the host calls
+/// it once, on the main thread, before any other export (`omelettehedron.mjs` does). In the
+/// threads build it first sets up the main thread's pthread record (without it, wasi-libc's
+/// thread list grew from a zeroed record and threads could hang in their exit).
+///
+/// From Rust 1.100 on the toolchain links wasi-libc's own `_initialize`, which only runs the
+/// constructors: its wasi-libc has no `__wasi_init_tp` and sets up a thread's record on first
+/// use instead (`pthread_self`, `pthread_create` and the other users of the record call
+/// `__init_tp` when the record does not point to itself yet; checked in its libc.a).
 #[cfg(all(target_family = "wasm", wasm_own_initialize))]
 #[unsafe(no_mangle)]
 pub extern "C" fn _initialize() {
