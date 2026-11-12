@@ -66,3 +66,56 @@ quarter and a half turn about a corner axis; `C2'` a half turn about an edge axi
 reflection; `m` a mirror through four corners, `m'` through two; `S4`, `S6` a turn and a mirror.
 The 8 positions with all 48 symmetries combine corners solved or all flipped, edges solved or
 one 48-symmetric edge pattern, and centres solved or one 48-symmetric centre pattern.
+
+## Looking for 24
+
+No position with at least 6 symmetries needs 24 moves: each of the 27,200 (one of each set of
+conjugates, subgroups 1 to 17) has a solution of at most 23 moves. They are all in
+[bench/symmetric.tsv](../bench/symmetric.tsv), and each one was replayed on its pattern exactly as
+`symmetric --order N` lists it with an independent sticker model (a separate Python
+implementation of the geometry), which found every one solved.
+
+A position is ruled out by any solution of at most 23 moves, so each list was filtered with the
+cheapest tool first (large tier, 48 threads):
+
+1. the two-phase solver, `solve --batch -l 23` (one thread per position, stop at the first
+   solution of at most 23 moves) with 5 s each, then 60 s and 600 s for the positions left;
+2. for the rest, the optimal solver, `--start-depth 23 -l 23`: one iteration at depth 21 to
+   order the tasks, then depth 23, which finds any solution of at most 23 moves (capped at
+   20 minutes; a position with none would have needed at least 24, then an uncapped run and
+   independent checks).
+
+Orders 6 and 8 (26,800 positions): 9,772 were left after 5 s, 2,425 after 60 s and 207 after
+600 s. The optimal solver found a solution of at most 23 moves for all 207, in at most 14
+minutes each (11 hours on 48 threads in all). The two-phase solver is a weak filter for these
+positions: in 600 s on one thread it missed solutions that the optimal solver finds in
+seconds. Orders 12 to 48 (400 positions) were filtered first with `-l 22 -t 3` on 48 threads
+per position; 37 were left, the optimal solver found a solution of at most 23 moves for 35 of
+them, and the other 2 are known 23s ([bench/hard.tsv](../bench/hard.tsv)).
+
+Shortest solution found, by subgroup ("23": the first solution of at most 23 moves found; most
+are not proven optimal):
+
+| # | group | positions | at most 22 | 23 |
+|---:|---|---:|---:|---:|
+| 1 | Oh | 8 | 6 | 2 |
+| 2 | Th | 12 | 8 | 4 |
+| 3 | O | 4 | 1 | 3 |
+| 4 | Td | 4 | 4 | 0 |
+| 5 | D4h | 248 | 139 | 109 |
+| 6 | D3d | 40 | 17 | 23 |
+| 7 | T | 84 | 55 | 29 |
+| 8 | C4h | 1,920 | 489 | 1,431 |
+| 9 | D2d | 1,920 | 518 | 1,402 |
+| 10 | C4v | 896 | 280 | 616 |
+| 11 | D2h | 896 | 256 | 640 |
+| 12 | D2h | 5,332 | 1,596 | 3,736 |
+| 13 | D4 | 1,916 | 517 | 1,399 |
+| 14 | D2d | 1,916 | 677 | 1,239 |
+| 15 | S6 | 7,740 | 2,106 | 5,634 |
+| 16 | D3 | 3,860 | 1,050 | 2,810 |
+| 17 | C3v | 404 | 124 | 280 |
+
+Positions of subgroups 18 to 33 (4 symmetries or fewer) are not covered: subgroups 18 to 26
+alone have about 3.2 million positions up to symmetry, far more than a day of this machine at
+the rates above.

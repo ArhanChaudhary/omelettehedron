@@ -830,28 +830,37 @@ fn start_depth() {
                 assert!(l >= truth && l <= start, "{c:?}: {l}");
                 check(&c, scr, &o);
                 assert!(o.internal.iter().all(|s| s.len() == l));
-                if start > lo && l > lo {
-                    assert_eq!(o.stop, Stop::Found);
-                    assert_eq!(o.lower_bound, lo);
+                // the bound proven: by the iteration two below the start depth, if it had no
+                // solution (or the root bound); the solution is proven optimal if as short
+                let warm = start.saturating_sub(2).max(lo);
+                let lb = if start <= lo {
+                    truth
+                } else if warm < truth {
+                    warm + 1
                 } else {
-                    assert_eq!(o.stop, Stop::Solved);
-                    assert_eq!(o.lower_bound, l);
-                }
-                assert_eq!(o.iterations.len(), 1);
+                    lo
+                };
+                assert_eq!(o.lower_bound, lb);
+                assert_eq!(o.stop, if l == lb { Stop::Solved } else { Stop::Found });
+                // (one iteration two below the start depth orders the tasks of the next)
+                assert!(o.iterations.len() <= 2);
+                assert!(o.iterations.last().unwrap().depth <= start);
                 shorter += usize::from(l < start);
             }
             // between the root bound and the optimum, with -l: no solution, and the optimum is
-            // proven longer, from one iteration
+            // proven longer, from the iteration at the start depth (after one two below it)
             for d in (lo + 1..truth).rev().take(2) {
                 let o = solve_on(threads, c, fr, &lim(d, Some(d)));
                 assert_eq!(o.stop, Stop::MaxLength);
                 assert!(o.solutions.is_empty());
                 assert_eq!(o.lower_bound, d + 1);
-                assert_eq!(o.iterations.len(), 1);
+                let depths: Vec<usize> = o.iterations.iter().map(|i| i.depth).collect();
+                assert_eq!(depths, [d.saturating_sub(2).max(lo), d]);
                 proven += 1;
             }
         }
     }
-    // solutions shorter than the start depth were found, and bounds proven from one iteration
+    // solutions shorter than the start depth were found, and bounds proven without the
+    // iterations below
     assert!(shorter > 0 && proven >= 6, "{shorter} {proven}");
 }

@@ -37,12 +37,13 @@ pub struct Limits {
     pub time: Option<Duration>,
     /// give up when the optimum is longer than this (no iteration deeper than this runs)
     pub max_length: Option<usize>,
-    /// Start the iterations at this depth instead of the root's lower bound: the first
-    /// iteration finds any solution of at most this many moves (also shorter ones), so if it
-    /// ends without one, no solution has fewer than `start_depth + 1` moves. A solution it
-    /// finds is not proven optimal ([`Stop::Found`]) unless it is as short as the root bound.
-    /// For deciding whether a position needs more than this many moves, without the cost of
-    /// the iterations below it
+    /// Skip the iterations between the root's lower bound and this depth: one iteration two
+    /// below it (to order the tasks of the next; at the root bound if that is higher), then
+    /// this depth. These iterations find any solution of at most their depth (also shorter
+    /// ones), so if the one at this depth ends without one, no solution has fewer than
+    /// `start_depth + 1` moves. A solution they find is not proven optimal ([`Stop::Found`])
+    /// unless it is as short as the bound proven before. For deciding whether a position needs
+    /// more than this many moves, without the cost of the iterations below it
     pub start_depth: Option<usize>,
 }
 
@@ -772,15 +773,27 @@ fn solve_n<B: Bounds, const N: usize>(
         _ => lo,
     };
     let skipped = first > lo;
+    // After skipped iterations, first an iteration two below the start depth (or at the root
+    // bound): about 1/150 of the work, it orders the tasks of the start depth's iteration as an
+    // iteration orders the next, so a solution there tends to come early.
+    let warm = if skipped {
+        first.saturating_sub(2).max(lo)
+    } else {
+        lo
+    };
     if verbose {
         let names: Vec<String> = (0..B::K)
             .map(|k| format!("{} {}", b.name(k), h0[k]))
             .collect();
         eprintln!(
-            "root bounds: {} (search from depth {first}{}); symmetries of the position: {} of \
+            "root bounds: {} (search from depth {warm}{}); symmetries of the position: {} of \
              48{}",
             names.join(", "),
-            if skipped { ", the start depth" } else { "" },
+            if skipped {
+                format!(", then the start depth {first}")
+            } else {
+                String::new()
+            },
             root_syms.len() + 1,
             if sh.symmetries.is_empty() {
                 ""
@@ -795,17 +808,19 @@ fn solve_n<B: Bounds, const N: usize>(
     let mut prev_nodes: Option<u64> = None;
     // time of the previous iteration (progress: no heartbeat after a short one)
     let mut prev_dt: Option<f64> = None;
-    let mut depth = first;
+    let mut depth = warm;
+    // the depth of the previous iteration (its node count predicts this one's)
+    let mut prev_depth = depth;
     out.lower_bound = lo;
     if lo > 0 {
         watch.bound(Bound::Lower(lo));
     }
     watch.line(format_args!(
-        "search from depth {first}{}{}",
+        "search from depth {warm}{}{}",
         if skipped {
             format!(
-                " (start depth; the root bound is {lo}: this iteration also finds shorter \
-                 solutions)"
+                ", then {first} (start depth {first}; the root bound is {lo}: these iterations \
+                 also find shorter solutions)"
             )
         } else {
             String::new()
@@ -827,8 +842,9 @@ fn solve_n<B: Bounds, const N: usize>(
         let it_lookups = sh.lookups.load(Ordering::Relaxed);
         let it_t0 = start.elapsed().as_secs_f64();
         // (an iteration after skipped ones is taken to be large: split into the most tasks)
-        let predicted =
-            prev_nodes.map_or(if skipped { u64::MAX } else { 0 }, |n| n.saturating_mul(13));
+        let predicted = prev_nodes.map_or(if skipped { u64::MAX } else { 0 }, |n| {
+            (prev_depth..depth).fold(n, |x, _| x.saturating_mul(13))
+        });
         let inline = threads == 1 || predicted < SERIAL_NODES;
         let want = if inline && threads > 1 {
             1
@@ -919,6 +935,7 @@ fn solve_n<B: Bounds, const N: usize>(
         });
         let it_nodes = sh.nodes.load(Ordering::Relaxed) - it_start;
         prev_nodes = Some(it_nodes);
+        prev_depth = depth;
         prev_dt = Some(start.elapsed().as_secs_f64() - it_t0);
         stats = tasks
             .iter()
@@ -958,7 +975,7 @@ fn solve_n<B: Bounds, const N: usize>(
             p.line(format_args!(
                 "depth {depth} {} in {dt:.3} s: {}; {:.3e} nodes ({}, {})",
                 if stopped { "stopped" } else { "done" },
-                if n_sols > 0 && skipped && depth == first {
+                if n_sols > 0 && depth > out.lower_bound {
                     format!("{n_sols} solution(s) of at most {depth} moves")
                 } else if n_sols > 0 {
                     format!("{n_sols} solution(s) of {depth} moves")
@@ -994,7 +1011,8 @@ fn solve_n<B: Bounds, const N: usize>(
                     watch.bound(Bound::Upper(&m));
                 }
             }
-            if skipped && depth == first && shortest > lo {
+            // (after skipped iterations, shorter than the depth but not proven optimal)
+            if shortest > out.lower_bound {
                 break Stop::Found;
             }
             out.lower_bound = shortest;
@@ -1005,10 +1023,11 @@ fn solve_n<B: Bounds, const N: usize>(
             // (the interrupted iteration proves nothing)
             break Stop::Time;
         }
-        // no solution of at most `depth` moves
-        depth += 1;
-        out.lower_bound = depth;
-        watch.bound(Bound::Lower(depth));
+        // no solution of at most `depth` moves (shorter ones are found too after skipped
+        // iterations); after the warm-up, on to the start depth
+        out.lower_bound = depth + 1;
+        watch.bound(Bound::Lower(depth + 1));
+        depth = if depth < first { first } else { depth + 1 };
     };
     out.internal = sh.sols.into_inner().unwrap_or_else(PoisonError::into_inner);
     out.solutions = out
