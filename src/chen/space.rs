@@ -67,7 +67,7 @@ impl Hasher for QuickHash {
 }
 
 /// A hash map with [`QuickHash`].
-type QuickMap<K, V> = HashMap<K, V, BuildHasherDefault<QuickHash>>;
+pub(crate) type QuickMap<K, V> = HashMap<K, V, BuildHasherDefault<QuickHash>>;
 
 /// Configurations reachable from solved with the allowed moves in the fixed-corner frame
 /// (checked when built).
@@ -104,6 +104,8 @@ pub struct Space {
     pub rot_xb: Vec<[u8; 16]>,
     /// the pattern-view configurations and their symmetry classes
     pub pat: Patterns,
+    /// the pattern-view corner states
+    pub corners: super::corners::PCorners,
 }
 
 /// The configurations in the pattern view (the 37,260 reachable from solved there, which are
@@ -129,6 +131,8 @@ pub struct Patterns {
     pub stab: Vec<Vec<u8>>,
     /// per symmetry: the `(relabel, gather)` shuffles of a B-centre colouring
     pub sym_xb: Vec<([u8; 16], [u8; 16])>,
+    /// the pattern-view move (`2 * face + dir`) that each internal move makes in frame 0
+    pub pmove: [u8; N_MOVES],
 }
 
 impl Patterns {
@@ -295,6 +299,13 @@ fn patterns(
         rep,
         stab,
         sym_xb: syms.iter().map(SymMaps::xb_shuffles).collect(),
+        // (the pattern-view moves move the B-centres in 16 different ways)
+        pmove: {
+            let pxm = pattern_xb_moves();
+            std::array::from_fn(|m| {
+                (0..N_PMOVES).find(|&pm| pxm[pm] == xb_src[m]).unwrap_or(0) as u8
+            })
+        },
     }
 }
 
@@ -412,7 +423,7 @@ fn allowed(col: &[u8; N_HEX_POS], cut: &[(u32, u32)]) -> bool {
 }
 
 /// The sticker permutations of the pattern-view moves (`2 * face + dir`).
-fn pattern_moves() -> Vec<Vec<usize>> {
+pub(crate) fn pattern_moves() -> Vec<Vec<usize>> {
     let sm = &defs().sm;
     (0..8)
         .flat_map(|f| [true, false].map(|cw| sm.face_turn(f, cw)))
@@ -541,6 +552,7 @@ impl Space {
         }
         let rot_xb: Vec<[u8; 16]> = rots.iter().map(rotate_xb).collect();
         let pat = patterns(&cfgs, &ids, &next, &rot, &rots, &rot_xb);
+        let corners = super::corners::PCorners::new(&rots, &pat.pmove);
         // the configurations in H': in the two-phase solver's H_A table with corners and
         // B-centres solved
         let p2 = crate::tables::Phase2::new();
@@ -561,6 +573,7 @@ impl Space {
             pshape_next,
             rot_xb,
             pat,
+            corners,
         }
     }
 

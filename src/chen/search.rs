@@ -324,7 +324,7 @@ impl<I: AeIndex> Shared<'_, I> {
             }
             let Some(q) = p.apply(s, m) else { continue };
             let i = [
-                ChenTables::ac_index(&q),
+                ChenTables::ac_index_with(s, &q),
                 ct.sb
                     .as_ref()
                     .map_or(0, |_| ChenTables::sb_index_with(s, f, &q)),

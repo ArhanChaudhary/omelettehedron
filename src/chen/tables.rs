@@ -18,6 +18,7 @@
 //! undone by an allowed move, so one move changes each distance by at most one, and the search
 //! decodes a child's distance from its parent's.
 
+use super::corners::{PCorners, N_PCORNER, N_SYM};
 use super::space::*;
 use crate::coord::{label_perm_table, move_tables, N_CORNER, N_MSET};
 use crate::cube::*;
@@ -29,12 +30,13 @@ use crate::tables::load_or_build;
 use std::path::Path;
 
 /// File names of the tables (with `.prun`).
-pub const AC_FILE: &str = "chen-ac.prun";
+pub const AC_FILE: &str = "chen-acs.prun";
 pub const SB_FILE: &str = "chen-sb.prun";
 pub const PX_FILE: &str = "chen-px.prun";
 
 /// Entries of the tables.
-pub const N_AC: usize = N_CFG * N_CORNER;
+/// (1,611 symmetry classes of pattern-view configurations x 11,520 pattern-view corner states)
+pub const N_AC: usize = 1611 * N_PCORNER;
 pub const N_SB: usize = N_PSHAPE * N_MSET;
 /// (1,611 symmetry classes of pattern-view configurations, checked by the tests)
 pub const N_PX: usize = 1611 * N_MSET;
@@ -75,28 +77,52 @@ impl P2 {
     }
 }
 
-/// Moves between AC entries (index `cfg * 960 + corner`). A move that is not allowed leads back
-/// to the entry itself, which changes no distance.
+/// Moves between AC entries (index `class * N_PCORNER + corner state`, the corner state
+/// conjugated like the configuration to its class representative), in the pattern view. (The
+/// same distances as the configuration x corner id table of the fixed frame, 447,120 x 960
+/// entries, 107.3 MB, in 4.6 MB: the tests compare the two.)
 struct AcGraph<'a> {
-    s: &'a Space,
-    corner: &'a [[u16; N_MOVES]],
+    pat: &'a Patterns,
+    pc: &'a PCorners,
+}
+
+impl AcGraph<'_> {
+    #[inline]
+    fn index(&self, q: usize, pc: usize) -> usize {
+        let (cls, k) = self.pat.class[q];
+        cls as usize * N_PCORNER + self.pc.sym[pc][k as usize % N_SYM] as usize
+    }
 }
 
 impl Graph for AcGraph<'_> {
     const MOVES: usize = N_MOVES;
-    type Node = (usize, usize);
+    type Node = (usize, usize, usize);
     type Cache = ();
-    fn node(&self, i: usize, (): &mut ()) -> (usize, usize) {
-        (i / N_CORNER, i % N_CORNER)
+    fn node(&self, i: usize, (): &mut ()) -> (usize, usize, usize) {
+        (i, self.pat.rep[i / N_PCORNER] as usize, i % N_PCORNER)
     }
     #[inline]
-    fn step(&self, &(cfg, c): &(usize, usize), m: usize) -> usize {
-        let n = self.s.next[cfg][m];
-        if n == NONE {
-            cfg * N_CORNER + c
-        } else {
-            n as usize * N_CORNER + self.corner[c][m] as usize
+    fn step(&self, &(i, p, pc): &(usize, usize, usize), m: usize) -> usize {
+        let q = self.pat.next[p][m];
+        if q == u16::MAX {
+            return i;
         }
+        self.index(q as usize, self.pc.next[pc][m] as usize)
+    }
+    fn equivalents(&self, j: usize, out: &mut Vec<usize>) {
+        let cls = j / N_PCORNER;
+        let pc = j % N_PCORNER;
+        for &k in &self.pat.stab[cls] {
+            out.push(cls * N_PCORNER + self.pc.sym[pc][k as usize % N_SYM] as usize);
+        }
+    }
+}
+
+/// The AC graph of the space.
+fn ac_graph() -> AcGraph<'static> {
+    AcGraph {
+        pat: &space().pat,
+        pc: &space().corners,
     }
 }
 
@@ -244,7 +270,8 @@ pub struct ChenTables {
     pub cc: Table2,
     /// the index of `cc`
     pub cc_ix: CcIndex,
-    /// index of the solved state in each table (PX and CC: and its equivalents)
+    /// index of the solved state in each table (AC, PX and CC: and its equivalents)
+    ac_targets: Vec<usize>,
     sb_target: usize,
     px_targets: Vec<usize>,
     cc_targets: Vec<usize>,
@@ -288,13 +315,13 @@ fn solved_p2() -> P2 {
     P2 { cfg: 0, c: 0, xb }
 }
 
-/// The AC table, by breadth-first search from solved.
+/// The AC table, by breadth-first search from solved in the pattern view.
 fn build_ac(verbose: bool) -> Table2 {
-    let g = AcGraph {
-        s: space(),
-        corner: &move_tables().c,
-    };
-    bfs(&g, N_AC, &[0], "chen-ac", verbose)
+    let g = ac_graph();
+    let t = g.index(0, usize::from(space().corners.solved));
+    let mut targets = vec![t];
+    g.equivalents(t, &mut targets);
+    bfs(&g, N_AC, &targets, "chen-ac", verbose)
 }
 
 /// The SB table, by breadth-first search from solved in the pattern view.
@@ -376,6 +403,10 @@ impl ChenTables {
         let t = Self::px_index_with(s, f, &solved);
         let mut px_targets = vec![t];
         g.equivalents(t, &mut px_targets);
+        let ga = ac_graph();
+        let t = Self::ac_index_with(s, &solved);
+        let mut ac_targets = vec![t];
+        ga.equivalents(t, &mut ac_targets);
         let cc_targets = cc_ix.targets();
         ChenTables {
             ac,
@@ -383,6 +414,7 @@ impl ChenTables {
             px,
             cc,
             cc_ix,
+            ac_targets,
             sb_target: Self::sb_index_with(s, f, &solved),
             px_targets,
             cc_targets,
@@ -405,10 +437,27 @@ impl ChenTables {
         })
     }
 
-    /// AC index of a position.
+    /// AC index of a position: the class of its pattern-view configuration and its corners
+    /// seen through its frame, conjugated to the class representative.
     #[inline]
-    pub fn ac_index(p: &P2) -> usize {
-        p.cfg as usize * N_CORNER + p.c as usize
+    pub fn ac_index_with(s: &Space, p: &P2) -> usize {
+        let pat = &s.pat;
+        let cfg = p.cfg as usize;
+        let q = pat.of_cfg.get(cfg).copied().unwrap_or(0) as usize;
+        let (cls, k) = pat.class.get(q).copied().unwrap_or((0, 0));
+        let r = s.rot.get(cfg).copied().unwrap_or(0) as usize;
+        let pc = s
+            .corners
+            .of_fixed
+            .get(r * N_CORNER + p.c as usize)
+            .copied()
+            .unwrap_or(0) as usize;
+        let pk = s
+            .corners
+            .sym
+            .get(pc)
+            .map_or(0, |row| row[k as usize % N_SYM]);
+        cls as usize * N_PCORNER + pk as usize
     }
 
     /// SB index of a position: its pattern-view shape and B-centres seen through its frame.
@@ -449,7 +498,13 @@ impl ChenTables {
     /// not reach its target).
     pub fn exact(&self, p: &P2) -> Option<[u8; N_TABLES]> {
         let (s, f) = (space(), fast());
-        let ac = walk(&self.ac, p, Self::ac_index, |i| i == 0, true)?;
+        let ac = walk(
+            &self.ac,
+            p,
+            |q| Self::ac_index_with(s, q),
+            |i| self.ac_targets.contains(&i),
+            true,
+        )?;
         let sb = match &self.sb {
             Some(t) => walk(
                 t,
@@ -522,4 +577,80 @@ fn walk(
         q = step;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::{Rng, SeedableRng};
+
+    /// The fixed-frame configuration x corner id graph (447,120 x 960 entries).
+    struct FixedAc<'a> {
+        s: &'a Space,
+        corner: &'a [[u16; N_MOVES]],
+    }
+
+    impl Graph for FixedAc<'_> {
+        const MOVES: usize = N_MOVES;
+        type Node = (usize, usize);
+        type Cache = ();
+        fn node(&self, i: usize, (): &mut ()) -> (usize, usize) {
+            (i / N_CORNER, i % N_CORNER)
+        }
+        fn step(&self, &(cfg, c): &(usize, usize), m: usize) -> usize {
+            let n = self.s.next[cfg][m];
+            if n == NONE {
+                cfg * N_CORNER + c
+            } else {
+                n as usize * N_CORNER + self.corner[c][m] as usize
+            }
+        }
+    }
+
+    /// The AC table under symmetry gives the distances of the fixed-frame configuration x
+    /// corner table (both walked down, from positions spread over the phase-2 space).
+    #[test]
+    fn symmetric_ac_matches_the_fixed_frame_table() {
+        let s = space();
+        let fixed = bfs(
+            &FixedAc {
+                s,
+                corner: &move_tables().c,
+            },
+            N_CFG * N_CORNER,
+            &[0],
+            "fixed ac",
+            false,
+        );
+        let ac = build_ac(false);
+        let ga = ac_graph();
+        let t = ChenTables::ac_index_with(s, &solved_p2());
+        let mut targets = vec![t];
+        ga.equivalents(t, &mut targets);
+        assert_eq!(fixed.hist.iter().sum::<u64>(), (N_CFG * N_CORNER) as u64);
+        assert_eq!(fixed.hist.len(), ac.hist.len());
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(7);
+        for _ in 0..500 {
+            let mut p = solved_p2();
+            for _ in 0..rng.gen_range(0..60) {
+                p = p.apply(s, rng.gen_range(0..N_MOVES)).unwrap_or(p);
+            }
+            let d_fixed = walk(
+                &fixed,
+                &p,
+                |q| q.cfg as usize * N_CORNER + q.c as usize,
+                |i| i == 0,
+                true,
+            );
+            let d_sym = walk(
+                &ac,
+                &p,
+                |q| ChenTables::ac_index_with(s, q),
+                |i| targets.contains(&i),
+                true,
+            );
+            assert!(d_fixed.is_some());
+            assert_eq!(d_fixed, d_sym, "{p:?}");
+        }
+    }
 }

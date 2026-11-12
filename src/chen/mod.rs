@@ -9,9 +9,11 @@
 //! B-centre table, and two tables of its own.
 //!
 //! * [`space`]: the block configurations and the move rule;
+//! * [`corners`]: corner states in the pattern view (for the corner table under symmetry);
 //! * [`tables`]: the phase-2 pruning tables;
 //! * [`search`]: the two-phase loop.
 
+pub mod corners;
 pub mod search;
 pub mod space;
 pub mod tables;
