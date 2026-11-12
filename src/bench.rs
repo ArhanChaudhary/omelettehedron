@@ -79,13 +79,37 @@ pub fn run<I: AeIndex>(
     limits: &Limits,
     verbose: bool,
 ) -> Summary {
+    run_with(
+        tier,
+        &tables.moves.name(),
+        n,
+        seed,
+        scramble_len,
+        limits,
+        verbose,
+        |c| solve(tables, c, Frame::identity(), limits, Report::Quiet),
+    )
+}
+
+/// [`run`] with any solver: `solve` solves one position quietly under `limits`. `tier` and
+/// `moves` name the tables and the move set in the summary.
+pub fn run_with(
+    tier: &str,
+    moves: &str,
+    n: usize,
+    seed: u64,
+    scramble_len: Option<usize>,
+    limits: &Limits,
+    verbose: bool,
+    solve: impl Fn(Cube) -> Outcome,
+) -> Summary {
     let positions = match scramble_len {
         Some(len) => scrambled_positions(n, len, seed),
         None => random_positions(n, seed),
     };
     let mut results = vec![];
     for (i, c) in positions.iter().enumerate() {
-        let o = solve(tables, *c, Frame::identity(), limits, Report::Quiet);
+        let o = solve(*c);
         let events: Vec<(f64, usize)> = o.events.iter().map(|e| (e.time, e.length)).collect();
         let r = ScrambleResult {
             index: i,
@@ -146,7 +170,7 @@ pub fn run<I: AeIndex>(
     let total_time: f64 = results.iter().map(|r| r.elapsed).sum();
     Summary {
         tier: tier.to_string(),
-        moves: tables.moves.name(),
+        moves: moves.to_string(),
         threads: rayon::current_num_threads(),
         scrambles: n,
         time_limit: tl,

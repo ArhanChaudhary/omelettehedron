@@ -28,6 +28,7 @@
 
 use clap::{Parser, Subcommand};
 use omelettehedron::bench;
+use omelettehedron::chen::tables::ChenTables;
 use omelettehedron::combined::TwoPhaseMode;
 use omelettehedron::cube::{Cube, MoveSet};
 use omelettehedron::light::AeLight;
@@ -86,6 +87,22 @@ struct TableArgs {
     /// front-face turns, with the front corner held still
     #[arg(long, value_enum, value_delimiter = ',')]
     moves: Vec<Family>,
+    /// The solver: two-phase (phase 2 in the group of U, F, BR, BL; proves optimality without
+    /// a stopping rule), or chen, the block split (phase 1 solves the A-centres and edges, phase
+    /// 2 the rest with moves that keep their colour groups; reads the tier's A-centre/edge
+    /// table and 261 MB of phase-2 tables, generated on first use; face turns only; never
+    /// proves optimality; see docs/CHEN.md)
+    #[arg(long, value_enum, default_value = "two-phase")]
+    method: Method,
+}
+
+/// The solver of `solve`, `bench` and `gen` (`--method`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum Method {
+    /// the two-phase solver
+    TwoPhase,
+    /// the block split (`omelettehedron::chen`)
+    Chen,
 }
 
 /// A move family for `--moves`.
@@ -477,6 +494,52 @@ fn table_error(dir: &Path, e: &std::io::Error) -> Error {
     format!("pruning tables in {}: {e}", dir.display()).into()
 }
 
+/// Reject options that `--method chen` does not support (before any table is loaded).
+fn check_method(tab: &TableArgs, two_phase_only: &[(bool, &str)]) -> anyhow::Result<()> {
+    if tab.method != Method::Chen {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        !tab.move_set().slice,
+        "--method chen supports face turns only (not --moves slice)"
+    );
+    if let Some((_, name)) = two_phase_only.iter().find(|(on, _)| *on) {
+        anyhow::bail!("{name} is not supported with --method chen");
+    }
+    Ok(())
+}
+
+/// The block split's phase-2 tables with `--method chen` (generated if missing), else `None`.
+/// `FTO_CHEN_TABLES` chooses the optional ones (`sb`, `px`, comma-separated; default `px`).
+fn load_chen(tab: &TableArgs) -> anyhow::Result<Option<ChenTables>> {
+    use anyhow::Context as _;
+    if tab.method != Method::Chen {
+        return Ok(None);
+    }
+    let dir = table_dir(tab.tables.as_deref());
+    let want = std::env::var("FTO_CHEN_TABLES").unwrap_or_else(|_| "px".into());
+    let set = omelettehedron::chen::tables::TableSet {
+        sb: want.split(',').any(|w| w == "sb"),
+        px: want.split(',').any(|w| w == "px"),
+    };
+    let t0 = std::time::Instant::now();
+    let ct = ChenTables::load(&dir, set, tab.verbose).with_context(|| {
+        format!(
+            "cannot load the block split's tables from {} (generate them with `omelettehedron \
+             gen --method chen --tier T`)",
+            dir.display()
+        )
+    })?;
+    if tab.verbose {
+        eprintln!(
+            "phase-2 tables of the block split: {:.1} MB in {:.2} s",
+            ct.bytes() as f64 / 1e6,
+            t0.elapsed().as_secs_f64()
+        );
+    }
+    Ok(Some(ct))
+}
+
 fn read_scrambles(args: &[String]) -> Vec<String> {
     if !args.is_empty() {
         return vec![args.join(" ")];
@@ -638,8 +701,33 @@ fn solve_batch<I: AeIndex>(tables: &Tables<I>, jobs: &[BatchJob], limits: &Limit
     });
 }
 
+/// The solver of `--method`: the two-phase solver with tables `t`, or the block split with
+/// `t` and its phase-2 tables `chen`.
+struct Solver<'a, I: AeIndex> {
+    t: &'a Tables<I>,
+    chen: Option<&'a ChenTables>,
+}
+
+impl<I: AeIndex> Solver<'_, I> {
+    fn solve(
+        &self,
+        cube: Cube,
+        frame: Frame,
+        limits: &Limits,
+        report: Report,
+        watch: &Watch,
+    ) -> omelettehedron::search::Outcome {
+        match self.chen {
+            Some(ct) => {
+                omelettehedron::chen::search::solve(self.t, ct, cube, frame, limits, report, watch)
+            }
+            None => solve_watched(self.t, cube, frame, limits, report, watch),
+        }
+    }
+}
+
 fn run_solve<I: AeIndex>(
-    t: &Tables<I>,
+    solver: &Solver<I>,
     scrambles: &[(Cube, Frame, String)],
     limits: &Limits,
     print: Report,
@@ -656,7 +744,7 @@ fn run_solve<I: AeIndex>(
             progress: prog.as_ref(),
             ..Watch::default()
         };
-        let o = solve_watched(t, *cube, *frame, limits, print, &watch);
+        let o = solver.solve(*cube, *frame, limits, print, &watch);
         if let (Some(pi), Some(sol)) = (input, &o.solution) {
             print_pattern_scramble(pi, sol);
         }
@@ -1005,6 +1093,14 @@ fn run(cli: Cli) -> Result<(), Error> {
             tab,
             prog,
         } => {
+            check_method(
+                &tab,
+                &[
+                    (batch, "--batch"),
+                    (improve, "--improve"),
+                    (lower_bound.is_some(), "--lower-bound"),
+                ],
+            )?;
             let progress = prog.every()?;
             let mut limits =
                 bench::limits_with_time(stop.time, stop.max_length, stop.max_solutions)
@@ -1072,7 +1168,10 @@ fn run(cli: Cli) -> Result<(), Error> {
             }
             p.install(|| {
                 dispatch!(tab, |t, _name| run_solve(
-                    &t,
+                    &Solver {
+                        t: &t,
+                        chen: load_chen(&tab)?.as_ref(),
+                    },
                     &positions,
                     &limits,
                     print,
@@ -1091,6 +1190,7 @@ fn run(cli: Cli) -> Result<(), Error> {
             Ok(())
         }
         Cmd::Gen { tab } => {
+            check_method(&tab, &[])?;
             if tab.tier.is_none() {
                 return Err(
                     "gen needs --tier: small, medium, large or huge (the tables to \
@@ -1115,6 +1215,20 @@ fn run(cli: Cli) -> Result<(), Error> {
                     if let Some(cbe) = &t.cbe {
                         eprintln!("CBE depth histogram {:?}", cbe.hist);
                     }
+                    if let Some(ct) = load_chen(&tab)? {
+                        eprintln!(
+                            "block split, phase 2: {:.1} MB of tables",
+                            ct.bytes() as f64 / 1e6
+                        );
+                        eprintln!("AC depth histogram {:?}", ct.ac.hist);
+                        if let Some(t) = &ct.sb {
+                            eprintln!("SB depth histogram {:?}", t.hist);
+                        }
+                        if let Some(t) = &ct.px {
+                            eprintln!("PX depth histogram {:?}", t.hist);
+                        }
+                        eprintln!("CC depth histogram {:?}", ct.cc.hist);
+                    }
                     // (read it now: `gen` checks every table of the tier)
                     if let (Some(lazy), Some(cbe)) = (&t.cbs, &t.cbe) {
                         let Some(cbs) = lazy.get(&cbe.ix) else {
@@ -1138,20 +1252,43 @@ fn run(cli: Cli) -> Result<(), Error> {
             json,
             tab,
         } => {
+            check_method(&tab, &[])?;
             let limits = bench::limits_with_time(stop.time, stop.max_length, stop.max_solutions)
                 .map_err(|e| format!("--time: {e}"))?;
             let p = pool(tab.threads)?;
             p.install(|| {
                 dispatch!(tab, |t, name| {
-                    let s = bench::run(
-                        &t,
-                        name,
-                        scrambles,
-                        seed,
-                        scramble_len,
-                        &limits,
-                        tab.verbose,
-                    );
+                    let s = match load_chen(&tab)? {
+                        Some(ct) => bench::run_with(
+                            &format!("{name} (chen)"),
+                            &t.moves.name(),
+                            scrambles,
+                            seed,
+                            scramble_len,
+                            &limits,
+                            tab.verbose,
+                            |c| {
+                                omelettehedron::chen::search::solve(
+                                    &t,
+                                    &ct,
+                                    c,
+                                    Frame::identity(),
+                                    &limits,
+                                    Report::Quiet,
+                                    &Watch::default(),
+                                )
+                            },
+                        ),
+                        None => bench::run(
+                            &t,
+                            name,
+                            scrambles,
+                            seed,
+                            scramble_len,
+                            &limits,
+                            tab.verbose,
+                        ),
+                    };
                     bench::print_summary(&s);
                     if let Some(path) = &json {
                         std::fs::write(path, serde_json::to_string_pretty(&s)?)
@@ -1545,6 +1682,7 @@ fn solve_pattern_list(
     }
     p.install(|| {
         dispatch!(tab, |t, _name| {
+            let chen = load_chen(tab)?;
             for job in &jobs {
                 match job {
                     Ok(j) => {
@@ -1553,7 +1691,10 @@ fn solve_pattern_list(
                             println!("# {}", j.label);
                         }
                         run_solve(
-                            &t,
+                            &Solver {
+                                t: &t,
+                                chen: chen.as_ref(),
+                            },
                             &[(j.cube, j.frame, j.label.clone())],
                             limits,
                             print,
@@ -1706,6 +1847,7 @@ fn run_combined(a: &CombinedArgs) -> Result<(), Error> {
         verbose: a.verbose,
         force: a.force,
         moves: a.moves.clone(),
+        method: Method::TwoPhase,
     };
     let mut otab = OptTableArgs {
         tier: a.opt_tier,

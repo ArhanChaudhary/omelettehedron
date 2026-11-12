@@ -347,14 +347,14 @@ pub struct OptTables {
 
 /// File names of the tables (all start with `opt-`, apart from the two-phase solver's), before
 /// the move set's suffix and `.prun`.
-const CC_FILE: &str = "opt-cc-sym24";
+pub const CC_FILE: &str = "opt-cc-sym24";
 const EDGES_FILE: &str = "opt-edges";
 const CE_FILE: &str = "opt-ce-sym48";
 const CBE_FILE: &str = "opt-cbe-sym6";
 
 /// Entries of the tables (as the file headers give them), so that table files can be judged
 /// without building the indices (`tier_entries_match_the_indices` checks them).
-const CC_ENTRIES: u64 = 18_849_600;
+pub const CC_ENTRIES: u64 = 18_849_600;
 const CE_ENTRIES: u64 = 9_580_032_000;
 const CBE_ENTRIES: u64 = 83_913_984_000;
 

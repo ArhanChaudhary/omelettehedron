@@ -48,6 +48,7 @@ pub mod autotier;
 pub mod bench;
 pub mod cbe;
 pub mod cbsym;
+pub mod chen;
 pub mod combined;
 pub mod coord;
 pub mod cube;

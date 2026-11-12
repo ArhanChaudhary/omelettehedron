@@ -17,6 +17,10 @@ rand_xoshiro = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
+# The block split's table errors (`chen::tables::ChenTableError`).
+thiserror = "2"
+# Errors with context in the command-line code of the block split (`--method chen`).
+anyhow = "1"
 
 [profile.release]
 opt-level = 3

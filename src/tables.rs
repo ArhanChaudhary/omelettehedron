@@ -1045,7 +1045,7 @@ impl Tier {
     }
 }
 
-fn load_or_build(
+pub(crate) fn load_or_build(
     path: &Path,
     n: usize,
     verbose: bool,
