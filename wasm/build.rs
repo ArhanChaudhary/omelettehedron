@@ -28,7 +28,11 @@ const MEDIUM_MEMORY: u64 = 2 << 30;
 
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(wasm_threads)");
+    println!("cargo::rustc-check-cfg=cfg(wasm_own_initialize)");
     println!("cargo::rerun-if-changed=build.rs");
+    if rustc_minor().is_some_and(|minor| minor < 100) {
+        println!("cargo::rustc-cfg=wasm_own_initialize");
+    }
     if std::env::var("TARGET").is_ok_and(|target| target.ends_with("-threads")) {
         let memory = if std::env::var_os("CARGO_FEATURE_MEDIUM").is_some() {
             MEDIUM_MEMORY
@@ -39,4 +43,24 @@ fn main() {
         println!("cargo::rustc-cdylib-link-arg=--initial-memory={memory}");
         println!("cargo::rustc-cdylib-link-arg=--max-memory={memory}");
     }
+}
+
+/// The minor version of the compiler (`rustc 1.100.0 (...)` -> 100), if it can be read.
+///
+/// Up to 1.99 a Rust cdylib for WASI does not link wasi-libc's `crt1-reactor.o`, so the module
+/// defines the reactor initializer `_initialize` itself (`cfg(wasm_own_initialize)`); from 1.100
+/// on it does, and a second `_initialize` is a duplicate symbol at link time.
+fn rustc_minor() -> Option<u32> {
+    let rustc = std::env::var_os("RUSTC")?;
+    let out = std::process::Command::new(rustc)
+        .arg("--version")
+        .output()
+        .ok()?;
+    let text = String::from_utf8(out.stdout).ok()?;
+    text.split_whitespace()
+        .nth(1)?
+        .split('.')
+        .nth(1)?
+        .parse()
+        .ok()
 }
