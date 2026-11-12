@@ -444,8 +444,10 @@ moves or prints "no solution of at most 23 moves".
 `--method chen` (on `solve`, `bench` and `gen`) runs a second two-phase solver with another
 split, proposed by Chen Shuang: phase 1 only solves the A-centres and edges (at most 14 moves),
 phase 2 the rest with the moves that keep their colour groups, ending in the `H_A` table. It
-needs 158 MB of phase-2 tables of its own on top of the tier, and cannot prove optimality. See
-[docs/CHEN.md](docs/CHEN.md) for the design and its measurements against the two-phase solver.
+needs 158 MB of phase-2 tables of its own on top of the tier, and cannot prove optimality. It
+finds a first solution sooner on the small and tiny tiers, but 3 to 5 moves longer, and its
+solutions are longer than the two-phase solver's from about 0.1 s (48 threads) or 1 s (one
+thread) on; see [docs/CHEN.md](docs/CHEN.md).
 
 ```sh
 target/release/omelettehedron solve --method chen --tier small -t 10 -p improvements "..."

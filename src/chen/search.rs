@@ -525,7 +525,10 @@ impl<I: AeIndex> Shared<'_, I> {
 /// for long: first solutions of 4 random positions (small tier, one thread) after 1.1e7, more
 /// than 1.6e7 (none in 100 s), 1.7e7 and 1.2e8 phase-2 nodes (29, -, 29 and 31 moves); with
 /// 2^16, 2^18 and 2^20 nodes per leaf after 1.6e7, 1.4e7 and 1.7e7 in all (27 or 28 moves
-/// each).
+/// each). Timed, 10 random positions, small tier, 10 s each: one thread, first solution after
+/// 0.53 / 0.76 / 1.17 s, best at 1 s 24.1 / 24.8 / 25.3 moves, at 10 s 22.8 / 22.9 / 22.8; 48
+/// threads, first solution after 0.011 / 0.0064 / 0.0065 s, best at 0.1 s 23.6 / 23.7 / 23.9,
+/// then the same (22.6 at 1 s, 21.7 at 10 s).
 fn leaf_budget() -> u64 {
     match std::env::var("FTO_CHEN_BUDGET")
         .ok()
