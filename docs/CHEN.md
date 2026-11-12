@@ -47,7 +47,7 @@ times the 1.3 x 10^13 that a closed set of configurations would give.
 
 | Table | File | Entries | Size | Max | Mean |
 |---|---|---:|---:|---:|---:|
-| AC: configuration x corners, pattern view, 24 symmetries (1,611 x 11,520) | `chen-acs.prun` | 18,558,720 | 4.6 MB | 13 | ACSMEAN |
+| AC: configuration x corners, pattern view, 24 symmetries (1,611 x 11,520) | `chen-acs.prun` | 18,558,720 | 4.6 MB | 13 | 10.05 |
 | PX: pattern-view configuration x B-centres, 24 symmetries (1,611 classes) | `chen-px.prun` | 595,425,600 | 148.9 MB | 15 | 11.97 |
 | CC: corners x B-centres, every move allowed (the optimal solver's, 24 symmetries) | `opt-cc-sym24.prun` | 18,849,600 | 4.7 MB | 11 | 8.35 |
 | SB: pattern-view shape x B-centres (not used by default: PX is never lower) | `chen-sb.prun` | 170,016,000 | 42.5 MB | 13 | 9.72 |
@@ -74,3 +74,37 @@ they repeat, up to the few thousand searched before the stop is seen):
 Without a limit per phase-1 solution, the first ones hold the search for long: their phase 2
 is about 16 moves, while the tables say about 11 (on the first random position the leaves start
 at a bound of 10 or 11, and the iteration at bound 16 needs 1-2 x 10^5 nodes).
+
+## Against the two-phase solver
+
+Measured on 2026-11-12 with the exclusive bench lock on an otherwise idle 48-core machine
+(build 9dcb91c: the phase-2 prefetch and the overlapping depths, the fixed-frame corner table;
+the later changes keep the node counts and change the speed by the factors given in the code).
+
+### Random positions
+
+`bench -N 10 --seed 1 -t 10`: the mean best length over the positions solved by then (how
+many), and the mean first solution.
+
+| Tier | Threads | Solver | First solution | 0.01 s | 0.1 s | 1 s | 10 s |
+|---|---:|---|---|---|---|---|---|
+| tiny (Light) | 1 | two-phase | 22.9 after 3.30 s (9 of 10) | - | - | 23.0 (3) | 22.7 (9) |
+| tiny (Light) | 1 | block split | 27.5 after 0.75 s | - | - | 24.9 (7) | 24.2 (10) |
+| tiny (Light) | 48 | two-phase | 23.3 after 0.095 s | - | 22.4 (5) | 22.1 | 21.5 |
+| tiny (Light) | 48 | block split | 26.1 after 0.014 s | 25.6 (8) | 24.6 | 23.9 | 22.7 |
+| small (Standard) | 1 | two-phase | 23.0 after 1.92 s | - | - | 22.6 (5) | 22.4 |
+| small (Standard) | 1 | block split | 27.5 after 0.76 s | - | - | 24.8 (8) | 22.9 |
+| small (Standard) | 48 | two-phase | 23.0 after 0.037 s | 23.5 (2) | 22.4 | 21.6 | 21.5 |
+| small (Standard) | 48 | block split | 26.1 after 0.0064 s | 25.2 (9) | 23.7 | 22.6 | 21.7 |
+| medium (Faster) | 1 | two-phase | 23.3 after 0.35 s | - | 23.0 (2) | 22.7 (9) | 21.7 |
+| medium (Faster) | 1 | block split | 27.5 after 0.78 s | - | 25.0 (1) | 24.3 (7) | 22.6 |
+| medium (Faster) | 48 | two-phase | 23.5 after 0.0081 s | 22.9 (7) | 22.1 | 21.5 | 20.8 |
+| medium (Faster) | 48 | block split | 26.1 after 0.0070 s | 24.8 (8) | 22.9 | 22.0 | 21.5 |
+
+(A dash: no position solved by then.) The block split finds a first solution sooner on the
+small and tiny tiers (2.5x and 4.4x sooner on one thread, 5.8x and 6.8x on 48), but 3 to 5
+moves longer. From 0.1 s (48 threads) or 1 s (one thread) on, the two-phase solver's solutions
+are shorter at every tier, by 0.2 to 1.5 moves at 10 s (on one thread at 1 s it has solved
+fewer of the positions on the small and tiny tiers: 5 and 3 of 10, against 8 and 7). With the
+medium tier the two-phase solver's first solution comes about as soon (48 threads) or sooner
+(one thread).

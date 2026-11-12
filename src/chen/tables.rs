@@ -79,9 +79,11 @@ impl P2 {
 }
 
 /// Moves between AC entries (index `class * N_PCORNER + corner state`, the corner state
-/// conjugated like the configuration to its class representative), in the pattern view. (The
-/// same distances as the configuration x corner id table of the fixed frame, 447,120 x 960
-/// entries, 107.3 MB, in 4.6 MB: the tests compare the two.)
+/// conjugated like the configuration to its class representative), in the pattern view. It
+/// holds the distances of the configuration x corner id table of the fixed frame (447,120 x 960
+/// entries; the tests compare the two) in 4.6 MB instead of 107.3 MB, made in 1.4 s instead
+/// of 25.7 s on one thread (0.1 s and 0.7 s on 48); its index costs more: 1.03x the time to
+/// the same first solutions of 4 random positions on one thread (3.58 -> 3.70 s, two rounds).
 struct AcGraph<'a> {
     pat: &'a Patterns,
     pc: &'a PCorners,
