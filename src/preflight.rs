@@ -213,7 +213,7 @@ pub fn check_plan(tables: &[Planned]) -> io::Result<()> {
     Ok(())
 }
 
-/// Make sure the tables of several solvers fit in memory together (`omelettehedron combined`
+/// Make sure the tables of several solvers fit in memory together (`omelettehedron solve combined`
 /// loads both solvers' tables): every table, loaded or generated, plus the largest generation
 /// working set of the missing ones. The disk is checked when each solver generates its tables
 /// ([`check_plan`]).

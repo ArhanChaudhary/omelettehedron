@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 /// Most lookups per position of any tier (the search's scratch arrays have this many slots).
 pub const MAX_K: usize = 10;
 
-/// Table size of the optimal solver (`omelettehedron optimal ... --tier`).
+/// Table size of the optimal solver (`omelettehedron solve optimal --tier`).
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Serialize, serde::Deserialize,
 )]

@@ -530,7 +530,7 @@ mod table_tests {
     /// the largest distance, equivalent entries hold the same value, and every entry was
     /// reached.
     #[test]
-    #[ignore = "needs the large tier's table (21.0 GB; `omelettehedron optimal gen --tier large`)"]
+    #[ignore = "needs the large tier's table (21.0 GB; `omelettehedron gen optimal --tier large`)"]
     fn table_walks_down_from_sampled_entries() {
         let ix = CbeIndex::new();
         let path = crate::tables::table_dir(None).join("opt-cbe-sym6.prun");

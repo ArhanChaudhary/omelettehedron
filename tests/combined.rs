@@ -1,4 +1,4 @@
-//! The combined solve (both solvers at once, `omelettehedron combined`) and the progress
+//! The combined solve (both solvers at once, `omelettehedron solve combined`) and the progress
 //! option: a combined answer marked optimal has the length both solvers prove separately, and
 //! progress lines do not change the search. Small tiers of both solvers, built in memory once.
 
@@ -51,6 +51,7 @@ fn check_solution(scr: &[PhysMove], sol: &[PhysMove]) {
 fn config(mode: TwoPhaseMode, time: Option<Duration>) -> Config {
     Config {
         time,
+        max_length: None,
         mode,
         progress: None,
         print: false,

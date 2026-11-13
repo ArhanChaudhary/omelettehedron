@@ -1,4 +1,4 @@
-//! Both solvers on one position at once (`omelettehedron combined`).
+//! Both solvers on one position at once (`omelettehedron solve combined`).
 //!
 //! The two-phase solver and the optimal solver run at the same time on thread pools of their
 //! own and share one state: the upper bound is the shortest solution either has found, the
@@ -55,6 +55,9 @@ impl Source {
 pub struct Config {
     /// stop after this much time (both solvers)
     pub time: Option<Duration>,
+    /// stop at the first solution of at most this many moves (the optimal solver also gives up
+    /// after this depth)
+    pub max_length: Option<usize>,
     pub mode: TwoPhaseMode,
     /// progress lines of both solvers on stderr, with a heartbeat this often
     pub progress: Option<Duration>,
@@ -136,12 +139,10 @@ pub fn solve<I: AeIndex, B: Bounds>(
                     });
                     s.solution = Some(m.to_vec());
                     if cfg.print {
-                        println!(
-                            "{time:>9.3} s  upper {:>2}  {:<9}  {}",
-                            m.len(),
-                            source.name(),
-                            format_moves(m)
-                        );
+                        println!("{}", bound_line(time, source, bound));
+                    }
+                    if cfg.max_length.is_some_and(|l| m.len() <= l) {
+                        stop.store(true, Ordering::Relaxed);
                     }
                 }
             }
@@ -154,7 +155,7 @@ pub fn solve<I: AeIndex, B: Bounds>(
                     });
                     lower.fetch_max(l, Ordering::Relaxed);
                     if cfg.print {
-                        println!("{time:>9.3} s  lower {l:>2}  {}", source.name());
+                        println!("{}", bound_line(time, source, bound));
                     }
                 }
             }
@@ -209,6 +210,7 @@ pub fn solve<I: AeIndex, B: Bounds>(
     };
     let limits_opt = opt::Limits {
         time: cfg.time,
+        max_length: cfg.max_length,
         ..opt::Limits::default()
     };
     let (o_tp, o_opt) = std::thread::scope(|s| {
@@ -255,30 +257,55 @@ pub fn solve<I: AeIndex, B: Bounds>(
     })
 }
 
+/// One line of the log of bounds that a solve prints as it runs: the time (seconds since the
+/// start), the bound and the solver that found it, and for an upper bound its solution, e.g.
+/// `    1.076 s  upper 20  two-phase  D R' BR ...` or `    8.207 s  lower 20  optimal`.
+pub fn bound_line(time: f64, source: Source, bound: Bound) -> String {
+    match bound {
+        Bound::Upper(m) => format!(
+            "{time:>9.3} s  upper {:>2}  {:<9}  {}",
+            m.len(),
+            source.name(),
+            format_moves(m)
+        ),
+        Bound::Lower(l) => format!("{time:>9.3} s  lower {l:>2}  {}", source.name()),
+    }
+}
+
+/// The line after the solution: its length (`upper`) and how far it is proven (`lower`, the
+/// largest lower bound; `optimal`: they met), and the time the solve took.
+pub fn result_line(
+    upper: Option<Found>,
+    lower: Option<Found>,
+    optimal: bool,
+    elapsed: f64,
+) -> String {
+    let lower_len = lower.map_or(0, |l| l.length);
+    let from = |f: Found| format!("{} at {:.3} s", f.source.name(), f.time);
+    match (upper, optimal) {
+        (Some(u), true) if u.length == 0 => "0 moves: already solved".into(),
+        (Some(u), true) => format!(
+            "{} moves, optimal (solution: {}; lower bound: {}); {elapsed:.3} s",
+            u.length,
+            from(u),
+            lower.map_or_else(String::new, from),
+        ),
+        (Some(u), false) => format!(
+            "{} moves, not proven optimal: no solution has fewer than {lower_len} moves; \
+             {elapsed:.3} s",
+            u.length
+        ),
+        (None, _) => {
+            format!("no solution found: none has fewer than {lower_len} moves; {elapsed:.3} s")
+        }
+    }
+}
+
 /// Print the result of a combined solve: the solution, then its length and how far it is
-/// proven.
+/// proven ([`result_line`]).
 pub fn print_outcome(o: &Outcome) {
     if let Some(s) = &o.solution {
         println!("{}", format_moves(s));
     }
-    let lower = o.lower.map_or(0, |l| l.length);
-    let from = |f: Found| format!("{} at {:.3} s", f.source.name(), f.time);
-    match (o.upper, o.optimal) {
-        (Some(u), true) if u.length == 0 => println!("0 moves: already solved"),
-        (Some(u), true) => println!(
-            "{} moves, optimal (solution: {}; lower bound: {}); {:.3} s",
-            u.length,
-            from(u),
-            o.lower.map_or_else(String::new, from),
-            o.elapsed
-        ),
-        (Some(u), false) => println!(
-            "{} moves, not proven optimal: no solution has fewer than {lower} moves; {:.3} s",
-            u.length, o.elapsed
-        ),
-        (None, _) => println!(
-            "no solution found: none has fewer than {lower} moves; {:.3} s",
-            o.elapsed
-        ),
-    }
+    println!("{}", result_line(o.upper, o.lower, o.optimal, o.elapsed));
 }

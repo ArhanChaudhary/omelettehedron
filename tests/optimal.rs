@@ -382,7 +382,7 @@ fn edge_table_matches_independent_bfs() {
 /// optimal lengths as the brute force, consistent tables, and never a weaker root bound than the
 /// small tier's edge table.
 #[test]
-#[ignore = "needs the medium tier's tables (2.4 GB; `omelettehedron optimal gen --tier medium`)"]
+#[ignore = "needs the medium tier's tables (2.4 GB; `omelettehedron gen optimal --tier medium`)"]
 fn medium_tier_matches_brute_force() {
     let dir = omelettehedron::tables::table_dir(None);
     let t = OptTables::load(&dir, OptTier::Medium, MoveSet::FACE, false).unwrap();
@@ -440,7 +440,7 @@ fn large_tier_refuses_slices() {
 /// tier's A-centre/edge values, and triple lookups never below the corner x centre values they
 /// replace.
 #[test]
-#[ignore = "needs the large tier's tables (24.4 GB; `omelettehedron optimal gen --tier large`)"]
+#[ignore = "needs the large tier's tables (24.4 GB; `omelettehedron gen optimal --tier large`)"]
 fn large_tier_matches_brute_force() {
     let dir = omelettehedron::tables::table_dir(None);
     let t = OptTables::load(&dir, OptTier::Large, MoveSet::FACE, false).unwrap();
