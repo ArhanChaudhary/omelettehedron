@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Optimal solver benchmark: time (and nodes, lookups) to solve seeded random-move scrambles
-# optimally with `omelettehedron optimal`: 10 x 17-move scrambles on 1 thread and 10 x 19-move
-# scrambles on all threads. The two-phase solver's optimal-mode benchmark is
+# optimally with `omelettehedron bench optimal`: 10 x 17-move scrambles on 1 thread and 10 x
+# 19-move scrambles on all threads. The two-phase solver's optimal-mode benchmark is
 # scripts/bench-opt.sh.
 # usage: scripts/bench-optimal.sh <label> <tier> [moves]
 #   -> bench-results/<label>-optimal{1t,mt}.{json,txt}; compare with
@@ -21,9 +21,9 @@ mv=()
 [ -n "$moves" ] && mv=(--moves "$moves")
 mkdir -p bench-results
 echo "commit $(git rev-parse --short HEAD), load before benchmark: $(cut -d' ' -f1 /proc/loadavg)" >&2
-$bin optimal bench --tier "$tier" "${mv[@]}" -N 10 --scramble-len 17 --seed 1717 -j 1 \
+$bin bench optimal --tier "$tier" "${mv[@]}" -N 10 --scramble-len 17 --seed 1717 -j 1 \
     --json "bench-results/$label-optimal1t.json" > "bench-results/$label-optimal1t.txt"
-$bin optimal bench --tier "$tier" "${mv[@]}" -N 10 --scramble-len 19 --seed 1919 \
+$bin bench optimal --tier "$tier" "${mv[@]}" -N 10 --scramble-len 19 --seed 1919 \
     --json "bench-results/$label-optimalmt.json" > "bench-results/$label-optimalmt.txt"
 grep -E "solved|mean length|total nodes|total lookups|total time|nodes/s" \
     "bench-results/$label-optimal1t.txt" "bench-results/$label-optimalmt.txt"

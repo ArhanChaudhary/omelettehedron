@@ -91,18 +91,18 @@ items=()
 declare -A cmd envs
 if [ "$tier" != none ]; then
     items+=(2p-opt17-1t 2p-opt19-mt 2p-t1s-mt 2p-t1s-1t)
-    cmd[2p-opt17-1t]="bench --tier $tier -N 10 --scramble-len 17 --seed 1717 -j 1"
-    cmd[2p-opt19-mt]="bench --tier $tier -N 10 --scramble-len 19 --seed 1919"
+    cmd[2p-opt17-1t]="bench two-phase --tier $tier -N 10 --scramble-len 17 --seed 1717 -j 1"
+    cmd[2p-opt19-mt]="bench two-phase --tier $tier -N 10 --scramble-len 19 --seed 1919"
     envs[2p-opt17-1t]=FTO_CBS_EAGER=1
     envs[2p-opt19-mt]=FTO_CBS_EAGER=1
-    cmd[2p-t1s-mt]="bench --tier $tier -N 10 -t 1 --seed 2026"
-    cmd[2p-t1s-1t]="bench --tier $tier -N 10 -t 1 --seed 7 -j 1"
+    cmd[2p-t1s-mt]="bench two-phase --tier $tier -N 10 -t 1 --seed 2026"
+    cmd[2p-t1s-1t]="bench two-phase --tier $tier -N 10 -t 1 --seed 7 -j 1"
 fi
 if [ "$opt_tiers" != none ]; then
     for t in ${opt_tiers//,/ }; do
         items+=("opt-$t-17-1t" "opt-$t-19-mt")
-        cmd[opt-$t-17-1t]="optimal bench --tier $t -N 10 --scramble-len 17 --seed 1717 -j 1"
-        cmd[opt-$t-19-mt]="optimal bench --tier $t -N 10 --scramble-len 19 --seed 1919"
+        cmd[opt-$t-17-1t]="bench optimal --tier $t -N 10 --scramble-len 17 --seed 1717 -j 1"
+        cmd[opt-$t-19-mt]="bench optimal --tier $t -N 10 --scramble-len 19 --seed 1919"
     done
 fi
 if [ -n "$only" ]; then
@@ -114,6 +114,13 @@ if [ -n "$only" ]; then
     items=("${keep[@]}")
 fi
 
+# Binaries from before the command line took `bench two-phase` and `bench optimal` take
+# `bench` and `optimal bench`: translated, so that builds from both sides can be compared.
+old_cli=()
+for i in "${!bins[@]}"; do
+    if "${bins[$i]}" bench two-phase --help > /dev/null 2>&1; then old_cli[$i]=0; else old_cli[$i]=1; fi
+done
+
 n=${#bins[@]}
 for r in $(seq 1 "$rounds"); do
     for item in "${items[@]}"; do
@@ -123,8 +130,13 @@ for r in $(seq 1 "$rounds"); do
             f="$out/${names[$i]}-$item-r$r"
             [ $n -eq 1 ] && f="$out/$item-r$r"
             echo "round $r: ${names[$i]} $item" >&2
+            c=${cmd[$item]}
+            if [ "${old_cli[$i]}" = 1 ]; then
+                c=${c/#bench two-phase/bench}
+                c=${c/#bench optimal/optimal bench}
+            fi
             # shellcheck disable=SC2086 # the command lines are split on purpose
-            env ${envs[$item]:-} timeout 150 "${bins[$i]}" ${cmd[$item]} --json "$f.json" \
+            env ${envs[$item]:-} timeout 150 "${bins[$i]}" $c --json "$f.json" \
                 > "$f.txt" 2>&1 || echo "  failed or over 150 s (see $f.txt)" >&2
         done
     done

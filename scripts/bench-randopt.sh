@@ -16,7 +16,7 @@ for seed in $seeds; do
   # one lock turn per position, so other jobs can run in between
   flock /tmp/cube-bench.lock sh -c "cargo build --release -q && \
     echo \"commit \$(git rev-parse --short HEAD), seed $seed, load \$(cut -d' ' -f1 /proc/loadavg)\" >&2 && \
-    FTO_DEBUG=1 $bin bench -N 1 --seed $seed -t $cap --tier $tier -v \
+    FTO_DEBUG=1 $bin bench two-phase -N 1 --seed $seed -t $cap --tier $tier -v \
       --json bench-results/$label-randopt-seed$seed.json" 2>&1 | grep -E "^#|commit|depth" || true
 done
 python3 - "$label" $seeds <<'PY'
