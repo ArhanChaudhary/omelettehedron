@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Timings of the WebAssembly build in Bun (a browser-like engine: JavaScriptCore, as Safari),
-// comparable with the native `bench`:
+// comparable with the native `bench two-phase`:
 //
 //   bun wasm/bench.mjs [--tier tiny|small|medium] [--threads N] [--tables DIR] [--count 10]
 //                      [--seed 2026] [--seconds 5]
@@ -11,7 +11,7 @@
 //               or ae-sym288-chiral.prun, and cb-sym24.prun) instead of generating
 //
 // Prints the table generation (or load) time and the module's memory, the optimal solves of
-// short scrambles (those of test.mjs), then the native `bench` summary for `count` seeded
+// short scrambles (those of test.mjs), then the native `bench two-phase` summary for `count` seeded
 // random positions with a time limit of `seconds` each (the same positions as the native
 // `bench --tier T -N count --seed seed -t seconds`).
 

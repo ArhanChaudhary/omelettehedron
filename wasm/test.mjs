@@ -18,7 +18,8 @@
 //  - the tiny tables: the threads build generates them (with FTO_TABLES holding the native
 //    tiny tier, byte for byte its files), the single-thread build loads them, and both solve
 //    the same scrambles with the native optimal lengths (and on one thread node counts).
-// The medium tables (1.04 GB), if FTO_TABLES has the native medium tier (`gen --tier medium`):
+// The medium tables (1.04 GB), if FTO_TABLES has the native medium tier
+// (`gen two-phase --tier medium`):
 //  - the single-thread build loads the native files and solves the same scrambles with the
 //    native optimal lengths and one-thread node counts (the medium index on 32-bit wasm);
 //  - the threads build for the medium tables (2 GiB, `omelettehedron-threads-medium.wasm`)
