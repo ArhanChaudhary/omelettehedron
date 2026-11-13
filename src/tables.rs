@@ -640,6 +640,25 @@ impl Phase2 {
         Some(self.dist[self.index(cube)?])
     }
 
+    /// The position of `H_A` with index `i`, the inverse of [`Phase2::index`] (`None` if `i` is
+    /// out of range). Off the hot path: it scans the 972 edge arrangements.
+    pub fn cube(&self, i: usize) -> Option<Cube> {
+        let (c, e) = (i / N_P2_EDGE, i % N_P2_EDGE);
+        let &(cp, co) = corners().id_to_state.get(c)?;
+        let ep = *self
+            .edge_id
+            .iter()
+            .find(|&(_, &id)| usize::from(id) == e)?
+            .0;
+        Some(Cube {
+            cp,
+            co,
+            ep,
+            xa: *self.edge_xa.get(e)?,
+            xb: *self.corner_xb.get(c)?,
+        })
+    }
+
     /// Optimal phase-2 move sequence (A moves only) for a position in `H_A`.
     pub fn solve(&self, cube: &Cube) -> Option<Vec<usize>> {
         let mut x = *cube;

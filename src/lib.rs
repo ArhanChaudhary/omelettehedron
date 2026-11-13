@@ -50,6 +50,7 @@ pub mod cbe;
 pub mod cbsym;
 pub mod combined;
 pub mod coord;
+pub mod coset;
 pub mod cube;
 pub mod fast;
 pub mod geometry;
