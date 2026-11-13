@@ -509,13 +509,13 @@ fn large_tier_matches_brute_force() {
     }
 }
 
-/// The huge tier (the 27.9 GB edge x A-centre table and the corner x centre table: loaded from
-/// `$FTO_TABLES`, generated if missing): the same optimal lengths as the brute force, bounds
-/// never above the brute-force distance (admissible), consistent tables, the medium tier's
-/// corner x centre values, and edge x A-centre lookups never below the A-centre/edge values
-/// (the table projects onto that one) on random positions.
+/// The huge tier (the 22.3 GB packed edge x A-centre table and the corner x centre table:
+/// loaded from `$FTO_TABLES`, generated if missing): the same optimal lengths as the brute
+/// force, bounds never above the brute-force distance (admissible), consistent tables, the
+/// medium tier's corner x centre values, and edge x A-centre lookups never below the
+/// A-centre/edge values (the table projects onto that one) on random positions.
 #[test]
-#[ignore = "needs the huge and medium tiers' tables (31.3 GB; `gen optimal --tier huge`)"]
+#[ignore = "needs the huge and medium tiers' tables (25.7 GB; `gen optimal --tier huge`)"]
 fn huge_tier_matches_brute_force() {
     let dir = omelettehedron::tables::table_dir(None);
     let t = OptTables::load(&dir, OptTier::Huge, MoveSet::FACE, false).unwrap();

@@ -24,10 +24,11 @@ use super::ea::{build_ea, EaIndex};
 use crate::cube::*;
 use crate::fast::{fast, masks, FastTables};
 use crate::preflight::{check_plan, MemGuard, Planned};
-use crate::prune::{bfs, Graph, Table2, TableFile};
+pub use crate::prune::Prun;
+use crate::prune::{bfs, Graph, Table2, Table5, TableFile};
 use crate::tables::{
-    ae_targets, build_ae, prefetch_at, AeIndex, AeSym, AE_CHIRAL_ENTRIES, AE_CHIRAL_FILE,
-    AE_TRIPLES_ENTRIES, AE_TRIPLES_FILE,
+    ae_targets, build_ae, AeIndex, AeSym, AE_CHIRAL_ENTRIES, AE_CHIRAL_FILE, AE_TRIPLES_ENTRIES,
+    AE_TRIPLES_FILE,
 };
 use std::path::{Path, PathBuf};
 
@@ -112,10 +113,12 @@ impl OptTier {
 pub trait Bounds: Sync {
     /// Lookups per position (at most [`MAX_K`]).
     const K: usize;
+    /// The tier's table layout ([`Table2`], or [`Table5`] packed).
+    type Tab: Prun;
     /// Index of lookup `k` (`k < K`) of position `p`.
     fn index(&self, k: usize, p: &Pos) -> usize;
     /// The table of lookup `k`.
-    fn table(&self, k: usize) -> &Table2;
+    fn table(&self, k: usize) -> &Self::Tab;
     /// Whether index `i` of lookup `k` is the solved state's (distance 0).
     fn is_target(&self, k: usize, i: usize) -> bool;
     /// Short name of lookup `k` (for messages).
@@ -355,8 +358,11 @@ pub struct OptTables {
     pub ce: Option<(CeIndex, Table2)>,
     /// corners x B-centres x edge triple, and the indices of the solved state (large tier)
     pub cbe: Option<(CbeIndex, Table2, Vec<usize>)>,
-    /// edges x A-centres, and the indices of the solved state (huge tier)
-    pub ea: Option<(EaIndex, Table2, Vec<usize>)>,
+    /// edges x A-centres (packed), and the indices of the solved state (huge tier)
+    pub ea: Option<(EaIndex, Table5, Vec<usize>)>,
+    /// the corner x centre table packed like the edge x A-centre one, so that the huge tier
+    /// reads one layout (huge tier)
+    pub cc5: Option<Table5>,
     /// the two-phase A-centre/edge table (every tier but huge)
     pub ae: Option<AeBound>,
     /// the move set: every table holds distances in its metric (with slices, the tables have
@@ -370,7 +376,7 @@ const CC_FILE: &str = "opt-cc-sym24";
 const EDGES_FILE: &str = "opt-edges";
 const CE_FILE: &str = "opt-ce-sym48";
 const CBE_FILE: &str = "opt-cbe-sym6";
-const EA_FILE: &str = "opt-ea-sym288";
+const EA_FILE: &str = "opt-ea-sym288-p5";
 
 /// Entries of the tables (as the file headers give them), so that table files can be judged
 /// without building the indices (`tier_entries_match_the_indices` checks them).
@@ -404,6 +410,40 @@ fn load_or_build(
                 eprintln!("generating {} ...", path.display());
             }
             let t = build()?;
+            t.save(path)?;
+            Ok(t)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// [`load_or_build`] for a table kept packed ([`Table5`]): generated as a [`Table2`], packed in
+/// place, then saved.
+fn load_or_build5(
+    path: &Path,
+    n: usize,
+    verbose: bool,
+    build: impl FnOnce() -> std::io::Result<Table2>,
+) -> std::io::Result<Table5> {
+    match Table5::load(path, n) {
+        Ok(t) => {
+            if verbose {
+                eprintln!(
+                    "loaded {} ({:.1} MB)",
+                    path.display(),
+                    t.bytes() as f64 / 1e6
+                );
+            }
+            Ok(t)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            if verbose {
+                eprintln!("generating {} ...", path.display());
+            }
+            let t = Table5::pack(build()?);
             t.save(path)?;
             Ok(t)
         }
@@ -465,7 +505,7 @@ impl OptTables {
         let ea = match tier {
             OptTier::Huge => {
                 let ix = EaIndex::new()?;
-                let t = build_ea_guarded(&ix, verbose)?;
+                let t = Table5::pack(build_ea_guarded(&ix, verbose)?);
                 Some((ix, t))
             }
             _ => None,
@@ -489,11 +529,18 @@ impl OptTables {
         edges: Option<Table2>,
         ce: Option<(CeIndex, Table2)>,
         cbe: Option<(CbeIndex, Table2)>,
-        ea: Option<(EaIndex, Table2)>,
+        ea: Option<(EaIndex, Table5)>,
         ae: Option<AeBound>,
         moves: MoveSet,
     ) -> OptTables {
         let cc_target = cc_ix.targets().first().copied().unwrap_or(0);
+        let cc5 = ea.is_some().then(|| {
+            Table5::pack(Table2 {
+                data: crate::mem::HugeBuf::from_slice(&cc.data),
+                n: cc.n,
+                hist: cc.hist.clone(),
+            })
+        });
         OptTables {
             tier,
             cc_ix,
@@ -509,6 +556,7 @@ impl OptTables {
                 let targets = ix.targets();
                 (ix, t, targets)
             }),
+            cc5,
             ae,
             moves,
         }
@@ -570,7 +618,14 @@ impl OptTables {
             plan.push(planned(&cbe_path, ix.size()));
         }
         if let Some(ix) = &ea_ix {
-            plan.push(planned(&ea_path, ix.size()));
+            // (generated at 2 bits per entry, then packed in place: the 2-bit size in memory,
+            // the packed size on disk)
+            let mut pl = planned(&ea_path, ix.size());
+            if !ea_path.exists() {
+                pl.bytes = ix.size().div_ceil(5) as u64;
+                pl.working_set = (ix.size().div_ceil(4) - ix.size().div_ceil(5)) as u64;
+            }
+            plan.push(pl);
         }
         check_plan(&plan)?;
         let cc = load_or_build(&cc_path, cc_size(&cc_ix), verbose, || {
@@ -607,7 +662,7 @@ impl OptTables {
         let ea = match ea_ix {
             None => None,
             Some(ix) => {
-                let t = load_or_build(&ea_path, ix.size(), verbose, || {
+                let t = load_or_build5(&ea_path, ix.size(), verbose, || {
                     build_ea_guarded(&ix, verbose)
                 })?;
                 Some((ix, t))
@@ -673,7 +728,7 @@ impl OptTables {
             ea,
             ea_targets,
             cc_ix: &self.cc_ix,
-            cc: &self.cc,
+            cc: self.cc5.as_ref()?,
             cc_target: self.cc_target,
             moves: self.moves,
         })
@@ -740,6 +795,7 @@ impl OptTables {
             + self.ce.as_ref().map_or(0, |(_, t)| t.bytes())
             + self.cbe.as_ref().map_or(0, |(_, t, _)| t.bytes())
             + self.ea.as_ref().map_or(0, |(_, t, _)| t.bytes())
+            + self.cc5.as_ref().map_or(0, Table5::bytes)
             + self.ae.as_ref().map_or(0, |a| a.tab.bytes())
     }
 }
@@ -782,6 +838,7 @@ pub struct SmallBounds<'a> {
 }
 
 impl Bounds for SmallBounds<'_> {
+    type Tab = Table2;
     const K: usize = 5;
     fn moves(&self) -> MoveSet {
         self.moves
@@ -856,6 +913,7 @@ pub struct MediumBounds<'a> {
 }
 
 impl Bounds for MediumBounds<'_> {
+    type Tab = Table2;
     const K: usize = 5;
     fn moves(&self) -> MoveSet {
         self.moves
@@ -937,6 +995,7 @@ pub struct LargeBounds<'a> {
 const LARGE_CBE: usize = 2;
 
 impl Bounds for LargeBounds<'_> {
+    type Tab = Table2;
     const K: usize = LARGE_CBE + N_LOOKUPS;
     /// AE, the B-triple 3 lookup, the AE twin, then the other triples: greedy by the children
     /// each prunes among those the earlier ones keep (17-move set, seed 1717: alone AE prunes
@@ -1016,15 +1075,16 @@ impl Bounds for LargeBounds<'_> {
 /// (19-move set); the 6-flip 0.56 s).
 pub struct HugeBounds<'a> {
     ea_ix: &'a EaIndex,
-    ea: &'a Table2,
+    ea: &'a Table5,
     ea_targets: &'a [usize],
     cc_ix: &'a CcIndex,
-    cc: &'a Table2,
+    cc: &'a Table5,
     cc_target: usize,
     moves: MoveSet,
 }
 
 impl Bounds for HugeBounds<'_> {
+    type Tab = Table5;
     const K: usize = 4;
     /// The edge x A-centre table on both sides first: alone each prunes 85% of random
     /// positions' children with 11 moves left (Korf sampling), the two together 97.5%.
@@ -1057,7 +1117,7 @@ impl Bounds for HugeBounds<'_> {
         }
     }
     #[inline(always)]
-    fn table(&self, k: usize) -> &Table2 {
+    fn table(&self, k: usize) -> &Table5 {
         if k < 2 {
             self.ea
         } else {
@@ -1087,7 +1147,7 @@ impl Bounds for HugeBounds<'_> {
 pub fn walk<B: Bounds>(b: &B, k: usize, p: &Pos) -> Option<u8> {
     let mt = opt_moves();
     let tab = b.table(k);
-    let max = tab.hist.len().saturating_sub(1);
+    let max = tab.depths().saturating_sub(1);
     let mut y = *p;
     let mut d = 0u8;
     loop {
@@ -1104,7 +1164,7 @@ pub fn walk<B: Bounds>(b: &B, k: usize, p: &Pos) -> Option<u8> {
         let mut is = [0usize; MAX_MOVES];
         for m in 0..n {
             is[m] = b.index(k, &zs[m]);
-            prefetch_at(&tab.data, is[m] >> 5);
+            tab.prefetch(is[m]);
         }
         let m = (0..n).find(|&m| tab.get(is[m]) == want)?;
         y = zs[m];

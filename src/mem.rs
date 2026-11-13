@@ -192,6 +192,32 @@ impl<T: Copy> HugeBuf<T> {
         self.len -= n;
     }
 
+    /// Keep only the first `len` elements (all of them if there are more); on Linux the memory
+    /// of the whole pages past the new end goes back to the system at once, the rest stays
+    /// allocated until the buffer is dropped. (A table packed in place, [`crate::prune::Table5`],
+    /// releases the fifth of its words it no longer needs.)
+    pub fn truncate(&mut self, len: usize) {
+        if len >= self.len {
+            return;
+        }
+        #[cfg(all(target_os = "linux", not(miri)))]
+        if self.mapped == 0 {
+            const PAGE: usize = 4096;
+            let base = self.ptr.as_ptr().cast::<u8>() as usize;
+            let start = (base + len * std::mem::size_of::<T>()).next_multiple_of(PAGE);
+            let end = base + self.len * std::mem::size_of::<T>();
+            if end > start {
+                // SAFETY: [start, end) lies inside this allocation (whole pages past the kept
+                // elements); MADV_DONTNEED only drops their contents, which nothing reads any
+                // more (the slice views end at the new length)
+                unsafe {
+                    libc::madvise(start as *mut libc::c_void, end - start, libc::MADV_DONTNEED)
+                };
+            }
+        }
+        self.len = len;
+    }
+
     /// Copy a slice into a new huge-page buffer.
     pub fn from_slice(s: &[T]) -> HugeBuf<T> {
         let mut b = Self::zeroed(s.len());
