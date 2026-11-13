@@ -9,7 +9,7 @@ searches it with a symmetric start, about as many times faster as the symmetries
 ## The positions
 
 A symmetry `M` fixes a position `P` if `M P M^-1 = P` up to a whole-puzzle turn (the notion of
-`info` and of the optimal solver). The symmetries fixing a position form a subgroup of the 48.
+`show` and of the optimal solver). The symmetries fixing a position form a subgroup of the 48.
 `omelettehedron symmetric` enumerates, for each of the 33 subgroups up to conjugation, every
 position it fixes: in the frame with the front corner held, the subgroup fixes the corner state
 and permutes the edge places and centre places; an edge (centre colour) chosen at one place
@@ -78,7 +78,7 @@ implementation of the geometry), which found every one solved.
 A position is ruled out by any solution of at most 23 moves, so each list was filtered with the
 cheapest tool first (large tier, 48 threads):
 
-1. the two-phase solver, `solve --batch -l 23` (one thread per position, stop at the first
+1. the two-phase solver, `solve two-phase --batch -l 23` (one thread per position, stop at the first
    solution of at most 23 moves) with 5 s each, then 60 s and 600 s for the positions left;
 2. for the rest, the optimal solver, `--start-depth 23 -l 23`: one iteration at depth 21 to
    order the tasks, then depth 23, which finds any solution of at most 23 moves (capped at
@@ -95,7 +95,7 @@ them, and the other 2 are known 23s ([bench/hard.tsv](../bench/hard.tsv)).
 
 The two-phase solver's lengths can be far from optimal here: 4.1 (24 symmetries: corners, edges
 and the A-centres solved, the B-centres in a pattern), for which it found nothing shorter than
-22 moves, is exactly 19 (`optimal solve`, 0.06 s on 48 threads:
+22 moves, is exactly 19 (`solve optimal`, 0.06 s on 48 threads:
 `B BR B' BL D U BL D' BL BR' D' BR' D BL' U B' BL' B U`).
 
 Shortest solution found, by subgroup ("23": the first solution of at most 23 moves found; most

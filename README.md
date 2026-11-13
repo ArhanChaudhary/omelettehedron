@@ -80,7 +80,7 @@ Scrambles may always contain wide and slice turns; solutions name slices by thei
 (`Us`, `Rs`, `Fs`, `Ls`). `Xv` in a scramble turns the whole puzzle like X (all three layers of
 X's axis).
 
-`solve -v` also says whether the solution solves the *pure* FTO, where every centre triangle is
+`solve ... -v` also says whether the solution solves the *pure* FTO, where every centre triangle is
 unique: the solver itself treats centres of a colour as interchangeable, so its optimum is a
 lower bound for the pure puzzle. `bench/hard.tsv` lists hard positions (`scripts/bench-hard.sh`).
 
@@ -111,57 +111,103 @@ rules, the tables and why optimal mode stays exact.
 
 ## Usage
 
+| Command | What it does |
+|---|---|
+| `solve two-phase` | the two-phase solver: short solutions within milliseconds, then better ones until the best is proven optimal |
+| `solve optimal` | the [optimal solver](#optimal-solver): its first solution is optimal |
+| `solve combined` | [both at once](#both-solvers-at-once), until their bounds meet |
+| `gen two-phase`, `gen optimal` | generate (or check) a solver's [pruning tables](#pruning-tables) ahead of time |
+| `bench two-phase`, `bench optimal` | [benchmark](#benchmarks) a solver on seeded positions |
+| `show` | describe a [position](#show-a-position) (moves or [pattern](#patterns)) without any table |
+| `symmetric` | list the [positions that symmetries fix](#symmetric-positions) |
+
+`omelettehedron help <command>` (or `--help`) lists every option.
+
 ```sh
-# optimal solution (default when no stopping rule is given)
-target/release/omelettehedron solve --tier large "U R' BL F D B' L BR"
+# each better solution as it is found, until the best is proven optimal (Ctrl-C stops it)
+target/release/omelettehedron solve two-phase --tier large "U R' BL F D B' L BR"
 
-# stop after 2 seconds, printing every improvement as it is found
-target/release/omelettehedron solve --tier large -t 2 -p improvements "R U' L F' BR B' ..."
+# stop after 2 seconds
+target/release/omelettehedron solve two-phase --tier large -t 2 "R U' L F' BR B' ..."
 
-# keep improving with no time limit: each better solution as it is found, until the last
-# is proven optimal (the proof takes longer than without --improve: about 2.6x on one thread)
-target/release/omelettehedron solve --tier large --improve "R U' L F' BR B' ..."
+# prove optimality faster, with target-length passes (about 2.6x faster on one thread), but
+# no solution is printed until the optimal one
+target/release/omelettehedron solve two-phase --tier large --passes "U R' BL F D B' L BR"
 
 # stop at the first solution of at most 22 moves
-target/release/omelettehedron solve --tier large -l 22 "..."
+target/release/omelettehedron solve two-phase --tier large -l 22 "..."
 
 # stop after 1000 solutions (every phase-2 completion counts, even if longer than the best)
-target/release/omelettehedron solve --tier large -n 1000 "..."
+target/release/omelettehedron solve two-phase --tier large -n 1000 "..."
+
+# print only the final solution (one line per position) and nothing else
+target/release/omelettehedron solve two-phase --tier large -t 1 -q "..."
 
 # one scramble per line on stdin
-target/release/omelettehedron solve --tier large -t 1 < scrambles.txt
+target/release/omelettehedron solve two-phase --tier large -t 1 < scrambles.txt
 
 # a position given as the algorithm that solves it: solve that algorithm's inverse
-target/release/omelettehedron solve --tier large --inverse "U F BL B' U B' BL BR' ..."
+target/release/omelettehedron solve two-phase --tier large --inverse "U F BL B' U B' BL BR' ..."
 
 # show what the search is doing while it runs (stderr; see "Progress" below)
-target/release/omelettehedron solve --tier large --progress "U R' BL F D B' L BR"
+target/release/omelettehedron solve two-phase --tier large --progress "U R' BL F D B' L BR"
 
-# resume a long optimal proof: an earlier run (--progress) printed "pass 20 done: no solution
-# of at most 20 moves", so no solution is shorter than 21 (a wrong bound can give a wrong answer)
-target/release/omelettehedron solve --tier large --progress --lower-bound 21 "..."
+# resume a long optimal proof: an earlier run (--passes --progress) printed "pass 20 done: no
+# solution of at most 20 moves", so no solution is shorter than 21 (a wrong bound can give a
+# wrong answer)
+target/release/omelettehedron solve two-phase --tier large --passes --progress --lower-bound 21 "..."
 
-# optimal solution with slice turns allowed (generates the slice tables on first use)
-target/release/omelettehedron solve --tier large --moves slice "U R' BL F D B' L BR"
+# slice turns allowed (generates the slice tables on first use)
+target/release/omelettehedron solve two-phase --tier large --moves slice "U R' BL F D B' L BR"
 
 # without --tier: the largest tier whose tables are all there (see Pruning tables)
-target/release/omelettehedron solve "U R' BL F D B' L BR"
+target/release/omelettehedron solve two-phase "U R' BL F D B' L BR"
 ```
 
-Stopping rules can be combined; the search stops when any of them triggers. `-j N` sets the
-thread count (default: all cores).
+The three `solve` methods take the same options for the positions (a scramble, a
+[pattern](#patterns), one per line on stdin, `--patterns`, `--random N --seed S`, `--inverse`),
+the limits (`-t`, `-l`), the tables (`--tables`, `--moves`, `--force`, `--min-free-memory`) and
+the output (`-q`, `-v`, `--progress`), and print the same way. On stdout, each new bound comes
+as soon as it is found, with the time and the solver: every better solution (`upper`, the
+optimal length is at most this) and every larger proven lower bound (`lower`, no solution has
+fewer moves). Then come the solution and its length, and how far it is proven:
 
-### Position info
+```text
+$ omelettehedron solve two-phase --tier large "U R' BL F D B' L BR"
+loaded tables/ae-sym288-chiral.prun (1031.9 MB)
+loaded tables/cb-sym24.prun (4.7 MB)
+loaded tables/cbe.prun (6992.8 MB)
+found tables/cbe-solved11.prun (read when optimal mode can use it)
+    0.000 s  lower  6  two-phase
+    0.000 s  upper  8  two-phase  BR' L' B D' F' R BL' U'
+    0.000 s  lower  8  two-phase
+BR' L' B D' F' R BL' U'
+8 moves, optimal (solution: two-phase at 0.000 s; lower bound: two-phase at 0.000 s); 0.000 s
+```
 
-`info` describes a position without loading any table (it starts in well under a second). It
-takes scrambles like `solve` (arguments or stdin, `--inverse`), `--pattern`, `--patterns` and
-`--random N`; `--json` prints one line of JSON per position.
+On stderr come the tier chosen (without `--tier`) and the tables as they are loaded (or
+generated); `-v` adds the solver's statistics and whether the solution also solves the pure
+puzzle (see [Notation](#notation)). With several positions (or `-v`), each one's output starts
+with `# <position>`. `-q` prints only the solution (or `no solution found`), one line per
+position, and nothing on stderr but errors.
+
+Limits can be combined; the search stops when any of them triggers. `-j N` sets the thread
+count (default: all cores). `--batch` (`solve two-phase`, `solve optimal`) solves many positions
+at once, one per thread, and prints each one's output in input order.
+
+### Show a position
+
+`show` describes a position without loading any table (it takes well under a second). It takes
+scrambles and patterns like `solve` (arguments or stdin, `--inverse`, `--patterns`, `--random
+N`); `--json` prints one line of JSON per position.
 
 ```sh
-target/release/omelettehedron info "U R' BL F D B' L BR"
+target/release/omelettehedron show "U R' BL F D B' L BR"
+# moves: U R' BL F D B' L BR (8 moves)
 # pattern: GAOOAOWAW BBBBRRPPP GOOAGGGWO RRYYYRBBB / RRYYPRRBB OOGGWAGAO PPPPYYYPY AAWWWWWGA
 # solved: no
 # symmetries: none (only the identity)
+# symmetry group: C1, subgroup 33 in `omelettehedron symmetric` (E)
 # pieces (with the puzzle held so that most stickers are right):
 #   corners: 1 of 6 solved
 #   edges: 4 of 12 solved
@@ -172,8 +218,13 @@ target/release/omelettehedron info "U R' BL F D B' L BR"
 # lower bound: 7 moves (the corners alone need 3, the centres 7 and 4, the edges 7)
 ```
 
+* Moves (for a scramble): the scramble as given and how many turns it has (a whole-puzzle
+  rotation `Xv` counts none).
+* Pattern: the 72 sticker colours the position shows (see [Patterns](#patterns)).
 * Symmetries: how many of the octahedron's 48 symmetries (turning or mirroring the whole
-  puzzle, colours renamed to match) give the same position. The optimal solver uses them.
+  puzzle, colours renamed to match) give the same position. The optimal solver uses them. The
+  symmetry group is the one of that number in the table of `symmetric`, with its kinds of
+  symmetry (see [Symmetric positions](#symmetric-positions)).
 * Pieces are counted with the puzzle held the way (of the 12 that turns can reach) that puts
   the most stickers on a face of their colour.
 * Pure FTO: whether centres of a colour are exchanged. Only a scramble tells which centre is
@@ -186,7 +237,7 @@ target/release/omelettehedron info "U R' BL F D B' L BR"
 ### Symmetric positions
 
 `symmetric` counts and lists the positions that symmetries of the octahedron fix (turning or
-mirroring the whole puzzle, colours renamed to match: the symmetries `info` counts). It needs no
+mirroring the whole puzzle, colours renamed to match: the symmetries `show` counts). It needs no
 table and takes a few seconds.
 
 ```text
@@ -209,53 +260,68 @@ $ omelettehedron symmetric
   reflection; `m` a mirror through four corners, `m'` through two; `S4`, `S6` a turn and a
   mirror.
 
-`--order N` or `--subgroup K` lists the positions, one of each set of copies, as patterns for
-`solve --patterns` or `optimal solve --patterns`. `solve --batch` solves many positions at once,
-one per thread:
+`--order N` or `--subgroup K` lists the positions, one of each set of copies, as patterns
+(one per line, with a `#` comment) that `solve` and `show` read from stdin. `--batch` solves many
+positions at once, one per thread:
 
 ```sh
-omelettehedron symmetric --order 24 | omelettehedron solve --patterns --batch -l 22 -t 3
+omelettehedron symmetric --order 24 | omelettehedron solve two-phase --batch -l 22 -t 3
 ```
+
+`symmetric --identify` says where given positions are listed (e.g. `position 2.4`).
 
 The distances of the symmetric positions are in [docs/SYMMETRIC.md](docs/SYMMETRIC.md).
 
 ### Progress
 
-`--progress` (for `solve`, `optimal solve` and `combined`) prints what the search is doing to
-stderr while it runs: each iteration as it ends (its depth, nodes, nodes per second, the best
-length so far and the lower bound proven so far), each target-length pass that ends ("no
-solution of at most T moves"), and, during a long iteration, a line every second with the
-nodes so far and how many of its tasks have started. `--progress=5` prints that line every 5
-seconds, `--progress=0` never. The search does no extra work for it: on 48 threads it is as
+`--progress` (for every `solve` method) prints what the search is doing to stderr while it
+runs: each iteration as it ends (its depth, nodes, nodes per second, the best length so far and
+the lower bound proven so far), each target-length pass that ends ("no solution of at most T
+moves", with `--passes`), and, during a long iteration, a line every second with the nodes so
+far and how many of its tasks have started. `--progress=5` prints that line every 5 seconds,
+`--progress=0` never. The search does no extra work for it: on 48 threads it is as
 fast as without, and short solves on one thread (24 ms each) take about 0.4 ms longer, the
 time to print their 50 or so lines ([docs/RESULTS.md](docs/RESULTS.md#progress-and-both-solvers-at-once)).
 Without `--progress` the output is unchanged.
 
 ```text
-$ omelettehedron solve --tier large --progress --random 1 --seed 3
-    0.000 s  depth 11 done in 0.000 s: 4.520e2 nodes (2.174e6 nodes/s, 1 task); best -, lower bound 13
-    0.000 s  target-length passes from 13 (best -)
-    ...
-    0.700 s  pass 18 done: no solution of at most 18 moves (6.564e8 nodes in all)
-    ...
-    1.718 s  pass 19, depth 17 done in 0.861 s: 9.392e8 nodes (1.091e9 nodes/s, 2688 tasks); best -, lower bound 19
-    2.719 s  pass 19, depth 18: 1.152e9 nodes so far in 1.0 s (1.151e9 nodes/s), 592/2688 tasks started
-    3.719 s  pass 19, depth 18: 2.413e9 nodes so far in 2.0 s (1.206e9 nodes/s), 1241/2688 tasks started
-    4.719 s  pass 19, depth 18: 3.697e9 nodes so far in 3.0 s (1.232e9 nodes/s), 1956/2688 tasks started
-    5.667 s  pass 19, depth 18 done in 3.949 s: 4.957e9 nodes (1.255e9 nodes/s, 2688 tasks); best -, lower bound 20
-    5.667 s  pass 19 done: no solution of at most 19 moves (6.681e9 nodes in all)
-    ...
-    6.246 s  best 20 moves
-    6.249 s  pass 20, depth 17 stopped in 0.432 s: 4.539e8 nodes (1.050e9 nodes/s, 2688 tasks); best 20, lower bound 20
-D R' BR BL' B BR' L' U' D B' BR D F' R F' BL U R D R
-length 20 in 6.249s, 1 solutions, 7.272e9 nodes, optimal
+$ omelettehedron solve two-phase --tier large -j 8 -t 4 --progress --random 1 --seed 3
+loaded tables/ae-sym288-chiral.prun (1031.9 MB)
+loaded tables/cb-sym24.prun (4.7 MB)
+loaded tables/cbe.prun (6992.8 MB)
+found tables/cbe-solved11.prun (read when optimal mode can use it)
+    0.000 s  lower 11  two-phase
+    0.025 s  lower 13  two-phase
+    0.025 s  depth 11 done in 0.025 s: 4.520e2 nodes (1.831e4 nodes/s, 1 task); best -, lower bound 13
+    0.028 s  lower 14  two-phase
+    0.028 s  depth 12 done in 0.003 s: 4.304e3 nodes (1.340e6 nodes/s, 16 tasks); best -, lower bound 14
+    0.031 s  lower 15  two-phase
+    0.031 s  depth 13 done in 0.003 s: 6.197e4 nodes (2.241e7 nodes/s, 205 tasks); best -, lower bound 15
+    0.124 s  lower 16  two-phase
+    0.124 s  depth 14 done in 0.093 s: 7.800e5 nodes (8.366e6 nodes/s, 2654 tasks); best -, lower bound 16
+    0.213 s  upper 23  two-phase  B' L U L F' BL' BR F R' B F BR L D F R D R' L D' B R D
+    0.213 s  best 23 moves
+    0.705 s  lower 17  two-phase
+    0.705 s  depth 15 done in 0.581 s: 1.013e7 nodes (1.743e7 nodes/s, 2688 tasks); best 23, lower bound 17
+    1.727 s  depth 16: 2.671e7 nodes so far in 1.0 s (2.615e7 nodes/s), 419/2688 tasks started
+    2.042 s  upper 22  two-phase  L U' B' D BL U BR D U BL' L' F R BL U B' U' BR' U' BL BR F
+    2.042 s  best 22 moves
+    2.727 s  depth 16: 4.811e7 nodes so far in 2.0 s (2.380e7 nodes/s), 808/2688 tasks started
+    3.062 s  upper 21  two-phase  BR BL BR R L U' L U' R D F D' R B L B F BL F' U F'
+    3.062 s  best 21 moves
+    3.727 s  depth 16: 6.804e7 nodes so far in 3.0 s (2.251e7 nodes/s), 1205/2688 tasks started
+    4.078 s  depth 16 stopped in 3.373 s: 7.369e7 nodes (2.185e7 nodes/s, 2688 tasks); best 21, lower bound 17
+BR BL BR R L U' L U' R D F D' R B L B F BL F' U F'
+21 moves, not proven optimal: no solution has fewer than 17 moves; 4.078 s
+length 21 in 4.078s, 4 solutions, 8.466e7 nodes
 ```
 
-For the two-phase solver, the depth is that of phase 1 (phase 2 is looked up at its end): a
-completed depth D proves that no solution has at most D + 1 moves, and pass T looks only for
-solutions of at most T moves (see [docs/PHASES.md](docs/PHASES.md#4-search)). For the optimal
-solver, depth D is the solution length searched, and a completed depth proves that no solution
-has at most D moves.
+The `lower` and `upper` lines, the solution and the result line are on stdout; the rest, with
+the statistics line at the end that `--progress` and `-v` add, on stderr. For the two-phase
+solver, the depth is that of phase 1 (phase 2 is looked up at its end): a completed depth D
+proves that no solution has at most D + 1 moves, and pass T looks only for solutions of at most
+T moves (see [docs/PHASES.md](docs/PHASES.md#4-search)). For the optimal solver, depth D is the
+solution length searched, and a completed depth proves that no solution has at most D moves.
 
 ### Patterns
 
@@ -263,28 +329,35 @@ A position can also be given as what it looks like: its 72 sticker colours (a *p
 example to find a scramble for a scrambled puzzle whose scramble is not known.
 
 ```sh
-# the pattern a scramble makes
-target/release/omelettehedron pattern "R U' BL F D B' R L' BR U F' D"
-# OOGAAGGOG BYRPBYRPR AWAWGOGWA RPBBPRPPY / RBYYYPRBB GOWWWAGGW PYYRYRBBP OAAOWOAWO
+# the pattern a scramble makes (and more: see "Show a position")
+target/release/omelettehedron show "R U' BL F D B' R L' BR U F' D"
+# moves: R U' BL F D B' R L' BR U F' D (12 moves)
+# pattern: OOGAAGGOG BYRPBYRPR AWAWGOGWA RPBBPRPPY / RBYYYPRBB GOWWWAGGW PYYRYRBBP OAAOWOAWO
+# ...
 
-# solve a pattern; --usual gives your solved puzzle as you usually hold it (the colours of
-# U R F L B BL D BR), for a scramble from that hold
-target/release/omelettehedron solve --tier large -t 5 --usual WRGPBOYA \
-    --pattern "OOGAAGGOG BYRPBYRPR AWAWGOGWA RPBBPRPPY / RBYYYPRBB GOWWWAGGW PYYRYRBBP OAAOWOAWO"
+# solve a pattern (given where a scramble would be); --usual gives your solved puzzle as you
+# usually hold it (the colours of U R F L B BL D BR), for a scramble from that hold
+target/release/omelettehedron solve two-phase --tier large -t 5 --usual WRGPBOYA \
+    "OOGAAGGOG BYRPBYRPR AWAWGOGWA RPBBPRPPY / RBYYYPRBB GOWWWAGGW PYYRYRBBP OAAOWOAWO"
+#     0.000 s  lower 10  two-phase
+#     0.000 s  lower 12  two-phase
+#     0.000 s  upper 12  two-phase  D' F U' L BR' R' B D' F' BL' U R'
 # D' F U' L BR' R' B D' F' BL' U R'
+# 12 moves, optimal (solution: two-phase at 0.000 s; lower bound: two-phase at 0.000 s); 0.000 s
 # scramble from solved with W on U and G on F: R U' BL F D B' R BR L' U F' D
 # scramble from your usual hold: R U' BL F D B' R BR L' U F' D
 
-# several patterns from a file (or stdin), each solved as with --pattern
-target/release/omelettehedron solve --tier large -t 5 --usual WRGPBOYA --patterns < patterns.txt
+# several patterns from a file (or stdin), each solved as a single one
+target/release/omelettehedron solve two-phase --tier large -t 5 --usual WRGPBOYA --patterns < patterns.txt
 ```
 
-With `--patterns`, `solve` reads patterns from stdin and numbers them in the output
-(`# pattern 2 (line 4): ...`). A pattern can take one line or several: lines are joined until
-they hold 72 stickers. A blank line ends a pattern early, so a pattern with a sticker missing
-does not run into the next one. `#` starts a comment. A pattern with a mistake gets its error
-message, the others are still solved, and the run then exits with an error.
-`optimal solve` accepts `--pattern`, `--patterns` and `--usual` too.
+A position given as text (an argument, or a line of stdin) is read as a scramble if it is one,
+else as a pattern. With `--patterns`, `solve` and `show` read patterns from stdin and number
+them in the output (`# pattern 2 (line 4): ...`). A pattern can take one line or several: lines
+are joined until they hold 72 stickers. A blank line ends a pattern early, so a pattern with a
+sticker missing does not run into the next one. `#` starts a comment. A pattern with a mistake
+gets its error message, the others are still solved, and the run then exits with an error.
+Every `solve` method takes patterns and `--usual`.
 
 Hold the puzzle with a corner pointing at you and read the front faces U, R, F, L (top, right,
 bottom, left), then turn the whole puzzle around, keeping the top at the top, and read the back
@@ -296,7 +369,7 @@ the corners. A pattern with a mistake gets a plain explanation (a colour on the 
 stickers, a piece that cannot exist, two identical pieces, or a pattern that turning cannot make,
 such as two edges swapped).
 
-`pattern` prints the standard colour scheme (that of the Diansheng, Dayan and most other FTOs)
+`show` prints the standard colour scheme (that of the Diansheng, Dayan and most other FTOs)
 held the standard way, white on U and green on F, the scrambling orientation of FTO competitions:
 W R G P / B O Y A = white, red, green, purple / blue, orange, yellow, grey on U R F L / B BL D BR.
 Opposite faces are white/yellow, green/blue, red/orange and purple/grey (checked on a physical
@@ -316,15 +389,16 @@ makes the same puzzle, held another way.
 
 Choose the largest tier that fits comfortably in RAM. Tables are generated on first use. They
 are written to `./tables`, or to `--tables DIR` or `$FTO_TABLES` if given.
-`omelettehedron gen --tier T` generates them ahead of time (`gen` needs `--tier`). Before
+`omelettehedron gen two-phase --tier T` generates them ahead of time (`gen optimal --tier T`
+those of the [optimal solver](#optimal-solver)). Before
 generating a table, the solver checks that the disk and the free memory can hold it, and stops
 at once with a message if not.
 
 Without `--tier`, `solve` and `bench` use the largest tier whose tables are all in the table
 directory, and say which on stderr. A file counts if its size and header are right; the tables
 are not read to decide. With `--moves slice` the `-slice` files count. If no tier is complete,
-the command stops and says to pass `--tier` or to run `gen --tier T`; nothing is generated
-without `--tier`. The optimal solver chooses among its own tiers the same way.
+the command stops and says to pass `--tier` or to run `gen two-phase --tier T`; nothing is
+generated without `--tier`. The optimal solver chooses among its own tiers the same way.
 
 | `--tier` | Memory | Generation (48 cores) | Contents |
 |---|---|---|---|
@@ -341,11 +415,11 @@ Without reserved pages the tables use transparent huge pages.
 
 All tiers also use the 4.7 MB corner/B-centre table and the in-memory phase-2 table. With
 `--moves slice` every tier has its own set of tables of the same sizes (names ending in
-`-slice`), except the distance-to-solved table, which is for face turns only; `gen --tier T
---moves slice` generates them ahead of time. The distance-to-solved table is read only when a
-solve gets deep enough to use it (on a background thread, while the search goes on), so short
-solves and proofs start as fast as without it; long time-limited solves use it too (corner
-6-flip under `-t 1800`: 624 -> 84 s).
+`-slice`), except the distance-to-solved table, which is for face turns only; `gen two-phase
+--tier T --moves slice` generates them ahead of time. The distance-to-solved table is read only
+when a solve gets deep enough to use it (on a background thread, while the search goes on), so
+short solves and proofs start as fast as without it; long time-limited solves use it too
+(corner 6-flip under `-t 1800`: 624 -> 84 s).
 Generation needs about the memory of the tier, plus 7 GB while the distance-to-solved table is
 made (peak 18.3 GB for `large`; `huge` 29.4 GB without that table, not measured with it); on
 one core it takes ~5 s for `tiny`, ~30 s for `small` and ~3 min for `medium`. Writing the 30 GB
@@ -382,8 +456,8 @@ scripts/bench-quick.sh <label>                  # build this tree, one round of 
 scripts/bench-quick.sh --compare <binA> <binB>  # two builds, interleaved rounds, markdown table
 scripts/bench-quick.sh --rounds 4 --items 2p-t1s-mt,2p-t1s-1t --compare <binA> <binB>  # small gains
 scripts/bench-quick.sh --opt-tier medium,large --rounds 2 <label>   # more tiers and rounds
-target/release/omelettehedron bench --tier large -N 40 -t 5       # 40 seeded random positions, 5 s each
-target/release/omelettehedron bench --tier large -N 20 -t 5 -j 1  # single-threaded
+target/release/omelettehedron bench two-phase --tier large -N 40 -t 5       # 40 seeded random positions, 5 s each
+target/release/omelettehedron bench two-phase --tier large -N 20 -t 5 -j 1  # single-threaded
 scripts/bench.sh <label> <tier>                 # the long standard set (about 5 minutes)
 scripts/bench-opt.sh <label> <tier>             # optimal mode: time to prove optimality
 scripts/bench-optimal.sh <label> <tier>         # the optimal solver: 17-move (1 thread), 19-move sets
@@ -400,36 +474,38 @@ scripts/compare-optimal.py <before> <after>     # the same for scripts/bench-opt
 
 ## Optimal solver
 
-`omelettehedron optimal` is a second, separate solver: a single-phase IDA* straight to the
+`omelettehedron solve optimal` is a second, separate solver: a single-phase IDA* straight to the
 solved state with pattern databases of distances to solved (as in optimal Rubik's Cube
 solvers), in `src/optimal/`. It has its own tiers and tables (`opt-*.prun`) and its own
 benchmark; see [docs/OPTIMAL.md](docs/OPTIMAL.md). The two-phase solver's optimal mode is
 still faster on most positions (1.7x to 3.5x on 19- to 21-move positions against the large
 tier, more where it finds the optimum early), but the optimal solver's large tier proves the
 corner 6-flip in half a second, against ten minutes for the two-phase solver. For the hardest
-positions (deep, symmetric, or with the edges and centres nearly solved), `optimal solve --tier
+positions (deep, symmetric, or with the edges and centres nearly solved), `solve optimal --tier
 large` can prove optimality much faster than the two-phase solver: it proves the 23-move
 tri_adj+edge_opp in 4.5 minutes, against 2.5 hours, and all four 23-move positions of
 `bench/hard.tsv` in 45 minutes, against 11 hours.
 
 ```sh
-target/release/omelettehedron optimal solve --tier medium "U R' BL F D B' L BR"
-target/release/omelettehedron optimal solve --tier medium -n 10 -v "..."   # up to 10 optimal solutions
-target/release/omelettehedron optimal bench --tier medium -N 10 --scramble-len 17 --seed 1717 -j 1
-target/release/omelettehedron optimal solve --tier medium --moves slice "..."  # slice turns allowed
+target/release/omelettehedron solve optimal --tier medium "U R' BL F D B' L BR"
+target/release/omelettehedron solve optimal --tier medium -n 10 -v "..."   # up to 10 optimal solutions
+target/release/omelettehedron bench optimal --tier medium -N 10 --scramble-len 17 --seed 1717 -j 1
+target/release/omelettehedron solve optimal --tier medium --moves slice "..."  # slice turns allowed
 ```
 
-| `optimal --tier` | Memory | Tables |
+| `solve optimal --tier` | Memory | Tables |
 |---|---|---|
 | `small` | 195 MB | corners x centres (both orbits, 24 symmetries), edge permutation, and the two-phase A-centre/edge-triple table on both sides |
 | `medium` | 3.4 GB | corners x centres, corners x edges (48 symmetries), and the two-phase A-centre/edge table on both sides |
-| `large` | 22.0 GB | the two-phase A-centre/edge table on both sides and corners x B-centres x the edges of one face, to solved (21 GB, 6 symmetries, read for all 8 faces); `optimal gen --tier large` takes about 2 minutes on 48 cores (`--min-free-memory GB` stops it cleanly if memory runs low) |
+| `large` | 22.0 GB | the two-phase A-centre/edge table on both sides and corners x B-centres x the edges of one face, to solved (21 GB, 6 symmetries, read for all 8 faces); `gen optimal --tier large` takes about 2 minutes on 48 cores (`--min-free-memory GB` stops it cleanly if memory runs low) |
 
-Without `--tier`, `optimal solve` and `optimal bench` use the largest tier whose tables are all
-there (see [Pruning tables](#pruning-tables)); `optimal gen` needs `--tier`.
+Without `--tier`, `solve optimal` and `bench optimal` use the largest tier whose tables are all
+there (see [Pruning tables](#pruning-tables)); `gen optimal` needs `--tier`.
 
-Stopping rules: none (first optimal solution), `-n N` (up to N optimal solutions), `-t T`
-(time limit; prints the lower bound proven so far), `-l L` (give up above L moves). Positions
+It prints as the two-phase solver does: each lower bound as it is proven (every completed
+depth), then the solution and the result line. Limits: none (first optimal solution), `-n N`
+(up to N optimal solutions), `-t T` (time limit; prints the lower bound proven so far), `-l L`
+(give up above L moves). Positions
 that some of the octahedron's 48 symmetries fix (like most of `bench/hard.tsv`) are searched
 with a symmetric start (only one of each set of equivalent first moves is searched), which
 divides their node counts by about the number of symmetries.
@@ -442,16 +518,17 @@ moves or prints "no solution of at most 23 moves".
 
 ## Both solvers at once
 
-`omelettehedron combined` runs the two-phase solver and the optimal solver on the same position
-at the same time, each on half of the threads. The two-phase solver finds short solutions fast:
-upper bounds on the optimal length. The optimal solver proves lower bounds: no solution has
-fewer moves. Each new bound is printed as soon as it is found, with the time and the solver that
-found it. Both solvers stop when the bounds meet; the best solution is then optimal, proven
-exactly as either solver proves it alone. With `-t`, they stop at the time limit, and the output
-gives the best solution and the bounds.
+`omelettehedron solve combined` runs the two-phase solver and the optimal solver on the same
+position at the same time, each on half of the threads. The two-phase solver finds short
+solutions fast: upper bounds on the optimal length. The optimal solver proves lower bounds: no
+solution has fewer moves. Each new bound is printed as soon as it is found, with the time and
+the solver that found it. Both solvers stop when the bounds meet; the best solution is then
+optimal, proven exactly as either solver proves it alone. With `-t`, they stop at the time
+limit, and the output gives the best solution and the bounds; with `-l`, they stop at the first
+solution of at most that many moves.
 
 ```text
-$ omelettehedron combined --tier large --opt-tier large --random 1 --seed 3
+$ omelettehedron solve combined --tier large --optimal-tier large --random 1 --seed 3
     0.000 s  lower 12  optimal
     0.000 s  lower 13  optimal
     0.001 s  lower 14  optimal
@@ -471,21 +548,21 @@ D R' BR BL' B BR' L' U' D B' BR D F' R F' BL U R D R
 
 The two solvers help each other. The optimal solver stops as soon as the two-phase solver's
 best length is proven, so it never runs the depth of that length, its longest. With
-`--two-phase passes`, the two-phase solver's target-length passes start from the largest lower
-bound either solver has proven.
+`--passes`, the two-phase solver's target-length passes start from the largest lower bound
+either solver has proven.
 
-* `--tier` and `--opt-tier` choose the two solvers' tables; without them, each solver takes
-  the largest tier whose tables are all there, as `solve` does. Both large tiers need about
-  34 GB (two-phase huge and optimal large about 55 GB); the memory is checked before anything
-  is loaded.
+* `--tier` and `--optimal-tier` choose the two solvers' tables; without them, each solver takes
+  the largest tier whose tables are all there, as `solve two-phase` and `solve optimal` do.
+  Both large tiers need about 34 GB (two-phase huge and optimal large about 55 GB); the memory
+  is checked before anything is loaded.
 * `-j` sets the threads in all; `--two-phase-threads` and `--optimal-threads` set each
   solver's share.
-* `--two-phase improve` (the default) makes the two-phase solver search as under a time
-  limit: each better solution as soon as it can. `--two-phase passes` uses its optimal mode.
-  Both prove optimality about as fast (below), but the passes find no solution until they
-  reach the optimal length: on edge_hard, `passes` found its first solution after 123 s,
-  `improve` a 21-move (optimal) one after 0.5 s. Under a time limit, `passes` may end with
-  no solution at all.
+* By default the two-phase solver improves its best solution step by step, as `solve
+  two-phase` does: each better solution as soon as it can. `--passes` uses its target-length
+  passes instead. Both prove optimality about as fast (below), but the passes find no solution
+  until they reach the optimal length: on edge_hard, `passes` found its first solution after
+  123 s, the default (`improve`) a 21-move (optimal) one after 0.5 s. Under a time limit,
+  `passes` may end with no solution at all.
 * `--progress` shows both solvers' progress, each line marked with the solver.
 
 Each solver gets half of the threads, so a combined solve takes about twice as long as the
@@ -576,7 +653,7 @@ reloads once; where a browser refuses, the demo runs on one thread.
   the front and the back (`wasm/pattern-picture.mjs`, `wasm/pattern-input.mjs`; the palette is
   their colour scheme, kept in localStorage), and gets a solution and a scramble that makes the
   pattern, with its start hold. Mistakes are explained and the stickers concerned outlined.
-* Tables can also be loaded from the native `gen --tier tiny`, `small` or `medium` files:
+* Tables can also be loaded from the native `gen two-phase --tier tiny`, `small` or `medium` files:
   the formats are the same, and the module generates byte-identical files.
 
 Measured in Bun 1.4.4 (JavaScriptCore, Safari's engine) on the 48-core EPYC VM (small tier;
@@ -684,6 +761,7 @@ The tests cover:
   the two-phase solver's optimal mode, with and without slice turns, `-n` against brute-force
   enumeration of all optimal solutions, the other stopping rules, deterministic node counts and
   table consistency.
-* the command line (`tests/cli.rs`): patterns on stdin (one with a mistake) for both solvers,
-  the tier chosen from the table files (and nothing generated without `--tier`), and `info`
-  without tables.
+* the command line (`tests/cli.rs`): the same output from the three `solve` methods (with
+  `-q`, `--batch` and positions on stdin), solutions printed at once without a limit,
+  patterns on stdin (one with a mistake) and as arguments, the tier chosen from the table files
+  (and nothing generated without `--tier`), and `show` and `symmetric` without tables.
