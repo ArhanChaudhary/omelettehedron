@@ -25,14 +25,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: actions/configure-pages@v5
-      # A fixed Rust version, tested with wasm/test.mjs before it is changed here: a new stable
-      # can break the build (1.100 started linking wasi-libc's `_initialize`, a duplicate of
-      # the module's own; see wasm/build.rs).
+      # A fixed Rust version (wasm/rust-version, which scripts/build-wasm.sh also uses, so local
+      # tests build the same modules): a new stable can break the build (1.100 started linking
+      # wasi-libc's `_initialize`, a duplicate of the module's own; see wasm/build.rs).
       - name: Install Rust and the WebAssembly targets
         run: |
-          rustup toolchain install 1.100.0 --profile minimal --no-self-update \
+          rustup toolchain install "$(cat wasm/rust-version)" --profile minimal --no-self-update \
             --target wasm32-wasip1 --target wasm32-wasip1-threads
-          rustup default 1.100.0
       - name: Build the browser demo
         run: scripts/build-pages.sh "${RUNNER_TEMP}/omelettehedron-pages"
       - uses: actions/upload-pages-artifact@v4

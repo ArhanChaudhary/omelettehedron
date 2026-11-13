@@ -514,7 +514,9 @@ Faster; the large tier needs 8 GB, and wasm32 has a 4 GB address space) and face
 `--moves`).
 
 ```sh
-rustup target add wasm32-wasip1 wasm32-wasip1-threads
+# (the Rust version of the GitHub Pages site, wasm/rust-version: build-wasm.sh uses it)
+rustup toolchain install "$(cat wasm/rust-version)" --profile minimal \
+    --target wasm32-wasip1 --target wasm32-wasip1-threads
 scripts/build-wasm.sh        # wasm/dist/: omelettehedron.wasm, omelettehedron-threads.wasm,
                              # omelettehedron-threads-medium.wasm
 bun wasm/serve.mjs           # then open http://localhost:8000/
