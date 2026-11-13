@@ -9,7 +9,9 @@ constraint. We implemented it as a second solver (`--method chen`) and measured 
 omelettehedron's two-phase solver. It is not in the released solver; this page explains why.
 
 The code is on the branch [`neg/chen-twophase`](https://github.com/ArhanChaudhary/omelettehedron/tree/neg/chen-twophase)
-(`src/chen/`, with a longer technical write-up in its `docs/CHEN.md`).
+(`src/chen/`, with a longer technical write-up in its `docs/CHEN.md`). Chen Shuang then
+suggested letting phase 1 stop earlier; that variant is measured in
+[A relaxed phase 1](#a-relaxed-phase-1).
 
 ## In short
 
@@ -25,6 +27,11 @@ The code is on the branch [`neg/chen-twophase`](https://github.com/ArhanChaudhar
   block split is shorter on at most 4 of the 100 positions. The block split solves more
   positions early on: on one thread at 1 s, 83 of 100 on the tiny tier against 30.
 * **More memory.** It needs 158 MB of extra tables, or 0.16 to 0.31 GB more at peak.
+* **A relaxed phase 1 helps, but not enough.** Chen Shuang suggested letting phase 1 stop at any
+  block configuration. That makes the block split's first solution about 1 move shorter, and
+  its best at 10 s 0.6 to 0.7 moves shorter on one thread (about equal on 16 and 48 threads).
+  On the small tier it draws level with the two-phase solver (at 10 s on one thread, and up to
+  1 s on 16 and 48 threads). Elsewhere the two-phase solver is still 0.21 to 0.45 moves shorter at 10 s.
 * **The cause.** Phase 2 is a search over 1.59 × 10¹⁴ positions. The largest tables that fit
   estimate about 11 moves for phase 2 where about 16 are needed, so the search finds little in
   the nodes it can afford. The two-phase solver's phase 2 is read off an exact table, with no
@@ -191,6 +198,84 @@ On one thread the block split solves more of these within 20 s (4 of 7 against 3
 tier, 4 against 2 on the tiny tier), always with a long solution at first. On 48 threads the
 two-phase solver solves all 7, and its best is as short or shorter on every one.
 
+## A relaxed phase 1
+
+After reading the first version of this page, Chen Shuang suggested a change. Phase 1 can stop
+at any of the 460 × 3⁴ block configurations, not only at those with every hexagon intact,
+because phase 2 can start from any of them. We implemented it as `--method chen-relaxed` on the
+branch [`work/chen-relaxed`](https://github.com/ArhanChaudhary/omelettehedron/tree/work/chen-relaxed).
+Phase 2 is unchanged: its tables already cover every block configuration.
+
+* **Shorter phase 1.** Phase 1 now ends in any of 447,120 configurations (37,260 for each of the
+  12 ways the hexagons can sit) instead of 972. On the medium tier its new table is exact: at
+  most 11 moves, 8.45 on average, against 14 and 10.94. On the small tier the table is a lower
+  bound (at most 10, 7.61 on average).
+* **More memory.** The new phase-1 table takes 1.03 GB on the medium tier and 129 MB on the
+  small tier. Peak memory is 2.47 to 2.56 GB on medium (strict block split 1.44 to 1.52,
+  two-phase 1.20 to 1.22) and 0.66 to 0.74 GB on small. The tiny tier has no table to build it
+  from.
+
+These runs were made on 2026-11-13 the same way as above, on the same 100 positions (build
+badc27e). The strict block split, rerun from this build beside the relaxed runs on 1 and 16
+threads, gave the same lengths as the earlier build at 10 s on all 100 positions. So the
+comparisons below use the earlier runs of the other two solvers.
+
+### Mean solution length, relaxed
+
+Same format as the [main table](#mean-solution-length).
+
+| Tier | Threads | First | 0.01 s | 0.1 s | 1 s | 10 s |
+|---|---:|---|---|---|---|---|
+| small | 1 | 25.93 after 0.4 s | 24.00 (8) | 24.64 (28) | 23.40 (92) | 22.22 |
+| small | 16 | 25.49 after 0.022 s | 24.22 (51) | 22.91 (95) | 22.18 | 21.79 |
+| small | 48 | 25.14 after 0.0046 s | 23.74 (89) | 22.35 | 21.88 | 21.61 |
+| medium | 1 | 25.78 after 0.38 s | 24.00 (8) | 24.48 (31) | 23.05 (93) | 21.95 |
+| medium | 16 | 25.49 after 0.022 s | 24.12 (56) | 22.55 (94) | 21.88 | 21.54 |
+| medium | 48 | 25.16 after 0.0039 s | 23.46 (91) | 22.20 | 21.79 | 21.41 |
+
+### Against the strict block split
+
+The relaxed split's best length minus the strict split's on the same position, as in
+[Paired differences](#paired-differences): negative means the relaxed split is shorter.
+
+| Tier | Threads | 0.1 s | 1 s | 10 s | At 10 s: strict shorter / equal / relaxed shorter |
+|---|---:|---|---|---|---|
+| small | 1 | - | -1.19 ± 0.42 (81) | -0.70 ± 0.22 | 10 / 36 / 54 |
+| small | 16 | -1.27 ± 0.28 (89) | -0.56 ± 0.24 | -0.16 ± 0.19 | 19 / 50 / 31 |
+| small | 48 | -1.04 ± 0.22 | -0.62 ± 0.22 | -0.11 ± 0.18 | 17 / 57 / 26 |
+| medium | 1 | - | -1.10 ± 0.47 (79) | -0.58 ± 0.23 | 11 / 38 / 51 |
+| medium | 16 | -1.01 ± 0.26 (87) | -0.55 ± 0.22 | -0.12 ± 0.16 | 15 / 62 / 23 |
+| medium | 48 | -0.59 ± 0.24 | -0.12 ± 0.19 | -0.02 ± 0.14 | 15 / 66 / 19 |
+
+The relaxed target is never worse. Its first solution is 0.9 to 1.3 moves shorter and comes in
+0.70 to 0.78 of the time. At 0.1 s and 1 s it is clearly shorter, except at 1 s on the medium
+tier on 48 threads. At 10 s it is 0.58 to 0.70 moves shorter on one thread; on 16 and 48
+threads the two are about equal by then.
+
+### Against the two-phase solver
+
+The relaxed split's best length minus the two-phase solver's: positive means the two-phase
+solver is shorter.
+
+| Tier | Threads | 0.1 s | 1 s | 10 s | At 10 s: two-phase shorter / equal / relaxed shorter |
+|---|---:|---|---|---|---|
+| small | 1 | - | +0.44 ± 0.46 (48) | -0.17 ± 0.23 | 22 / 44 / 34 |
+| small | 16 | +0.27 ± 0.34 (62) | +0.01 ± 0.23 | +0.23 ± 0.18 | 30 / 53 / 17 |
+| small | 48 | -0.23 ± 0.25 (98) | +0.08 ± 0.21 | +0.21 ± 0.15 | 26 / 63 / 11 |
+| medium | 1 | +1.00 ± 1.31 (10) | +0.46 ± 0.37 (91) | +0.25 ± 0.20 | 34 / 48 / 18 |
+| medium | 16 | +0.32 ± 0.24 (93) | +0.26 ± 0.18 | +0.35 ± 0.14 | 37 / 55 / 8 |
+| medium | 48 | +0.27 ± 0.24 | +0.34 ± 0.17 | +0.45 ± 0.14 | 41 / 55 / 4 |
+
+The relaxed target closes part of the gap. On the small tier the two are about equal up to 1 s
+on 16 and 48 threads, and at 10 s on one thread (−0.17 ± 0.23). There, by 1 s the relaxed split
+has solved 92 of the 100 positions against the two-phase solver's 50. This is the one setting
+measured where the block split keeps up. Everywhere else the two-phase solver is shorter at
+10 s, by 0.21 to 0.45 moves, and no interval reaches zero.
+
+On 48 threads, in a short screening run, the relaxed split searched fewer phase-1 nodes per
+second than the strict one (3.6 × 10⁷ against 6.0 × 10⁷). A likely cause is the many more
+phase-1 solutions, each of which starts a phase-2 search; we have not looked into it.
+
 ## Why it loses
 
 A two-phase solver is fast when phase 1 ends somewhere phase 2 is cheap. omelettehedron's
@@ -223,6 +308,8 @@ pruning a phase 2 this large.
 
 * A much better phase-2 estimate, such as a table over the block configuration, the corners and
   part of the B-centres together. That table would be far larger than the 149 MB one tried here.
+* A different partition: one with few enough phase-1 positions for an exact table, and a phase 2
+  that still has a strong estimate. The relaxed target moves in that direction.
 * Settings where a quick first solution matters more than its length. The block split's
   first-solution lead is real on the small and tiny tiers. On 48 threads it is gone by about
   0.1 s on the small tier and 1 s on the tiny tier; on one thread it lasts longer.
@@ -240,6 +327,12 @@ B=target/release/omelettehedron
 $B gen --tier small && $B gen --method chen --tier small
 $B bench --method chen --tier small -N 100 --seed 1 -t 10 -j 48
 $B bench --method two-phase --tier small -N 100 --seed 1 -t 10 -j 48
+
+# the relaxed phase 1
+git fetch origin work/chen-relaxed && git checkout work/chen-relaxed
+cargo build --release
+$B gen --method chen-relaxed --tier small
+$B bench --method chen-relaxed --tier small -N 100 --seed 1 -t 10 -j 48
 ```
 
-Thanks to Chen Shuang for the idea and for the state counts that made it easy to check.
+Thanks to Chen Shuang for the idea, for the relaxed target, and for the state counts that made it easy to check.
