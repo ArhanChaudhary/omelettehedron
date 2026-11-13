@@ -73,6 +73,7 @@ enum Cmd {
 }
 
 fn main() -> ExitCode {
+    default_sigpipe();
     match run(Cli::parse_from(progress_values(std::env::args_os()))) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -81,6 +82,19 @@ fn main() -> ExitCode {
         }
     }
 }
+
+/// End quietly when stdout is closed early (`omelettehedron symmetric | head`), as Unix tools
+/// do: Rust ignores SIGPIPE, so the next write to stdout would fail, and `println!` panics.
+#[cfg(unix)]
+fn default_sigpipe() {
+    // SAFETY: restoring a signal's default disposition, before any other thread exists.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn default_sigpipe() {}
 
 /// `--progress 5` as `--progress=5`. The interval of `--progress` is optional, so clap only
 /// takes it after `=` (otherwise `--progress "U R"` would read the scramble as the interval);

@@ -627,6 +627,28 @@ fn symmetric_positions() {
     assert!(err.contains("no subgroup has 5 symmetries"), "{err}");
 }
 
+/// Output read by a reader that stops early (`symmetric --order 8 | head -1`) ends the run
+/// quietly, without a panic on the closed pipe.
+#[cfg(unix)]
+#[test]
+fn closed_stdout_ends_quietly() {
+    use std::io::BufRead;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_omelettehedron"))
+        .args(["symmetric", "--order", "8"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    out.read_line(&mut line).unwrap();
+    assert!(line.starts_with("# subgroup "), "{line}");
+    drop(out);
+    let o = child.wait_with_output().unwrap();
+    let err = String::from_utf8(o.stderr).unwrap();
+    assert!(!err.contains("panicked"), "{err}");
+}
+
 /// `solve optimal --start-depth`: with `-l` of the same value, whether a position needs more
 /// moves (one iteration); above the optimum, a solution that is not proven optimal.
 #[test]
