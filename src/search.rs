@@ -133,6 +133,9 @@ struct Shared<'a, I: AeIndex, const N: usize> {
     limits: Limits,
     report: Report,
     start: Instant,
+    /// `FTO_CPU_CLOCK` on one thread: the time limit counts this thread's CPU time from this
+    /// value (seconds) instead of wall time (see [`thread_cpu_secs`])
+    cpu0: Option<f64>,
     best_len: AtomicUsize,
     /// length the class-B bound prunes against: the best length, or `target + 1` in a
     /// target-length pass (see `solve`)
@@ -364,6 +367,26 @@ const STAT_W: [f32; 32] = {
     w
 };
 
+/// CPU time of the calling thread in seconds (0 if it cannot be read). With `FTO_CPU_CLOCK`
+/// set, a one-thread search (`solve --batch`) measures its time limit with this clock, so each
+/// position gets the same CPU budget however busy the machine is: a batch can then fill idle
+/// cores at the lowest priority without its answers getting worse (research runs).
+fn thread_cpu_secs() -> f64 {
+    #[cfg(unix)]
+    {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `clock_gettime` only writes the `timespec` it is given, which is valid.
+        if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut ts) } == 0 {
+            #[allow(clippy::cast_precision_loss)]
+            return ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9;
+        }
+    }
+    0.0
+}
+
 impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
     /// Read `stop` and `prune_len` into the worker's counter (see `Counter::stop`).
     #[inline]
@@ -380,7 +403,11 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
             }
         }
         if let Some(t) = self.limits.time {
-            if self.start.elapsed() >= t {
+            let used = match self.cpu0 {
+                Some(c0) => Duration::from_secs_f64((thread_cpu_secs() - c0).max(0.0)),
+                None => self.start.elapsed(),
+            };
+            if used >= t {
                 self.stop.store(true, Ordering::Relaxed);
                 return true;
             }
@@ -1632,6 +1659,8 @@ fn solve_n<I: AeIndex, const N: usize>(
         limits: limits.clone(),
         report,
         start,
+        cpu0: (std::env::var_os("FTO_CPU_CLOCK").is_some() && rayon::current_num_threads() == 1)
+            .then(thread_cpu_secs),
         best_len: AtomicUsize::new(usize::MAX),
         prune_len: AtomicUsize::new(usize::MAX),
         count: AtomicU64::new(0),
