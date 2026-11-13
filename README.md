@@ -42,7 +42,8 @@ A fast two-phase solver for the face-turning octahedron (FTO), written in Rust, 
   is an O(length) lookup, and its solutions are optimal even among all face-turn solutions.
 
 Phase 1 is an IDA* search guided by pruning tables. See [docs/PHASES.md](docs/PHASES.md)
-for why this split was chosen and how it compares with alternatives,
+for why this split was chosen and how it compares with alternatives (and
+[docs/CHEN.md](docs/CHEN.md) for Chen Shuang's block split, which we measured and set aside),
 [docs/RESULTS.md](docs/RESULTS.md) for measured speed and solution lengths, and
 [docs/OPTIMIZATION_LOG.md](docs/OPTIMIZATION_LOG.md) for how it got there.
 
