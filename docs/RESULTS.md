@@ -87,6 +87,9 @@ without it. Without `-t` (optimal mode) edge_hard takes 62.8 s and the 6-flip 11
 
 ## The optimal solver's huge tier (2026-11-13, `optimal/ea-huge`; not in the reference run)
 
+(Measured with the corner x centre lookups, before `optimal/ea-cbe` replaced them with the
+triple lookups; for that version see [OPTIMAL.md](OPTIMAL.md#optimisation-round-4-what-the-memory-buys-the-huge-tier-optimalea-huge).)
+
 The `huge` tier (27.9 GB: an edge x A-centre table to solved with 288 symmetries on both sides,
 and corners x centres; [OPTIMAL.md](OPTIMAL.md#optimisation-round-4-what-the-memory-buys-the-huge-tier-optimalea-huge))
 against the large tier (22.0 GB), the same binary, quiet machine, bench lock, two rounds:

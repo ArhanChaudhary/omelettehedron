@@ -509,13 +509,13 @@ fn large_tier_matches_brute_force() {
     }
 }
 
-/// The huge tier (the 27.9 GB edge x A-centre table and the corner x centre table: loaded from
+/// The huge tier (the 27.9 GB edge x A-centre table and the 21.0 GB triple table: loaded from
 /// `$FTO_TABLES`, generated if missing): the same optimal lengths as the brute force, bounds
-/// never above the brute-force distance (admissible), consistent tables, the medium tier's
-/// corner x centre values, and edge x A-centre lookups never below the A-centre/edge values
-/// (the table projects onto that one) on random positions.
+/// never above the brute-force distance (admissible), consistent tables, edge x A-centre lookups
+/// never below the A-centre/edge values (the table projects onto that one), and triple lookups
+/// never below the corner x centre values, on random positions.
 #[test]
-#[ignore = "needs the huge and medium tiers' tables (31.3 GB; `gen optimal --tier huge`)"]
+#[ignore = "needs the huge and medium tiers' tables (52.3 GB; `gen optimal --tier huge`)"]
 fn huge_tier_matches_brute_force() {
     let dir = omelettehedron::tables::table_dir(None);
     let t = OptTables::load(&dir, OptTier::Huge, MoveSet::FACE, false).unwrap();
@@ -563,10 +563,11 @@ fn huge_tier_matches_brute_force() {
         let p = Pos::of(&Cube::random(&mut rng));
         let h = exact(&b, &p).unwrap();
         let hm = exact(&medium, &p).unwrap();
-        // the corner x centre lookups are the medium tier's; the edge x A-centre lookups are at
-        // least the A-centre/edge ones of the same side
-        assert_eq!([h[2], h[3]], [hm[1], hm[2]]);
+        // the edge x A-centre lookups are at least the A-centre/edge ones of the same side; each
+        // A-triple lookup at least corners x B-centres, each B-triple lookup corners x A-centres
         assert!(h[0] >= hm[3] && h[1] >= hm[4]);
+        assert!(h[2..6].iter().all(|&x| x >= hm[1]));
+        assert!(h[6..10].iter().all(|&x| x >= hm[2]));
         for m in 0..N_MOVES {
             let q = mt.apply(&p, m);
             let hq = exact(&b, &q).unwrap();

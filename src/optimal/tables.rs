@@ -48,9 +48,9 @@ pub enum OptTier {
     /// ~22.0 GB: the A-centre/edge table on both sides and a corner x B-centre x edge-triple
     /// table to solved (21.0 GB, eight lookups); 64-bit targets only
     Large,
-    /// ~27.9 GB: an edge x A-centre table to solved (the whole edge permutation, up to
-    /// rotation and to cycling the A-triples together, 288 symmetries) on both sides; 64-bit
-    /// targets only
+    /// ~48.9 GB: an edge x A-centre table to solved (the whole edge permutation, up to
+    /// rotation and to cycling the A-triples together, 288 symmetries, 27.9 GB) on both sides and
+    /// the large tier's corner x B-centre x edge-triple table (21.0 GB); 64-bit targets only
     Huge,
 }
 
@@ -103,7 +103,7 @@ impl OptTier {
             ],
             // (no A-centre/edge table: the edge x A-centre table projects onto it, so its
             // values are never higher)
-            OptTier::Huge => vec![cc, file(EA_FILE, EA_ENTRIES)],
+            OptTier::Huge => vec![cc, file(EA_FILE, EA_ENTRIES), file(CBE_FILE, CBE_ENTRIES)],
         })
     }
 }
@@ -455,7 +455,7 @@ impl OptTables {
             OptTier::Large | OptTier::Huge => (None, None),
         };
         let cbe = match tier {
-            OptTier::Large => {
+            OptTier::Large | OptTier::Huge => {
                 let ix = CbeIndex::new();
                 let t = build_cbe_guarded(&ix, verbose)?;
                 Some((ix, t))
@@ -540,7 +540,7 @@ impl OptTables {
         let cbe_path = dir.join(format!("{CBE_FILE}{sfx}.prun"));
         let ea_path = dir.join(format!("{EA_FILE}{sfx}.prun"));
         let ce_ix = (tier == OptTier::Medium).then(CeIndex::new);
-        let cbe_ix = (tier == OptTier::Large).then(CbeIndex::new);
+        let cbe_ix = matches!(tier, OptTier::Large | OptTier::Huge).then(CbeIndex::new);
         let ea_ix = match tier {
             OptTier::Huge => Some(EaIndex::new()?),
             _ => None,
@@ -668,13 +668,14 @@ impl OptTables {
     /// The lower bounds of the huge tier (`None` if the tables are another tier's).
     pub fn huge(&self) -> Option<HugeBounds<'_>> {
         let (ea_ix, ea, ea_targets) = self.ea.as_ref()?;
+        let (cbe_ix, cbe, cbe_targets) = self.cbe.as_ref()?;
         Some(HugeBounds {
             ea_ix,
             ea,
             ea_targets,
-            cc_ix: &self.cc_ix,
-            cc: &self.cc,
-            cc_target: self.cc_target,
+            cbe_ix,
+            cbe,
+            cbe_targets,
             moves: self.moves,
         })
     }
@@ -712,9 +713,9 @@ impl OptTables {
             _ => 2,
         };
         // large: lookups 0 and 1 the A-centre/edge table, 2.. the triples; huge: 0 and 1 the
-        // tier's own table, 2 and 3 the corner x centre table
+        // tier's own table, 2.. the triples
         let large_file = |k: usize| if k < 2 { 2 } else { 3 };
-        let huge_file = |k: usize| usize::from(k >= 2);
+        let huge_file = |k: usize| if k < 2 { 0 } else { 3 };
         let r = match self.tier {
             OptTier::Small => self
                 .small()
@@ -1002,47 +1003,48 @@ impl Bounds for LargeBounds<'_> {
 }
 
 /// The huge tier: the edge x A-centre table ([`super::ea`]) on the position and on its
-/// `SWAP_AB` conjugate, then the corner x centre lookups. The edge x A-centre table projects
-/// onto the two-phase A-centre/edge table (the edge permutation up to cycling the A-triples
-/// gives the triple labels and the chirality), so that table is left out.
+/// `SWAP_AB` conjugate, then the large tier's eight corner x B-centre x edge-triple lookups. The
+/// edge x A-centre table projects onto the two-phase A-centre/edge table (the edge permutation
+/// up to cycling the A-triples gives the triple labels and the chirality), and each triple lookup
+/// onto a corner x centre lookup, so those tables are left out.
 ///
 /// The edge x A-centre table holds no corners: on a position whose edges and centres are
-/// solved it reads 0, and only the corner x centre lookups (4.7 MB, cache-resident, read for
-/// the children the first two keep) bound it. They prune few random positions (0.3% of the
-/// nodes of the completed iterations) but take the corner 6-flip of `bench/hard.tsv` from over
-/// 60 s to 32.8 s (48 threads). Measured and left out: corners x edges (2.4 GB more; 0.96x
-/// nodes but 0.89x nodes/s on one thread, the 6-flip 16.9 s) and the large tier's eight triple
-/// lookups (21 GB more; 0.75x nodes, but time 0.94x on one thread (17-move set) and 1.14x on 48
-/// (19-move set); the 6-flip 0.56 s).
+/// solved it reads 0, and the triple lookups bound it (the corner 6-flip of `bench/hard.tsv`:
+/// 0.56 s on 48 threads, against 32.8 s with the corner x centre lookups instead). On random
+/// positions the triple lookups add little the edge x A-centre lookups do not prune: 0.75x the
+/// nodes of the completed iterations, at about the same time (see docs/OPTIMAL.md).
 pub struct HugeBounds<'a> {
     ea_ix: &'a EaIndex,
     ea: &'a Table2,
     ea_targets: &'a [usize],
-    cc_ix: &'a CcIndex,
-    cc: &'a Table2,
-    cc_target: usize,
+    cbe_ix: &'a CbeIndex,
+    cbe: &'a Table2,
+    cbe_targets: &'a [usize],
     moves: MoveSet,
 }
 
+/// The huge tier's first triple lookup (0 and 1 are the edge x A-centre table on the position and
+/// on its conjugate).
+const HUGE_CBE: usize = 2;
+
 impl Bounds for HugeBounds<'_> {
-    const K: usize = 4;
-    /// The edge x A-centre table on both sides first: alone each prunes 85% of random
-    /// positions' children with 11 moves left (Korf sampling), the two together 97.5%.
-    const ORDER: &'static [usize] = &[0, 1, 2, 3];
+    const K: usize = HUGE_CBE + N_LOOKUPS;
+    /// The edge x A-centre table on both sides, then the triples in the large tier's order.
+    const ORDER: &'static [usize] = &[0, 1, 9, 6, 4, 7, 8, 5, 3, 2];
     fn moves(&self) -> MoveSet {
         self.moves
     }
     #[inline(always)]
     fn index(&self, k: usize, p: &Pos) -> usize {
-        match k {
-            0 | 1 => self.ea_ix.index(k, p),
-            2 => self.cc_ix.index_b(p.c, &p.xb),
-            _ => self.cc_ix.index_a(p.c, &p.xa),
+        if k < HUGE_CBE {
+            self.ea_ix.index(k, p)
+        } else {
+            self.cbe_ix.index(k - HUGE_CBE, p)
         }
     }
     #[inline(always)]
     fn pre(&self, k: usize, p: &Pos) -> u32 {
-        if k < 2 {
+        if k < HUGE_CBE {
             self.ea_ix.pre(k, p)
         } else {
             0
@@ -1050,7 +1052,7 @@ impl Bounds for HugeBounds<'_> {
     }
     #[inline(always)]
     fn index_with(&self, k: usize, p: &Pos, pre: u32) -> usize {
-        if k < 2 {
+        if k < HUGE_CBE {
             self.ea_ix.index_with(k, p, pre)
         } else {
             self.index(k, p)
@@ -1058,26 +1060,32 @@ impl Bounds for HugeBounds<'_> {
     }
     #[inline(always)]
     fn table(&self, k: usize) -> &Table2 {
-        if k < 2 {
+        if k < HUGE_CBE {
             self.ea
         } else {
-            self.cc
+            self.cbe
         }
     }
     fn is_target(&self, k: usize, i: usize) -> bool {
-        if k < 2 {
+        if k < HUGE_CBE {
             self.ea_targets.contains(&i)
         } else {
-            i == self.cc_target
+            self.cbe_targets.contains(&i)
         }
     }
     fn name(&self, k: usize) -> &'static str {
         [
             "edges+A (EA)",
             "EA of SWAP_AB (edges+B)",
-            "corners+B",
-            "corners+A",
-        ][k.min(3)]
+            "CBE A-triple 0",
+            "CBE A-triple 1",
+            "CBE A-triple 2",
+            "CBE A-triple 3",
+            "CBE B-triple 0",
+            "CBE B-triple 1",
+            "CBE B-triple 2",
+            "CBE B-triple 3",
+        ][k.min(9)]
     }
 }
 

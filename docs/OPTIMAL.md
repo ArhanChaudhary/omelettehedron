@@ -126,7 +126,7 @@ Tiers (`--tier`):
 | `small` | edges, corners x B-centres, corners x A-centres, A-centres/edge triples on both sides | 195 MB |
 | `medium` | corners x edges, corners x B-centres, corners x A-centres, A-centres/edges (with chirality) on both sides | 3.4 GB |
 | `large` | A-centres/edges (with chirality) on both sides, and corners x B-centres x edge triple to solved for the 4 A-triples and the 4 B-triples (no corner x centre lookups: a triple lookup is never below the corner x centre value of its orbit; no corners x edges: it costs more than it prunes) | 22.0 GB |
-| `huge` | edges x A-centres to solved on both sides (it projects onto the A-centre/edge table, which is left out), then corners x B-centres and corners x A-centres | 27.9 GB |
+| `huge` | edges x A-centres to solved on both sides (it projects onto the A-centre/edge table, which is left out), then the large tier's eight triple lookups (each projects onto a corner x centre lookup) | 48.9 GB |
 
 (The corner x edge table subsumes the edge table: every corner x edge path is an edge path.)
 
@@ -753,6 +753,29 @@ Variants measured (`neg/optimal-ea-ce`), against the huge tier: with corners x e
 16.9 s), left out; with the eight triple lookups instead of the corner x centre ones (48.9 GB,
 `optimal/ea-cbe`) 0.75x the nodes (predicted 0.73x), time 0.94x on one thread (17-move set) and
 1.14x on 48 (19-move set), the 6-flip 0.56 s.
+
+**The triple lookups in the huge tier (`optimal/ea-cbe`).** On this branch the huge tier reads
+the large tier's eight triple lookups after the edge x A-centre ones, instead of the corner x
+centre lookups (which they dominate): 48.9 GB. They cover the edge x A-centre table's blind
+spot, the positions whose edges and centres are solved, and cut the nodes of random positions
+by a quarter, but a node costs about as much more (1.93 lookups per node on the 17-move set
+against 1.36, a third of them in the 21 GB table):
+
+| set or position (48 threads unless noted) | huge, 27.9 GB (`optimal/ea-huge`) | huge with the triples, 48.9 GB | large, 22.0 GB |
+|---|---|---|---|
+| 10 x 17 moves, 1 thread: time, nodes (completed iterations) | 0.74-0.78 s, 1.79e7 (4.16e6) | 0.67-0.74 s, 9.45e6 (3.13e6) | 4.83 s, 7.82e7 (1.73e7) |
+| 10 x 19 moves: time, nodes (completed iterations) | 2.17-2.20 s, 2.17e9 (5.35e8) | 2.51-2.65 s, 1.54e9 (4.02e8) | 9.79-9.82 s, 6.28e9 (1.99e9) |
+| tri_adj+edge_opp, depth-21 iteration | 3.21e9 nodes, 3.4 s | 2.10e9, 3.7 s | 4.38e9, 10.2 s |
+| tri_adj+edge_adj | 1.11e10, 11.5 s | 5.45e9, 9.5 s | 1.07e10, 23.1 s |
+| tri_adj-[Uf_Fu;Db_Bd] | 2.53e10, 26.1 s | 1.53e10, 25.8 s | 3.77e10, 78.8 s |
+| tri_adj+[UB_FD,NL_MR] | 8.88e9, 9.5 s | 6.09e9, 10.0 s | 1.36e10, 29.6 s |
+| edge_hard, depth-20 iteration | 1.55e10, 15.8 s | 1.32e10, 21.8 s | 1.05e11, 155.3 s |
+| corner 6-flip, proven 20 | 32.8 s | 0.49 s (9.7e7 nodes) | 0.34 s |
+
+(Four rounds of the sets in all, two in an experiment build with the same lookups; times of the
+hard positions include the iterations below 21 or 20.) The same time on the random-move sets and
+the 23-move positions (0.9x-1.2x of the huge tier's), at 0.55-0.85x the nodes; what the 21 GB
+buy is the positions whose edges and centres are solved.
 
 ## Open
 
