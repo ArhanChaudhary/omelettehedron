@@ -155,6 +155,15 @@ impl OptMoves {
         shuffle(ep, &self.shuf_e[m & 31])
     }
 
+    /// Apply move `m` to the A-centres and edges only.
+    #[inline(always)]
+    pub fn apply_ea(&self, xa: &[u8; 16], ep: &[u8; 16], m: usize) -> ([u8; 16], [u8; 16]) {
+        (
+            shuffle(xa, &self.shuf_a[m & 31]),
+            shuffle(ep, &self.shuf_e[m & 31]),
+        )
+    }
+
     /// Corner id after move `m` (a slice moves no corner).
     #[inline(always)]
     pub fn corner(&self, c: u16, m: usize) -> u16 {

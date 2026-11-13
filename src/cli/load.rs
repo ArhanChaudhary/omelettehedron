@@ -157,6 +157,18 @@ macro_rules! with_bounds {
                 let $b = t.large().ok_or_else(missing)?;
                 $body
             }
+            OptTier::Huge if t.cbe.is_some() => {
+                let $b = t.huge::<2>().ok_or_else(missing)?;
+                $body
+            }
+            OptTier::Huge if t.ce.is_some() => {
+                let $b = t.huge::<1>().ok_or_else(missing)?;
+                $body
+            }
+            OptTier::Huge => {
+                let $b = t.huge::<0>().ok_or_else(missing)?;
+                $body
+            }
         }
     }};
 }
