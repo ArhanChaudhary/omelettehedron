@@ -31,7 +31,10 @@ suggested letting phase 1 stop earlier; that variant is measured in
   block configuration. That makes the block split's first solution about 1 move shorter, and
   its best at 10 s 0.6 to 0.7 moves shorter on one thread (about equal on 16 and 48 threads).
   On the small tier it draws level with the two-phase solver (at 10 s on one thread, and up to
-  1 s on 16 and 48 threads). Elsewhere the two-phase solver is still 0.21 to 0.45 moves shorter at 10 s.
+  1 s on 16 and 48 threads), but with more than twice the memory: 0.66 to 0.74 GB against
+  0.30 GB. Given 1.2 GB (the medium tier), the two-phase solver is shorter again: 21.70 moves
+  against 22.22 at 10 s on one thread. Elsewhere the two-phase solver is still 0.21 to 0.45
+  moves shorter at 10 s.
 * **The cause.** Phase 2 is a search over 1.59 × 10¹⁴ positions. The largest tables that fit
   estimate about 11 moves for phase 2 where about 16 are needed, so the search finds little in
   the nodes it can afford. The two-phase solver's phase 2 is read off an exact table, with no
@@ -269,7 +272,10 @@ solver is shorter.
 The relaxed target closes part of the gap. On the small tier the two are about equal up to 1 s
 on 16 and 48 threads, and at 10 s on one thread (−0.17 ± 0.23). There, by 1 s the relaxed split
 has solved 92 of the 100 positions against the two-phase solver's 50. This is the one setting
-measured where the block split keeps up. Everywhere else the two-phase solver is shorter at
+measured where the block split keeps up, and it is not at equal memory. The relaxed split
+peaks at 0.66 to 0.74 GB on the small tier, against the two-phase solver's 0.30 GB. With the
+medium tier (1.20 GB), the two-phase solver averages 21.70 moves at 10 s on one thread,
+against the relaxed small tier's 22.22. Everywhere else the two-phase solver is shorter at
 10 s, by 0.21 to 0.45 moves, and no interval reaches zero.
 
 On 48 threads, in a short screening run, the relaxed split searched fewer phase-1 nodes per
