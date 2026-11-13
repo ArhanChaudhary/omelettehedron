@@ -151,6 +151,7 @@ fn marks_are_exact_labelled_distances() {
             keep_paths: true,
             chunks: 1 + k,
             labelled: true,
+            relabellings: false,
         };
         let c = coset::solve(t, &cube, &opt, |_| {}).unwrap();
         assert_eq!(c.exact_through, Some(R));
@@ -196,6 +197,7 @@ fn bounds_match_the_sequences_applied_to_the_elements() {
         keep_paths: true,
         chunks: 3,
         labelled: true,
+        relabellings: false,
     };
     let c = coset::solve(t, &cube, &opt, |_| {}).unwrap();
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(4);
@@ -231,6 +233,55 @@ fn bounds_match_the_sequences_applied_to_the_elements() {
         assert_eq!(sol.len(), best);
         assert_eq!(z.apply_seq(&sol), Cube::solved());
     }
+}
+
+/// With the other relabellings' sequences: each improved bound equals the shortest solution
+/// through every sequence kept (labelled or not), applied to the element itself wherever it
+/// takes the element into H_A, and is never above the labelled bound.
+#[test]
+fn relabelled_sequences_improve_soundly() {
+    let t = tables();
+    let cube = scramble("R U L' B D BL' F R'");
+    let opt = Options {
+        target: 15,
+        max_search: 12,
+        stop_when_covered: false,
+        keep_paths: true,
+        chunks: 2,
+        labelled: true,
+        relabellings: true,
+    };
+    let c = coset::solve(t, &cube, &opt, |_| {}).unwrap();
+    assert!(c.others.iter().map(|e| e.index.len()).sum::<usize>() > 0);
+    let improved = c
+        .bounds
+        .iter()
+        .zip(&c.labelled_bounds)
+        .filter(|(a, b)| a < b)
+        .count();
+    assert!(improved > 0, "no bound improved");
+    assert!(c.bounds.iter().zip(&c.labelled_bounds).all(|(a, b)| a <= b));
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(7);
+    let mut seen_better = 0;
+    for k in 0..60 {
+        // half of them among the improved elements
+        let p: u32 = if k % 2 == 0 {
+            rng.gen_range(0..N_COSET as u32)
+        } else {
+            loop {
+                let p = rng.gen_range(0..N_COSET as u32);
+                if c.bounds[p as usize] < c.labelled_bounds[p as usize] {
+                    break p;
+                }
+            }
+        };
+        let (_, z) = c.element(&t.p2, p).unwrap();
+        let sol = c.solution_any(&t.p2, &z).unwrap();
+        assert_eq!(sol.len(), usize::from(c.bounds[p as usize]), "element {p}");
+        assert_eq!(z.apply_seq(&sol), Cube::solved());
+        seen_better += usize::from(c.bounds[p as usize] < c.labelled_bounds[p as usize]);
+    }
+    assert!(seen_better >= 30);
 }
 
 /// The inverse of an internal word undoes it.

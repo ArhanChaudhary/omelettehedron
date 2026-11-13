@@ -68,6 +68,7 @@ use std::time::Instant;
 
 /// What to compute.
 #[derive(Clone, Copy, Debug)]
+#[allow(clippy::struct_excessive_bools)] // independent switches
 pub struct Options {
     /// Fill the coset to this depth: every element is bounded by the end, or listed as not
     /// covered.
@@ -87,6 +88,9 @@ pub struct Options {
     /// and the only sound choice: see the module documentation). `false` marks every sequence
     /// that ends in `H_A` as a pattern, which is only for showing why not.
     pub labelled: bool,
+    /// Improve the final bounds with the sequences that end in `H_A` up to a relabelling of
+    /// B-centres, for the elements that relabelling fixes ([`Coset::improve`]).
+    pub relabellings: bool,
 }
 
 impl Default for Options {
@@ -98,6 +102,7 @@ impl Default for Options {
             keep_paths: false,
             chunks: 1,
             labelled: true,
+            relabellings: true,
         }
     }
 }
@@ -137,8 +142,12 @@ pub struct Coset {
     pub space: Space,
     /// depth of the first mark of each element (`UNSET`: none)
     pub marks: Marks,
-    /// the final upper bound of each element (the marks extended by every later prepass)
+    /// the final upper bound of each element: the marks extended by every later prepass, and,
+    /// with [`Options::relabellings`], improved by the sequences of the other relabellings
+    /// that fix the element ([`Coset::improve`])
     pub bounds: Vec<u8>,
+    /// the marks extended by every later prepass alone (the labelled puzzle's bounds)
+    pub labelled_bounds: Vec<u8>,
     pub levels: Vec<Level>,
     /// the coset's phase-1 depth, if it was reached
     pub phase1_depth: Option<usize>,
@@ -149,8 +158,8 @@ pub struct Coset {
     pub rep: Option<Vec<usize>>,
     /// the phase-1 sequences found, by length (if kept)
     pub sequences: Vec<Endpoints>,
-    /// the sequences that end in `H_A` only as patterns (if kept; see the module
-    /// documentation)
+    /// the sequences that end in `H_A` only as patterns, up to a relabelling of B-centres
+    /// (end states and relabellings always; the sequences themselves if kept)
     pub others: Vec<Endpoints>,
 }
 
@@ -229,6 +238,7 @@ pub fn solve<I: AeIndex>(
                 found.paths.extend_from_slice(&e.paths);
                 other.index.extend_from_slice(&o.index);
                 other.paths.extend_from_slice(&o.paths);
+                other.relabel.extend_from_slice(&o.relabel);
                 if opt.stop_when_covered && !e.index.is_empty() {
                     let max = marks.project(&space).into_iter().max().unwrap_or(UNSET);
                     if usize::from(max) <= opt.target {
@@ -258,8 +268,8 @@ pub fn solve<I: AeIndex>(
             }
             if opt.keep_paths {
                 sequences.push(found);
-                others.push(other);
             }
+            others.push(other);
         }
         level.covered = marks.count();
         if level.covered > 0 {
@@ -273,18 +283,23 @@ pub fn solve<I: AeIndex>(
             break;
         }
     }
-    let bounds = marks.project(&space);
-    Ok(Coset {
+    let labelled_bounds = marks.project(&space);
+    let mut c = Coset {
         space,
         marks,
-        bounds,
+        bounds: labelled_bounds.clone(),
+        labelled_bounds,
         levels,
         phase1_depth,
         exact_through,
         rep,
         sequences,
         others,
-    })
+    };
+    if opt.relabellings {
+        c.improve(&t.p2);
+    }
+    Ok(c)
 }
 
 /// The inverse of a two-phase solution of `cube` through one of the sequences `found`: a word
@@ -340,6 +355,80 @@ impl Coset {
     pub fn solution(&self, p2: &Phase2, z: &Cube) -> Option<Vec<usize>> {
         let mut best: Option<(usize, Vec<usize>)> = None;
         for e in &self.sequences {
+            for k in 0..e.index.len() {
+                let Some(s) = e.path(k) else { continue };
+                let end = s.iter().fold(*z, |c, &m| c.apply(usize::from(m)));
+                let Some(d2) = p2.length(&end) else { continue };
+                let total = s.len() + usize::from(d2);
+                if best.as_ref().is_none_or(|b| total < b.0) {
+                    let q = p2.solve(&end)?;
+                    let sol = s.iter().map(|&m| usize::from(m)).chain(q).collect();
+                    best = Some((total, sol));
+                }
+            }
+        }
+        best.map(|b| b.1)
+    }
+
+    /// Improve the bounds with the sequences that end in `H_A` only up to a relabelling `k` of
+    /// same-coloured B-centres. Element `z` (index `p`, `z` = `q r` applied to solved) is
+    /// taken into `H_A` by such a sequence exactly when `k` preserves the B-colouring of
+    /// `q` applied to solved (an element of `H_A` whose corners are the inverse of `p`'s), and
+    /// then it ends where a sequence with the labels in place would: `len + d(p, end)`, `d` the
+    /// distance in `H_A`. So each relabelling's sequences are spread by the prepass's moves
+    /// (one multi-source search over `H_A`) and count for the elements whose colouring the
+    /// relabelling preserves (on average 4.9 of the 648 relabellings, over the corner states).
+    /// `--check` compares the result with each sequence applied to the element itself.
+    pub fn improve(&mut self, p2: &Phase2) {
+        let Some(att) = space::labelled_attachment() else {
+            return;
+        };
+        // the B-colouring (by label) of `q` applied to solved, for each corner state of `p`
+        let mut col = vec![[0u8; 12]; crate::coord::N_CORNER];
+        for (c, colour) in col.iter_mut().enumerate() {
+            let p = (c * N_P2_EDGE) as u32;
+            let Some(q) = self.space.solve(p2, p) else {
+                return;
+            };
+            let qc = Cube::solved().apply_seq(&q);
+            let a = att[usize::from(crate::coord::corners().id(&qc))];
+            *colour = std::array::from_fn(|l| a[l] / 3);
+        }
+        // the sources of each relabelling, in order of length
+        let mut by: std::collections::HashMap<[u8; 12], Vec<(u32, usize)>> =
+            std::collections::HashMap::new();
+        for e in &self.others {
+            for (&i, r) in e.index.iter().zip(&e.relabel) {
+                by.entry(*r).or_default().push((i, e.len));
+            }
+        }
+        for (r, src) in by {
+            let fits: Vec<bool> = col
+                .iter()
+                .map(|cl| (0..12).all(|l| cl[usize::from(r[l]) % 12] == cl[l]))
+                .collect();
+            if !fits.iter().any(|&f| f) {
+                continue;
+            }
+            let mut m = Marks::new();
+            for (i, n) in src {
+                m.mark(i, n);
+            }
+            let d = m.project(&self.space);
+            for (p, b) in self.bounds.iter_mut().enumerate() {
+                if fits[p / N_P2_EDGE] && d[p] < *b {
+                    *b = d[p];
+                }
+            }
+        }
+    }
+
+    /// The shortest solution of element `z` through every phase-1 sequence kept, whatever
+    /// relabelling it ends in `H_A` up to: each one applied to `z` itself, where it takes `z`
+    /// into `H_A`, and completed in phase 2 (the computation [`Coset::improve`] replaces).
+    pub fn solution_any(&self, p2: &Phase2, z: &Cube) -> Option<Vec<usize>> {
+        let mut best: Option<(usize, Vec<usize>)> = None;
+        for e in self.sequences.iter().chain(&self.others) {
             for k in 0..e.index.len() {
                 let Some(s) = e.path(k) else { continue };
                 let end = s.iter().fold(*z, |c, &m| c.apply(usize::from(m)));

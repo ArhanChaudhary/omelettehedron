@@ -74,6 +74,9 @@ pub struct Endpoints {
     pub index: Vec<u32>,
     /// the sequences, `len` internal moves each, in the order of `index` (empty if not kept)
     pub paths: Vec<u8>,
+    /// for sequences that end in `H_A` only as patterns: the relabelling of same-coloured
+    /// B-centres they end in `H_A` up to (`r[l]` = the label found where `H_A` has label `l`)
+    pub relabel: Vec<[u8; 12]>,
 }
 
 impl Endpoints {
@@ -85,6 +88,7 @@ impl Endpoints {
     fn append(&mut self, o: &mut Endpoints) {
         self.index.append(&mut o.index);
         self.paths.append(&mut o.paths);
+        self.relabel.append(&mut o.relabel);
     }
 }
 
@@ -355,14 +359,22 @@ impl<'a, I: AeIndex> Phase1<'a, I> {
             return;
         };
         w.stats.in_h += 1;
-        let exact = self
+        let Some(att) = self
             .attach
             .get(usize::from(crate::coord::corners().id(&lab)))
-            .is_some_and(|a| *a == lab.xb);
+        else {
+            return;
+        };
+        let exact = *att == lab.xb;
         w.stats.exact += u64::from(exact);
         let e = if exact || !self.labelled {
             &mut w.found
         } else {
+            let mut r = [0u8; 12];
+            for (&a, &l) in att.iter().zip(&lab.xb) {
+                r[usize::from(a) % 12] = l;
+            }
+            w.other.relabel.push(r);
             &mut w.other
         };
         e.index.push(i as u32);

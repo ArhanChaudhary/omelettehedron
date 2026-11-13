@@ -126,6 +126,10 @@ struct Args {
     /// File for --elements (appended to)
     #[arg(long)]
     elements_out: Option<PathBuf>,
+    /// Bound the elements with the labelled puzzle's sequences only: without the sequences
+    /// that end in `H_A` up to a relabelling of B-centres that fixes the element
+    #[arg(long)]
+    labelled_only: bool,
     /// Print these elements (by index): bound, pattern, scramble
     #[arg(long, value_delimiter = ',')]
     element: Vec<u32>,
@@ -383,6 +387,7 @@ fn fill<I: AeIndex>(args: &Args, t: &Tables<I>, job: &Job) -> Result<(), Error> 
         keep_paths: args.samples > 0 || args.check > 0,
         chunks: args.chunks,
         labelled: !args.patterns_only,
+        relabellings: !args.labelled_only && !args.patterns_only,
     };
     let start = Instant::now();
     let mut out = std::io::stdout().lock();
@@ -451,6 +456,16 @@ fn fill<I: AeIndex>(args: &Args, t: &Tables<I>, job: &Job) -> Result<(), Error> 
             writeln!(out, "    {d:>2}  {n:>7}  (<= {d}: {cum})")?;
         }
     }
+    let lab_out = c
+        .labelled_bounds
+        .iter()
+        .filter(|&&b| usize::from(b) > args.depth)
+        .count();
+    writeln!(
+        out,
+        "  not within {} with the labelled sequences alone: {lab_out}",
+        args.depth
+    )?;
     let uncovered = c.uncovered(args.depth);
     writeln!(
         out,
@@ -579,7 +594,12 @@ fn check<I: AeIndex>(
             return Err("an element could not be made".into());
         };
         let b = c.bounds[p as usize];
-        let sol = c.solution(&t.p2, &z);
+        // (with relabellings: every sequence kept, where it takes the element into H_A)
+        let sol = if args.labelled_only {
+            c.solution(&t.p2, &z)
+        } else {
+            c.solution_any(&t.p2, &z)
+        };
         let len = sol.as_ref().map_or(UNSET, |s| s.len() as u8);
         let solves = sol.as_ref().is_none_or(|s| {
             z.apply_seq(s) == Cube::solved() && {
@@ -621,7 +641,12 @@ fn samples<I: AeIndex>(
             return Err("an element could not be made".into());
         };
         let scr = solution_to_physical(Frame::identity(), &word, false);
-        let Some(sol) = c.solution(&t.p2, &z) else {
+        let sol = if args.labelled_only {
+            c.solution(&t.p2, &z)
+        } else {
+            c.solution_any(&t.p2, &z)
+        };
+        let Some(sol) = sol else {
             writeln!(
                 out,
                 "    -  {}  (no solution through the sequences kept)",
