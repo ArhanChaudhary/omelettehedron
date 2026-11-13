@@ -11,7 +11,7 @@ shift
 cd "$(dirname "$0")/.."
 bin=${CARGO_TARGET_DIR:-target}/release/omelettehedron
 # without a limit, the proof with target-length passes (with one, the best solution by then)
-mode=(--passes)
+mode=(--optimal)
 for a in "$@"; do
   case $a in -t* | --time* | -l* | --max-length* | -n* | --max-solutions*) mode=() ;; esac
 done
