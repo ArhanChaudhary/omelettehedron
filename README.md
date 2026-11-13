@@ -477,10 +477,13 @@ scripts/compare-optimal.py <before> <after>     # the same for scripts/bench-opt
 `omelettehedron solve optimal` is a second, separate solver: a single-phase IDA* straight to the
 solved state with pattern databases of distances to solved (as in optimal Rubik's Cube
 solvers), in `src/optimal/`. It has its own tiers and tables (`opt-*.prun`) and its own
-benchmark; see [docs/OPTIMAL.md](docs/OPTIMAL.md). The two-phase solver's optimal mode is
-still faster on most positions (1.7x to 3.5x on 19- to 21-move positions against the large
-tier, more where it finds the optimum early), but the optimal solver's large tier proves the
-corner 6-flip in half a second, against ten minutes for the two-phase solver. For the hardest
+benchmark; see [docs/OPTIMAL.md](docs/OPTIMAL.md). With the `huge` tier (27.9 GB) it proves
+optimality faster than the two-phase solver's optimal mode on the benchmark sets and random
+positions (19-move scrambles 2.2 s against 7.0 s for ten on 48 threads; random 21-move
+positions 18-28 s against 49-53 s); with the `large` tier the two-phase solver is faster on
+most positions (1.7x to 3.5x on 19- to 21-move positions, more where it finds the optimum
+early), but the large tier proves the corner 6-flip in half a second, against ten minutes for
+the two-phase solver. For the hardest
 positions (deep, symmetric, or with the edges and centres nearly solved), `solve optimal --tier
 large` can prove optimality much faster than the two-phase solver: it proves the 23-move
 tri_adj+edge_opp in 4.5 minutes, against 2.5 hours, and all four 23-move positions of
@@ -498,6 +501,7 @@ target/release/omelettehedron solve optimal --tier medium --moves slice "..."  #
 | `small` | 195 MB | corners x centres (both orbits, 24 symmetries), edge permutation, and the two-phase A-centre/edge-triple table on both sides |
 | `medium` | 3.4 GB | corners x centres, corners x edges (48 symmetries), and the two-phase A-centre/edge table on both sides |
 | `large` | 22.0 GB | the two-phase A-centre/edge table on both sides and corners x B-centres x the edges of one face, to solved (21 GB, 6 symmetries, read for all 8 faces); `gen optimal --tier large` takes about 2 minutes on 48 cores (`--min-free-memory GB` stops it cleanly if memory runs low) |
+| `huge` | 27.9 GB | the whole edge permutation x the A-centres, to solved up to rotation (288 symmetries), on both sides, and corners x centres: about 4x fewer nodes than `large` and 4-7x faster on scrambles of 17-19 moves, but slower on positions whose edges and centres are solved (the corner 6-flip: 33 s against 0.3 s); `gen optimal --tier huge` takes about 6 minutes on 48 cores |
 
 Without `--tier`, `solve optimal` and `bench optimal` use the largest tier whose tables are all
 there (see [Pruning tables](#pruning-tables)); `gen optimal` needs `--tier`.

@@ -128,10 +128,15 @@ fn optimal(a: &OptimalArgs) -> Result<(), Error> {
                 cbe.hist
             );
         }
-        eprintln!(
-            "A-centre/edge (to H_A, two-phase table) depth histogram {:?}",
-            t.ae.tab.hist
-        );
+        if let Some((_, ea, _)) = &t.ea {
+            eprintln!("edges x A-centres depth histogram {:?}", ea.hist);
+        }
+        if let Some(ae) = &t.ae {
+            eprintln!(
+                "A-centre/edge (to H_A, two-phase table) depth histogram {:?}",
+                ae.tab.hist
+            );
+        }
         Ok(())
     })
 }

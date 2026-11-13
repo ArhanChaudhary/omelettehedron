@@ -20,6 +20,7 @@
 
 use super::cbe::{build_cbe, CbeIndex, N_LOOKUPS};
 use super::coords::*;
+use super::ea::{build_ea, EaIndex};
 use crate::cube::*;
 use crate::fast::{fast, masks, FastTables};
 use crate::preflight::{check_plan, MemGuard, Planned};
@@ -47,23 +48,33 @@ pub enum OptTier {
     /// ~22.0 GB: the A-centre/edge table on both sides and a corner x B-centre x edge-triple
     /// table to solved (21.0 GB, eight lookups); 64-bit targets only
     Large,
+    /// ~27.9 GB: an edge x A-centre table to solved (the whole edge permutation, up to
+    /// rotation and to cycling the A-triples together, 288 symmetries) on both sides; 64-bit
+    /// targets only
+    Huge,
 }
 
 impl OptTier {
     /// The tiers, smallest first.
-    pub const ALL: [OptTier; 3] = [OptTier::Small, OptTier::Medium, OptTier::Large];
+    pub const ALL: [OptTier; 4] = [
+        OptTier::Small,
+        OptTier::Medium,
+        OptTier::Large,
+        OptTier::Huge,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             OptTier::Small => "small",
             OptTier::Medium => "medium",
             OptTier::Large => "large",
+            OptTier::Huge => "huge",
         }
     }
 
     /// The table files of the tier in the metric of `moves` (the names [`OptTables::load`]
     /// reads), with their entries; `None` if the tier cannot be used with `moves` on this
-    /// target (the large tier with slices, or a tier beyond small on a 32-bit target).
+    /// target (the large and huge tiers with slices, or a tier beyond small on a 32-bit target).
     pub fn files(self, moves: MoveSet) -> Option<Vec<TableFile>> {
         if unsupported(self, moves).is_some() {
             return None;
@@ -73,21 +84,27 @@ impl OptTier {
             name: format!("{name}{sfx}.prun"),
             entries,
         };
-        let (ae, own) = match self {
-            OptTier::Small => (
+        let cc = file(CC_FILE, CC_ENTRIES);
+        Some(match self {
+            OptTier::Small => vec![
+                cc,
                 file(AE_TRIPLES_FILE, AE_TRIPLES_ENTRIES),
                 file(EDGES_FILE, N_EPERM as u64),
-            ),
-            OptTier::Medium => (
+            ],
+            OptTier::Medium => vec![
+                cc,
                 file(AE_CHIRAL_FILE, AE_CHIRAL_ENTRIES),
                 file(CE_FILE, CE_ENTRIES),
-            ),
-            OptTier::Large => (
+            ],
+            OptTier::Large => vec![
+                cc,
                 file(AE_CHIRAL_FILE, AE_CHIRAL_ENTRIES),
                 file(CBE_FILE, CBE_ENTRIES),
-            ),
-        };
-        Some(vec![file(CC_FILE, CC_ENTRIES), ae, own])
+            ],
+            // (no A-centre/edge table: the edge x A-centre table projects onto it, so its
+            // values are never higher)
+            OptTier::Huge => vec![cc, file(EA_FILE, EA_ENTRIES)],
+        })
     }
 }
 
@@ -338,8 +355,10 @@ pub struct OptTables {
     pub ce: Option<(CeIndex, Table2)>,
     /// corners x B-centres x edge triple, and the indices of the solved state (large tier)
     pub cbe: Option<(CbeIndex, Table2, Vec<usize>)>,
-    /// the two-phase A-centre/edge table (every tier)
-    pub ae: AeBound,
+    /// edges x A-centres, and the indices of the solved state (huge tier)
+    pub ea: Option<(EaIndex, Table2, Vec<usize>)>,
+    /// the two-phase A-centre/edge table (every tier but huge)
+    pub ae: Option<AeBound>,
     /// the move set: every table holds distances in its metric (with slices, the tables have
     /// their own files, `*-slice.prun`)
     pub moves: MoveSet,
@@ -351,12 +370,14 @@ const CC_FILE: &str = "opt-cc-sym24";
 const EDGES_FILE: &str = "opt-edges";
 const CE_FILE: &str = "opt-ce-sym48";
 const CBE_FILE: &str = "opt-cbe-sym6";
+const EA_FILE: &str = "opt-ea-sym288";
 
 /// Entries of the tables (as the file headers give them), so that table files can be judged
 /// without building the indices (`tier_entries_match_the_indices` checks them).
 const CC_ENTRIES: u64 = 18_849_600;
 const CE_ENTRIES: u64 = 9_580_032_000;
 const CBE_ENTRIES: u64 = 83_913_984_000;
+const EA_ENTRIES: u64 = 111_447_705_600;
 
 fn load_or_build(
     path: &Path,
@@ -396,17 +417,19 @@ fn too_large(tier: OptTier) -> bool {
 }
 
 /// Why a tier cannot be used with a move set on this target, if it cannot: tiers beyond small
-/// need 64-bit indices, and the large tier's triple table exists in the face metric only.
+/// need 64-bit indices, and the large tier's triple table and the huge tier's edge x A-centre
+/// table exist in the face metric only.
 fn unsupported(tier: OptTier, moves: MoveSet) -> Option<std::io::Error> {
     if too_large(tier) {
         return Some(std::io::Error::other(
             "only --tier small is supported on 32-bit targets",
         ));
     }
-    (tier == OptTier::Large && moves.slice).then(|| {
-        std::io::Error::other(
-            "the large tier has no tables for slice turns: use --tier medium with --moves slice",
-        )
+    (matches!(tier, OptTier::Large | OptTier::Huge) && moves.slice).then(|| {
+        std::io::Error::other(format!(
+            "the {} tier has no tables for slice turns: use --tier medium with --moves slice",
+            tier.name()
+        ))
     })
 }
 
@@ -429,7 +452,7 @@ impl OptTables {
                 let t = build_ce(&ix, moves, verbose);
                 (None, Some((ix, t)))
             }
-            OptTier::Large => (None, None),
+            OptTier::Large | OptTier::Huge => (None, None),
         };
         let cbe = match tier {
             OptTier::Large => {
@@ -439,10 +462,24 @@ impl OptTables {
             }
             _ => None,
         };
-        let ae_ix = AeBound::index_for(tier);
-        let ae_tab = build_ae(&ae_ix, moves, verbose);
-        let ae = AeBound::new(ae_ix, ae_tab);
-        Ok(Self::assemble(tier, cc_ix, cc, edges, ce, cbe, ae, moves))
+        let ea = match tier {
+            OptTier::Huge => {
+                let ix = EaIndex::new()?;
+                let t = build_ea_guarded(&ix, verbose)?;
+                Some((ix, t))
+            }
+            _ => None,
+        };
+        let ae = if tier == OptTier::Huge {
+            None
+        } else {
+            let ae_ix = AeBound::index_for(tier);
+            let ae_tab = build_ae(&ae_ix, moves, verbose);
+            Some(AeBound::new(ae_ix, ae_tab))
+        };
+        Ok(Self::assemble(
+            tier, cc_ix, cc, edges, ce, cbe, ea, ae, moves,
+        ))
     }
 
     fn assemble(
@@ -452,7 +489,8 @@ impl OptTables {
         edges: Option<Table2>,
         ce: Option<(CeIndex, Table2)>,
         cbe: Option<(CbeIndex, Table2)>,
-        ae: AeBound,
+        ea: Option<(EaIndex, Table2)>,
+        ae: Option<AeBound>,
         moves: MoveSet,
     ) -> OptTables {
         let cc_target = cc_ix.targets().first().copied().unwrap_or(0);
@@ -464,6 +502,10 @@ impl OptTables {
             edges,
             ce,
             cbe: cbe.map(|(ix, t)| {
+                let targets = ix.targets();
+                (ix, t, targets)
+            }),
+            ea: ea.map(|(ix, t)| {
                 let targets = ix.targets();
                 (ix, t, targets)
             }),
@@ -480,7 +522,7 @@ impl OptTables {
     ///
     /// If a table file cannot be read or written, holds a table of the wrong format, size,
     /// checksum or layout, or the tables do not fit (see [`crate::preflight`]), or the tier
-    /// needs 64-bit indices on a 32-bit target, or is the large tier with slices.
+    /// needs 64-bit indices on a 32-bit target, or is the large or huge tier with slices.
     pub fn load(
         dir: &Path,
         tier: OptTier,
@@ -496,8 +538,13 @@ impl OptTables {
         let edges_path = dir.join(format!("{EDGES_FILE}{sfx}.prun"));
         let ce_path = dir.join(format!("{CE_FILE}{sfx}.prun"));
         let cbe_path = dir.join(format!("{CBE_FILE}{sfx}.prun"));
+        let ea_path = dir.join(format!("{EA_FILE}{sfx}.prun"));
         let ce_ix = (tier == OptTier::Medium).then(CeIndex::new);
         let cbe_ix = (tier == OptTier::Large).then(CbeIndex::new);
+        let ea_ix = match tier {
+            OptTier::Huge => Some(EaIndex::new()?),
+            _ => None,
+        };
         let ae_ix = AeBound::index_for(tier);
         // (the two-phase solver's file of the same table: generated by either solver, shared)
         let ae_path = dir.join(format!("{}{sfx}.prun", ae_ix.name()));
@@ -510,10 +557,10 @@ impl OptTables {
                 working_set: 0,
             }
         };
-        let mut plan = vec![
-            planned(&cc_path, cc_size(&cc_ix)),
-            planned(&ae_path, ae_ix.size()),
-        ];
+        let mut plan = vec![planned(&cc_path, cc_size(&cc_ix))];
+        if tier != OptTier::Huge {
+            plan.push(planned(&ae_path, ae_ix.size()));
+        }
         match (&ce_ix, tier) {
             (Some(ix), _) => plan.push(planned(&ce_path, ix.size())),
             (None, OptTier::Small) => plan.push(planned(&edges_path, N_EPERM)),
@@ -522,12 +569,15 @@ impl OptTables {
         if let Some(ix) = &cbe_ix {
             plan.push(planned(&cbe_path, ix.size()));
         }
+        if let Some(ix) = &ea_ix {
+            plan.push(planned(&ea_path, ix.size()));
+        }
         check_plan(&plan)?;
         let cc = load_or_build(&cc_path, cc_size(&cc_ix), verbose, || {
             Ok(build_cc(&cc_ix, moves, verbose))
         })?;
-        // (the large tier reads neither the edge nor the corner x edge table: its own file is
-        // the triple table)
+        // (the large and huge tiers read neither the edge nor the corner x edge table: their
+        // own file is the triple table or the edge x A-centre table)
         let (edges, ce, second) = match (ce_ix, tier) {
             (Some(ix), _) => {
                 let t = load_or_build(&ce_path, ix.size(), verbose, || {
@@ -542,6 +592,7 @@ impl OptTables {
                 None,
                 edges_path,
             ),
+            (None, OptTier::Huge) => (None, None, ea_path.clone()),
             (None, _) => (None, None, cbe_path.clone()),
         };
         let cbe = match cbe_ix {
@@ -553,11 +604,24 @@ impl OptTables {
                 Some((ix, t))
             }
         };
-        let ae_tab = load_or_build(&ae_path, ae_ix.size(), verbose, || {
-            Ok(build_ae(&ae_ix, moves, verbose))
-        })?;
-        let ae = AeBound::new(ae_ix, ae_tab);
-        let t = Self::assemble(tier, cc_ix, cc, edges, ce, cbe, ae, moves);
+        let ea = match ea_ix {
+            None => None,
+            Some(ix) => {
+                let t = load_or_build(&ea_path, ix.size(), verbose, || {
+                    build_ea_guarded(&ix, verbose)
+                })?;
+                Some((ix, t))
+            }
+        };
+        let ae = if tier == OptTier::Huge {
+            None
+        } else {
+            let ae_tab = load_or_build(&ae_path, ae_ix.size(), verbose, || {
+                Ok(build_ae(&ae_ix, moves, verbose))
+            })?;
+            Some(AeBound::new(ae_ix, ae_tab))
+        };
+        let t = Self::assemble(tier, cc_ix, cc, edges, ce, cbe, ea, ae, moves);
         t.check_walks(&[&second, &cc_path, &ae_path, &cbe_path])?;
         Ok(t)
     }
@@ -569,7 +633,7 @@ impl OptTables {
             cc: &self.cc,
             cc_target: self.cc_target,
             edges: self.edges.as_ref()?,
-            ae: &self.ae,
+            ae: self.ae.as_ref()?,
             moves: self.moves,
         })
     }
@@ -578,7 +642,7 @@ impl OptTables {
     pub fn large(&self) -> Option<LargeBounds<'_>> {
         let (cbe_ix, cbe, cbe_targets) = self.cbe.as_ref()?;
         Some(LargeBounds {
-            ae: &self.ae,
+            ae: self.ae.as_ref()?,
             cbe_ix,
             cbe,
             cbe_targets,
@@ -596,7 +660,21 @@ impl OptTables {
             ce_ix,
             ce,
             ce_target: ce_ix.target(),
-            ae: &self.ae,
+            ae: self.ae.as_ref()?,
+            moves: self.moves,
+        })
+    }
+
+    /// The lower bounds of the huge tier (`None` if the tables are another tier's).
+    pub fn huge(&self) -> Option<HugeBounds<'_>> {
+        let (ea_ix, ea, ea_targets) = self.ea.as_ref()?;
+        Some(HugeBounds {
+            ea_ix,
+            ea,
+            ea_targets,
+            cc_ix: &self.cc_ix,
+            cc: &self.cc,
+            cc_target: self.cc_target,
             moves: self.moves,
         })
     }
@@ -633,8 +711,10 @@ impl OptTables {
             1 | 2 => 1,
             _ => 2,
         };
-        // large: lookups 0 and 1 the A-centre/edge table, 2.. the triples
+        // large: lookups 0 and 1 the A-centre/edge table, 2.. the triples; huge: 0 and 1 the
+        // tier's own table, 2 and 3 the corner x centre table
         let large_file = |k: usize| if k < 2 { 2 } else { 3 };
+        let huge_file = |k: usize| usize::from(k >= 2);
         let r = match self.tier {
             OptTier::Small => self
                 .small()
@@ -645,6 +725,9 @@ impl OptTables {
             OptTier::Large => self
                 .large()
                 .map(|b| check_walks_of(&b, &positions).map_err(large_file)),
+            OptTier::Huge => self
+                .huge()
+                .map(|b| check_walks_of(&b, &positions).map_err(huge_file)),
         }
         .unwrap_or(Err(0));
         r.map_err(bad)
@@ -656,7 +739,8 @@ impl OptTables {
             + self.edges.as_ref().map_or(0, Table2::bytes)
             + self.ce.as_ref().map_or(0, |(_, t)| t.bytes())
             + self.cbe.as_ref().map_or(0, |(_, t, _)| t.bytes())
-            + self.ae.tab.bytes()
+            + self.ea.as_ref().map_or(0, |(_, t, _)| t.bytes())
+            + self.ae.as_ref().map_or(0, |a| a.tab.bytes())
     }
 }
 
@@ -665,6 +749,13 @@ impl OptTables {
 fn build_cbe_guarded(ix: &CbeIndex, verbose: bool) -> std::io::Result<Table2> {
     let guard = MemGuard::start();
     build_cbe(ix, verbose, guard.flag()).ok_or_else(|| MemGuard::error(CBE_FILE))
+}
+
+/// The edge x A-centre table, stopped cleanly (an error, nothing written) if the free memory
+/// falls below the floor while it is generated ([`MemGuard`]).
+fn build_ea_guarded(ix: &EaIndex, verbose: bool) -> std::io::Result<Table2> {
+    let guard = MemGuard::start();
+    build_ea(ix, verbose, guard.flag()).ok_or_else(|| MemGuard::error(EA_FILE))
 }
 
 /// `Err(k)` if a walk down lookup `k` from one of `ps` does not reach the solved entry.
@@ -907,6 +998,86 @@ impl Bounds for LargeBounds<'_> {
             "CBE B-triple 2",
             "CBE B-triple 3",
         ][k.min(9)]
+    }
+}
+
+/// The huge tier: the edge x A-centre table ([`super::ea`]) on the position and on its
+/// `SWAP_AB` conjugate, then the corner x centre lookups. The edge x A-centre table projects
+/// onto the two-phase A-centre/edge table (the edge permutation up to cycling the A-triples
+/// gives the triple labels and the chirality), so that table is left out.
+///
+/// The edge x A-centre table holds no corners: on a position whose edges and centres are
+/// solved it reads 0, and only the corner x centre lookups (4.7 MB, cache-resident, read for
+/// the children the first two keep) bound it. They prune few random positions (0.3% of the
+/// nodes of the completed iterations) but take the corner 6-flip of `bench/hard.tsv` from over
+/// 60 s to 32.8 s (48 threads). Measured and left out: corners x edges (2.4 GB more; 0.96x
+/// nodes but 0.89x nodes/s on one thread, the 6-flip 16.9 s) and the large tier's eight triple
+/// lookups (21 GB more; 0.75x nodes, but time 0.94x on one thread (17-move set) and 1.14x on 48
+/// (19-move set); the 6-flip 0.56 s).
+pub struct HugeBounds<'a> {
+    ea_ix: &'a EaIndex,
+    ea: &'a Table2,
+    ea_targets: &'a [usize],
+    cc_ix: &'a CcIndex,
+    cc: &'a Table2,
+    cc_target: usize,
+    moves: MoveSet,
+}
+
+impl Bounds for HugeBounds<'_> {
+    const K: usize = 4;
+    /// The edge x A-centre table on both sides first: alone each prunes 85% of random
+    /// positions' children with 11 moves left (Korf sampling), the two together 97.5%.
+    const ORDER: &'static [usize] = &[0, 1, 2, 3];
+    fn moves(&self) -> MoveSet {
+        self.moves
+    }
+    #[inline(always)]
+    fn index(&self, k: usize, p: &Pos) -> usize {
+        match k {
+            0 | 1 => self.ea_ix.index(k, p),
+            2 => self.cc_ix.index_b(p.c, &p.xb),
+            _ => self.cc_ix.index_a(p.c, &p.xa),
+        }
+    }
+    #[inline(always)]
+    fn pre(&self, k: usize, p: &Pos) -> u32 {
+        if k < 2 {
+            self.ea_ix.pre(k, p)
+        } else {
+            0
+        }
+    }
+    #[inline(always)]
+    fn index_with(&self, k: usize, p: &Pos, pre: u32) -> usize {
+        if k < 2 {
+            self.ea_ix.index_with(k, p, pre)
+        } else {
+            self.index(k, p)
+        }
+    }
+    #[inline(always)]
+    fn table(&self, k: usize) -> &Table2 {
+        if k < 2 {
+            self.ea
+        } else {
+            self.cc
+        }
+    }
+    fn is_target(&self, k: usize, i: usize) -> bool {
+        if k < 2 {
+            self.ea_targets.contains(&i)
+        } else {
+            i == self.cc_target
+        }
+    }
+    fn name(&self, k: usize) -> &'static str {
+        [
+            "edges+A (EA)",
+            "EA of SWAP_AB (edges+B)",
+            "corners+B",
+            "corners+A",
+        ][k.min(3)]
     }
 }
 
