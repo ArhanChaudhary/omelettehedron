@@ -93,6 +93,11 @@ seconds. Orders 12 to 48 (400 positions) were filtered first with `-l 22 -t 3` o
 per position; 37 were left, the optimal solver found a solution of at most 23 moves for 35 of
 them, and the other 2 are known 23s ([bench/hard.tsv](../bench/hard.tsv)).
 
+The two-phase solver's lengths can be far from optimal here: 4.1 (24 symmetries: corners, edges
+and the A-centres solved, the B-centres in a pattern), for which it found nothing shorter than
+22 moves, is exactly 19 (`optimal solve`, 0.06 s on 48 threads:
+`B BR B' BL D U BL D' BL BR' D' BR' D BL' U B' BL' B U`).
+
 Shortest solution found, by subgroup ("23": the first solution of at most 23 moves found; most
 are not proven optimal):
 
