@@ -16,14 +16,15 @@ The code is on the branch [`neg/chen-twophase`](https://github.com/ArhanChaudhar
 * **The numbers check out.** Our model reproduces the 460 × 3⁴ = 37,260 block configurations,
   the phase-2 space of 1.59 × 10¹⁴ positions (the "158T"), and the phase-2 state counts for
   depths 0 to 5.
-* **Faster first solution, but a longer one.** With the smaller table sets it finds a first
-  solution up to 7 times sooner. That solution is 3 to 5 moves longer.
-* **Longer solutions after the first moment.** From 0.1 s on 48 threads, or 1 s on one
-  thread, the two-phase solver's mean solution is shorter at every table size, though at those
-  points it has not always solved as many positions (tiny tier on 48 threads at 0.1 s: 5 of 10;
-  tiny and small tiers on one thread at 1 s: 3 and 5 of 10). At 10 s it is 0.2 to 1.5 moves
-  shorter.
-* **More memory.** It needs 158 MB of extra tables.
+* **Faster first solution, but a longer one.** On the tiny and small table tiers it finds a
+  first solution 3 to 10 times sooner. That solution is 3 to 4 moves longer: 26 to 27 moves,
+  against 23.
+* **Longer solutions after the first moment.** At 10 s the two-phase solver's mean solution is
+  shorter at every table size and thread count, by 0.32 to 1.49 moves, measured on 100 random
+  positions. Every gap is well outside its 95% interval (the smallest is 0.32 ± 0.11), and the
+  block split is shorter on at most 4 of the 100 positions. The block split solves more
+  positions early on: on one thread at 1 s, 83 of 100 on the tiny tier against 30.
+* **More memory.** It needs 158 MB of extra tables, or 0.16 to 0.31 GB more at peak.
 * **The cause.** Phase 2 is a search over 1.59 × 10¹⁴ positions. The largest tables that fit
   estimate about 11 moves for phase 2 where about 16 are needed, so the search finds little in
   the nodes it can afford. The two-phase solver's phase 2 is read off an exact table, with no
@@ -83,55 +84,96 @@ better.
 
 ## Measurements
 
-These runs were made on 2026-11-12 on a 48-core AMD EPYC 9V45 virtual machine. Each run had the
-machine to itself: it held an exclusive lock, and we checked that no other timed work
-overlapped. Both solvers come from the same build of the branch (9dcb91c; the block split is
-`--method chen`, the two-phase solver `--method two-phase`). Each run uses the same 10 seeded
-random positions (`bench -N 10 --seed 1 -t 10`). The tiers are omelettehedron's table sizes:
-tiny (42 MB of tables), small (134 MB) and medium (about 1 GB).
+These runs were made on 2026-11-13 on a 48-core AMD EPYC 9V45 virtual machine, whose cores come
+in 6 groups of 8 that each share a 32 MB cache. Both solvers come from the same build of the
+branch (d72fe13; the block split is `--method chen`, the two-phase solver `--method
+two-phase`). Every run uses the same 100 seeded random positions, with 10 s each (`bench -N 100
+--seed 1 -t 10`). Each batch of runs held an exclusive lock, so no other timed work ran
+alongside it:
 
-### Random positions, 1 and 48 threads
+* the six one-thread runs (three tiers, two solvers) ran side by side, each pinned to one core
+  of its own cache group;
+* the 16-thread runs ran in pairs, the two solvers at once on cores 0 to 15 and 16 to 31;
+* each 48-thread run ran alone.
+
+The tiers are omelettehedron's table sizes: tiny (42 MB of tables), small (134 MB) and medium
+(about 1 GB). The first version of this page used 10 positions. The conclusions have not
+changed, and the differences below now come with 95% intervals.
+
+### Mean solution length
 
 Each cell is the mean best length over the positions solved by then; a number in brackets is
-how many of the 10 are solved, when not all. "First" is the mean first solution and when it
-came. A dash means no position was solved yet.
+how many of the 100 are solved, when not all. "First" is the mean first solution and when it
+came. A dash means no position was solved yet. (On one thread on the tiny tier, the two-phase
+solver solved 90 of the 100 within 10 s.)
 
 | Tier | Threads | Solver | First | 0.01 s | 0.1 s | 1 s | 10 s |
 |---|---:|---|---|---|---|---|---|
-| tiny | 1 | two-phase | 22.9 after 3.30 s (9) | - | - | 23.0 (3) | 22.7 (9) |
-| tiny | 1 | block split | 27.5 after 0.75 s | - | - | 24.9 (7) | 24.2 |
-| tiny | 48 | two-phase | 23.3 after 0.095 s | - | 22.4 (5) | 22.1 | 21.5 |
-| tiny | 48 | block split | 26.1 after 0.014 s | 25.6 (8) | 24.6 | 23.9 | 22.7 |
-| small | 1 | two-phase | 23.0 after 1.92 s | - | - | 22.6 (5) | 22.4 |
-| small | 1 | block split | 27.5 after 0.76 s | - | - | 24.8 (8) | 22.9 |
-| small | 48 | two-phase | 23.0 after 0.037 s | 23.5 (2) | 22.4 | 21.6 | 21.5 |
-| small | 48 | block split | 26.1 after 0.0064 s | 25.2 (9) | 23.7 | 22.6 | 21.7 |
-| medium | 1 | two-phase | 23.3 after 0.35 s | - | 23.0 (2) | 22.7 (9) | 21.7 |
-| medium | 1 | block split | 27.5 after 0.78 s | - | 25.0 (1) | 24.3 (7) | 22.6 |
-| medium | 48 | two-phase | 23.5 after 0.0081 s | 22.9 (7) | 22.1 | 21.5 | 20.8 |
-| medium | 48 | block split | 26.1 after 0.0070 s | 24.8 (8) | 22.9 | 22.0 | 21.5 |
+| tiny | 1 | two-phase | 22.92 after 3.19 s (90) | - | 21.67 (3) | 22.70 (30) | 22.61 (90) |
+| tiny | 1 | block split | 27.02 after 0.55 s | 25.00 (10) | 25.88 (24) | 25.25 (83) | 24.12 |
+| tiny | 48 | two-phase | 23.09 after 0.097 s | 21.80 (5) | 22.48 (63) | 22.08 | 21.50 |
+| tiny | 48 | block split | 26.23 after 0.0093 s | 25.50 (76) | 24.36 | 23.58 | 22.76 |
+| small | 1 | two-phase | 23.01 after 1.56 s | 20.00 (1) | 21.67 (6) | 22.60 (50) | 22.39 |
+| small | 1 | block split | 27.03 after 0.51 s | 25.00 (10) | 25.44 (25) | 24.67 (88) | 22.92 |
+| small | 16 | two-phase | 23.02 after 0.098 s | 21.80 (5) | 22.46 (63) | 22.17 | 21.56 |
+| small | 16 | block split | 26.75 after 0.029 s | 25.27 (48) | 24.21 (94) | 22.74 | 21.95 |
+| small | 48 | two-phase | 23.03 after 0.038 s | 22.70 (20) | 22.57 (98) | 21.80 | 21.40 |
+| small | 48 | block split | 26.23 after 0.0064 s | 24.86 (86) | 23.39 | 22.50 | 21.72 |
+| medium | 1 | two-phase | 23.06 after 0.27 s | 21.60 (5) | 22.58 (38) | 22.61 (97) | 21.70 |
+| medium | 1 | block split | 27.05 after 0.51 s | 25.00 (10) | 25.12 (24) | 24.16 (85) | 22.53 |
+| medium | 16 | two-phase | 23.09 after 0.016 s | 22.71 (49) | 22.33 (99) | 21.62 | 21.19 |
+| medium | 16 | block split | 26.70 after 0.028 s | 25.45 (56) | 23.67 (93) | 22.43 | 21.66 |
+| medium | 48 | two-phase | 23.11 after 0.0079 s | 22.59 (69) | 21.93 | 21.45 | 20.96 |
+| medium | 48 | block split | 26.08 after 0.0056 s | 24.48 (88) | 22.79 | 21.91 | 21.43 |
 
-On the tiny and small tiers the block split finds its first solution 2.5 to 6.8 times sooner,
-and at 0.01 s on 48 threads it has solved more positions. On one thread at 1 s it has also
-solved more (tiny 7 and small 8 of 10, against 3 and 5). On
-the medium tier the two-phase solver's first solution comes about as soon (48 threads) or sooner
-(one thread). Wherever both have solved everything, the two-phase solver's solutions are shorter.
+### Paired differences
 
-### 16 threads, with memory
+The block split's best length minus the two-phase solver's on the same position, averaged over
+the positions both have solved by then, with a 95% interval (1.96 standard errors). Positive
+means the two-phase solver is shorter. A number in brackets is how many positions are counted,
+when fewer than 100; a dash means fewer than 10. The last column counts the positions at 10 s
+where the two-phase solver is shorter, where they are equal, and where the block split is
+shorter.
 
-These runs were made the same day on the same machine, from the branch's final build (d72fe13).
-Memory is the peak resident size of the whole process.
+| Tier | Threads | 0.1 s | 1 s | 10 s | At 10 s: two-phase shorter / equal / block split shorter |
+|---|---:|---|---|---|---|
+| tiny | 1 | - | +2.15 ± 0.77 (26) | +1.49 ± 0.25 (90) | 72 / 15 / 3 |
+| tiny | 48 | +1.75 ± 0.35 (63) | +1.50 ± 0.23 | +1.26 ± 0.22 | 72 / 28 / 0 |
+| small | 1 | - | +1.66 ± 0.60 (44) | +0.53 ± 0.19 | 39 / 57 / 4 |
+| small | 16 | +1.55 ± 0.43 (60) | +0.57 ± 0.19 | +0.39 ± 0.14 | 29 / 71 / 0 |
+| small | 48 | +0.81 ± 0.23 (98) | +0.70 ± 0.18 | +0.32 ± 0.11 | 28 / 72 / 0 |
+| medium | 1 | - | +1.55 ± 0.40 (82) | +0.83 ± 0.18 | 60 / 39 / 1 |
+| medium | 16 | +1.34 ± 0.29 (92) | +0.81 ± 0.18 | +0.47 ± 0.13 | 39 / 61 / 0 |
+| medium | 48 | +0.86 ± 0.19 | +0.46 ± 0.13 | +0.47 ± 0.13 | 39 / 61 / 0 |
 
-| Tier | Solver | Memory | First | 0.1 s | 1 s | 10 s |
-|---|---|---:|---|---|---|---|
-| small | two-phase | 0.30 GB | 23.0 after 0.090 s | 22.3 (6) | 22.3 | 21.5 |
-| small | block split | 0.56 GB | 27.1 after 0.032 s | 24.8 | 22.7 | 22.0 |
-| medium | two-phase | 1.21 GB | 23.5 after 0.017 s | 22.7 | 21.5 | 21.4 |
-| medium | block split | 1.47 GB | 27.0 after 0.028 s | 24.0 | 22.6 | 21.6 |
+Every difference is positive, and no interval reaches zero. Where fewer than 100 positions are
+counted, they are the ones the two-phase solver had solved by then, which may be the easier
+ones.
+
+On the tiny and small tiers the block split finds its first solution 3 to 10 times sooner, and
+early on it has solved more positions:
+
+* at 0.01 s on 48 threads: 76 and 86 of 100, against 5 and 20;
+* at 1 s on one thread: 83 and 88, against 30 and 50.
+
+On the medium tier the two-phase solver's first solution comes sooner on 1 and 16 threads, and
+the block split's comes 1.4 times sooner on 48. Wherever both have solved a position, the
+two-phase solver's solution is shorter on average.
+
+### Memory
+
+Peak resident size of the whole process, in GB, as two-phase / block split.
+
+| Tier | 1 thread | 16 threads | 48 threads |
+|---|---|---|---|
+| tiny | 0.21 / 0.37 | not run | 0.21 / 0.45 |
+| small | 0.30 / 0.53 | 0.31 / 0.58 | 0.31 / 0.62 |
+| medium | 1.20 / 1.44 | 1.21 / 1.48 | 1.22 / 1.52 |
 
 ### Hard positions
 
-`solve -t 20` on the 24-symmetric position and on the hard positions in
+These runs are from 2026-11-12 (build 9dcb91c), each alone on the machine: `solve -t 20` on the
+24-symmetric position and on the hard positions in
 [`bench/hard.tsv`](../bench/hard.tsv) (optimal lengths in brackets). Each cell is the first
 solution and the best within 20 s, as length @ seconds.
 
@@ -182,7 +224,8 @@ pruning a phase 2 this large.
 * A much better phase-2 estimate, such as a table over the block configuration, the corners and
   part of the B-centres together. That table would be far larger than the 149 MB one tried here.
 * Settings where a quick first solution matters more than its length. The block split's
-  first-solution lead is real on the small and tiny tiers, but it is gone by 0.1 s on 48 threads.
+  first-solution lead is real on the small and tiny tiers. On 48 threads it is gone by about
+  0.1 s on the small tier and 1 s on the tiny tier; on one thread it lasts longer.
 
 The God's-number side of the proposal (an upper bound of 14 plus the phase-2 maximum) needs the
 largest phase-2 distance from the 3.4 × 10¹¹ phase-1-solved positions. A search for it covers
@@ -195,8 +238,8 @@ git fetch origin neg/chen-twophase && git checkout neg/chen-twophase
 cargo build --release
 B=target/release/omelettehedron
 $B gen --tier small && $B gen --method chen --tier small
-$B bench --method chen --tier small -N 10 --seed 1 -t 10 -j 48
-$B bench --method two-phase --tier small -N 10 --seed 1 -t 10 -j 48
+$B bench --method chen --tier small -N 100 --seed 1 -t 10 -j 48
+$B bench --method two-phase --tier small -N 100 --seed 1 -t 10 -j 48
 ```
 
 Thanks to Chen Shuang for the idea and for the state counts that made it easy to check.
