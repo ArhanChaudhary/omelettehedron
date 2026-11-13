@@ -30,11 +30,13 @@ fn problem(dir: &Path, files: &[TableFile]) -> Option<String> {
 }
 
 /// The largest of `tiers` (smallest first: name, files, or `None` if the tier cannot be used
-/// here) whose files are all complete in `dir`. `gen` gives the command that generates the
-/// tables of a tier (by name), for the message when there is none.
+/// here) whose files are all complete in `dir`. `flag` is the option that sets the tier (e.g.
+/// `--tier`), and `gen` gives the command that generates the tables of a tier (by name), for
+/// the message when there is none.
 fn pick<T: Copy>(
     dir: &Path,
     tiers: &[(T, &str, Option<Vec<TableFile>>)],
+    flag: &str,
     gen: &dyn Fn(&str) -> String,
 ) -> Result<Choice<T>, String> {
     // why each larger tier was not chosen, largest first
@@ -48,7 +50,7 @@ fn pick<T: Copy>(
                 return Ok(Choice {
                     tier: *tier,
                     message: format!(
-                        "no --tier given: using --tier {name}, the largest tier whose tables are \
+                        "no {flag} given: using {flag} {name}, the largest tier whose tables are \
                          all in {}{why}",
                         dir.display()
                     ),
@@ -62,7 +64,7 @@ fn pick<T: Copy>(
         .find(|t| t.2.is_some())
         .map_or("small", |t| t.1);
     Err(format!(
-        "no --tier given, and no tier has all its tables in {} ({}). Pass --tier (missing tables \
+        "no {flag} given, and no tier has all its tables in {} ({}). Pass {flag} (missing tables \
          are then generated), or generate them first with `{}` (or a larger tier)",
         dir.display(),
         larger.last().map_or("", String::as_str),
@@ -70,20 +72,21 @@ fn pick<T: Copy>(
     ))
 }
 
-/// The command (`omelettehedron gen` or `omelettehedron optimal gen`: `prefix`) that generates
-/// the tables of a tier in the metric of `moves`.
-fn gen_command(prefix: &'static str, moves: MoveSet) -> impl Fn(&str) -> String {
+/// The command (`omelettehedron gen two-phase` or `omelettehedron gen optimal`: `solver`) that
+/// generates the tables of a tier in the metric of `moves`.
+fn gen_command(solver: &'static str, moves: MoveSet) -> impl Fn(&str) -> String {
     let slice = if moves.slice { " --moves slice" } else { "" };
-    move |tier| format!("omelettehedron {prefix}gen --tier {tier}{slice}")
+    move |tier| format!("omelettehedron gen {solver} --tier {tier}{slice}")
 }
 
 /// The largest two-phase tier whose tables (in the metric of `moves`) are all complete in
-/// `dir`. On 32-bit targets only the small and medium tiers count.
+/// `dir`. On 32-bit targets only the small and medium tiers count. `flag` is the option that
+/// sets the tier, for the messages.
 ///
 /// # Errors
 ///
 /// If no tier is complete: the message says what to do.
-pub fn two_phase(dir: &Path, moves: MoveSet) -> Result<Choice<Tier>, String> {
+pub fn two_phase(dir: &Path, moves: MoveSet, flag: &str) -> Result<Choice<Tier>, String> {
     let tiers: Vec<(Tier, &str, Option<Vec<TableFile>>)> = Tier::ALL
         .iter()
         .map(|&t| {
@@ -92,21 +95,22 @@ pub fn two_phase(dir: &Path, moves: MoveSet) -> Result<Choice<Tier>, String> {
             (t, t.name(), usable.then(|| t.files(moves)))
         })
         .collect();
-    pick(dir, &tiers, &gen_command("", moves))
+    pick(dir, &tiers, flag, &gen_command("two-phase", moves))
 }
 
 /// The largest tier of the optimal solver whose tables (in the metric of `moves`) are all
-/// complete in `dir` (the large tier has no slice tables).
+/// complete in `dir` (the large tier has no slice tables). `flag` is the option that sets the
+/// tier, for the messages.
 ///
 /// # Errors
 ///
 /// If no tier is complete: the message says what to do.
-pub fn optimal(dir: &Path, moves: MoveSet) -> Result<Choice<OptTier>, String> {
+pub fn optimal(dir: &Path, moves: MoveSet, flag: &str) -> Result<Choice<OptTier>, String> {
     let tiers: Vec<(OptTier, &str, Option<Vec<TableFile>>)> = OptTier::ALL
         .iter()
         .map(|&t| (t, t.name(), t.files(moves)))
         .collect();
-    pick(dir, &tiers, &gen_command("optimal ", moves))
+    pick(dir, &tiers, flag, &gen_command("optimal", moves))
 }
 
 #[cfg(test)]
@@ -144,20 +148,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // nothing yet: an error that says what to do
-        let e = two_phase(&dir, MoveSet::FACE).unwrap_err();
+        let e = two_phase(&dir, MoveSet::FACE, "--tier").unwrap_err();
         // (the smallest tier, quickest to generate)
         assert!(
-            e.contains("--tier") && e.contains("omelettehedron gen --tier tiny"),
+            e.contains("--tier") && e.contains("omelettehedron gen two-phase --tier tiny"),
             "{e}"
         );
-        let e = optimal(&dir, SLICE).unwrap_err();
+        let e = optimal(&dir, SLICE, "--tier").unwrap_err();
         assert!(
-            e.contains("omelettehedron optimal gen --tier small --moves slice"),
+            e.contains("omelettehedron gen optimal --tier small --moves slice"),
             "{e}"
         );
 
         fake_tier(&dir, &Tier::Tiny.files(MoveSet::FACE));
-        let c = two_phase(&dir, MoveSet::FACE).unwrap();
+        let c = two_phase(&dir, MoveSet::FACE, "--tier").unwrap();
         assert_eq!(c.tier, Tier::Tiny);
         assert!(
             c.message
@@ -166,7 +170,7 @@ mod tests {
             c.message
         );
         fake_tier(&dir, &Tier::Small.files(MoveSet::FACE));
-        let c = two_phase(&dir, MoveSet::FACE).unwrap();
+        let c = two_phase(&dir, MoveSet::FACE, "--tier").unwrap();
         assert_eq!(c.tier, Tier::Small);
         assert!(c.message.contains("--tier small"), "{}", c.message);
         assert!(
@@ -176,13 +180,13 @@ mod tests {
             c.message
         );
         // the slice tables are other files
-        assert!(two_phase(&dir, SLICE).is_err());
+        assert!(two_phase(&dir, SLICE, "--tier").is_err());
         // the wide move set reads the face-turn tables
         let wide = MoveSet {
             wide: true,
             slice: false,
         };
-        assert_eq!(two_phase(&dir, wide).unwrap().tier, Tier::Small);
+        assert_eq!(two_phase(&dir, wide, "--tier").unwrap().tier, Tier::Small);
 
         // the large tier's files, but the joint table cut short: medium (whose files are a
         // subset of large's) is the largest complete one
@@ -195,7 +199,7 @@ mod tests {
             .unwrap()
             .set_len(len - 8)
             .unwrap();
-        let c = two_phase(&dir, MoveSet::FACE).unwrap();
+        let c = two_phase(&dir, MoveSet::FACE, "--tier").unwrap();
         assert_eq!(c.tier, Tier::Medium);
         assert!(
             c.message.contains("cbe.prun is incomplete"),
@@ -203,42 +207,57 @@ mod tests {
             c.message
         );
         fake(&cbe, crate::tables::CBE_ENTRIES);
-        assert_eq!(two_phase(&dir, MoveSet::FACE).unwrap().tier, Tier::Large);
+        assert_eq!(
+            two_phase(&dir, MoveSet::FACE, "--tier").unwrap().tier,
+            Tier::Large
+        );
         // a table of another size (another version's index) does not count
         fake(&cbe, crate::tables::CBE_ENTRIES + 32);
-        assert_eq!(two_phase(&dir, MoveSet::FACE).unwrap().tier, Tier::Medium);
+        assert_eq!(
+            two_phase(&dir, MoveSet::FACE, "--tier").unwrap().tier,
+            Tier::Medium
+        );
         fake(&cbe, crate::tables::CBE_ENTRIES);
         // a temporary file of an unfinished generation is not the table
         std::fs::rename(dir.join("cbe-solved11.prun"), dir.join("cbe-solved11.tmp")).unwrap();
-        assert_eq!(two_phase(&dir, MoveSet::FACE).unwrap().tier, Tier::Medium);
+        assert_eq!(
+            two_phase(&dir, MoveSet::FACE, "--tier").unwrap().tier,
+            Tier::Medium
+        );
         std::fs::rename(dir.join("cbe-solved11.tmp"), dir.join("cbe-solved11.prun")).unwrap();
 
         if cfg!(target_pointer_width = "64") {
-            assert_eq!(two_phase(&dir, MoveSet::FACE).unwrap().tier, Tier::Large);
+            assert_eq!(
+                two_phase(&dir, MoveSet::FACE, "--tier").unwrap().tier,
+                Tier::Large
+            );
             fake_tier(&dir, &Tier::Huge.files(MoveSet::FACE));
-            let c = two_phase(&dir, MoveSet::FACE).unwrap();
+            let c = two_phase(&dir, MoveSet::FACE, "--tier").unwrap();
             assert_eq!(c.tier, Tier::Huge);
             assert!(!c.message.contains('('), "{}", c.message);
         }
 
         // the optimal solver's tiers: the two-phase small tier gives it one file of three
-        let e = optimal(&dir, MoveSet::FACE).unwrap_err();
+        let e = optimal(&dir, MoveSet::FACE, "--tier").unwrap_err();
         assert!(e.contains("opt-cc-sym24.prun is missing"), "{e}");
         for t in OptTier::ALL {
             fake_tier(&dir, &t.files(SLICE).unwrap_or_default());
         }
         // (the large tier has no slice tables: medium is the largest with slices)
         assert_eq!(
-            optimal(&dir, SLICE).unwrap().tier,
+            optimal(&dir, SLICE, "--tier").unwrap().tier,
             if cfg!(target_pointer_width = "64") {
                 OptTier::Medium
             } else {
                 OptTier::Small
             }
         );
-        assert!(optimal(&dir, MoveSet::FACE).is_err());
+        assert!(optimal(&dir, MoveSet::FACE, "--tier").is_err());
         fake_tier(&dir, &OptTier::Small.files(MoveSet::FACE).unwrap());
-        assert_eq!(optimal(&dir, MoveSet::FACE).unwrap().tier, OptTier::Small);
+        assert_eq!(
+            optimal(&dir, MoveSet::FACE, "--tier").unwrap().tier,
+            OptTier::Small
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

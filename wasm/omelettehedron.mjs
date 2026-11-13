@@ -329,8 +329,8 @@ async function startWorker(module, memory, control, slot, channel) {
 }
 
 /**
- * The sets of tables: the module's number for each, its two files (the native `gen --tier`
- * files) and the threads module with room for it.
+ * The sets of tables: the module's number for each, its two files (the native
+ * `gen two-phase --tier` files) and the threads module with room for it.
  */
 export const TIERS = {
   tiny: { code: 2, ae: 'ae-pair48-split96.prun', cb: 'cb-sym24.prun', threadsWasm: 'omelettehedron-threads.wasm' },
@@ -478,10 +478,10 @@ export class FtoSolver {
 
   /**
    * Load the two table files of a tier (`TIERS[tier].ae` and `cb-sym24.prun`, from the native
-   * `gen --tier tiny`, `small` or `medium`, or from `exportTables`): each a path (Bun), URL,
-   * Blob or bytes. The tier is that of the first file; the checksums are checked. Blobs and
-   * Bun's files are copied into the module in pieces (no second whole copy in JavaScript's
-   * memory). Returns `{ tier, ae_bytes, cb_bytes, seconds }`.
+   * `gen two-phase --tier tiny`, `small` or `medium`, or from `exportTables`): each a path
+   * (Bun), URL, Blob or bytes. The tier is that of the first file; the checksums are checked.
+   * Blobs and Bun's files are copied into the module in pieces (no second whole copy in
+   * JavaScript's memory). Returns `{ tier, ae_bytes, cb_bytes, seconds }`.
    */
   async loadTables(ae, cb) {
     this.tables = null;
@@ -506,7 +506,7 @@ export class FtoSolver {
   }
 
   /**
-   * The tables as their two files (the format of `loadTables` and the native `gen`), as
+   * The tables as their two files (the format of `loadTables` and the native `gen two-phase`), as
    * `[{ name, blob }, { name, blob }]`: e.g. to keep them in IndexedDB.
    */
   exportTables() {
@@ -585,7 +585,7 @@ export class FtoSolver {
   }
 
   /**
-   * The native `bench`: `count` seeded random positions (or random-move scrambles of
+   * The native `bench two-phase`: `count` seeded random positions (or random-move scrambles of
    * `scrambleLength` moves) solved one at a time for `seconds` each (0: optimal). Returns the
    * native `--json` summary.
    */

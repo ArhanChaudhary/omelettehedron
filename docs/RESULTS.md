@@ -429,7 +429,7 @@ same as before the gate (0.1-1.4%), so it is not the search code; the binary aro
 
 ## Optimal solver (v0)
 
-The separate optimal solver (`omelettehedron optimal`, single-phase IDA* to the solved state;
+The separate optimal solver (`omelettehedron solve optimal`, single-phase IDA* to the solved state;
 [OPTIMAL.md](OPTIMAL.md)). Node counts only (one thread unless noted; the machine was busy, so
 no timings yet). Same optimal lengths as the two-phase solver's optimal mode.
 

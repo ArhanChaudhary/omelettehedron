@@ -13,6 +13,6 @@ cargo build --release -q
 bin=${CARGO_TARGET_DIR:-target}/release/omelettehedron
 mkdir -p bench-results
 echo "commit $(git rev-parse --short HEAD), FTO_DIRECT=${FTO_DIRECT:-}, load before benchmark: $(cut -d' ' -f1 /proc/loadavg)" >&2
-$bin bench -N 10 --scramble-len 19 --seed 1919 --tier "$tier" --json "bench-results/$label-optmt.json" > "bench-results/$label-optmt.txt"
-$bin bench -N 10 --scramble-len 17 --seed 1717 -j 1 --tier "$tier" --json "bench-results/$label-optst.json" > "bench-results/$label-optst.txt"
+$bin bench two-phase -N 10 --scramble-len 19 --seed 1919 --tier "$tier" --json "bench-results/$label-optmt.json" > "bench-results/$label-optmt.txt"
+$bin bench two-phase -N 10 --scramble-len 17 --seed 1717 -j 1 --tier "$tier" --json "bench-results/$label-optst.json" > "bench-results/$label-optst.txt"
 grep -E "elapsed|optimal|final" "bench-results/$label-optmt.txt" "bench-results/$label-optst.txt"

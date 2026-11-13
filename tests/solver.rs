@@ -540,7 +540,7 @@ fn optimal_matches_brute_force_many() {
 
 /// The large tier (with the distance-to-solved table that optimal mode prunes against) gives
 /// the brute force's optimal lengths, on 1 and 4 threads. Needs the large tier's tables on disk
-/// (`FTO_TABLES`; `omelettehedron gen --tier large`).
+/// (`FTO_TABLES`; `omelettehedron gen two-phase --tier large`).
 #[test]
 #[ignore = "needs the large tier's tables on disk"]
 fn large_tier_optimal_matches_brute_force() {

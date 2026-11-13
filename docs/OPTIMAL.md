@@ -2,10 +2,11 @@
 
 [Documentation home](../README.md) · [Two-phase design](PHASES.md) · [Results](RESULTS.md)
 
-`omelettehedron optimal` is a second solver, separate from the two-phase solver: a single-phase
-IDA* straight to the solved state, in the style of the optimal 3x3x3 solvers (pattern databases
-of distances to solved). Everything on this page is about the **optimal solver**; the two-phase
-solver (`omelettehedron solve|gen|bench`, [PHASES.md](PHASES.md)) is unchanged.
+The optimal solver (`omelettehedron solve optimal`, `gen optimal`, `bench optimal`) is a second
+solver, separate from the two-phase solver: a single-phase IDA* straight to the solved state, in
+the style of the optimal 3x3x3 solvers (pattern databases of distances to solved). Everything on
+this page is about the **optimal solver**; the two-phase solver (`omelettehedron solve
+two-phase`, `gen two-phase`, `bench two-phase`, [PHASES.md](PHASES.md)) is unchanged.
 
 Status: **v0** (correct first, fast later). The two-phase solver's optimal mode is much faster
 today; this solver is the base for the optimisation loop.
@@ -14,30 +15,33 @@ today; this solver is the base for the optimisation loop.
 
 ```sh
 # optimal solution (the first one found; IDA* finds the shortest first)
-omelettehedron optimal solve --tier medium "U R' BL F D B' L BR"
+omelettehedron solve optimal --tier medium "U R' BL F D B' L BR"
 # all optimal solutions, up to 20
-omelettehedron optimal solve --tier medium -n 20 "..."
+omelettehedron solve optimal --tier medium -n 20 "..."
 # give up after 60 s: prints the lower bound proven so far
-omelettehedron optimal solve --tier medium -t 60 "..."
+omelettehedron solve optimal --tier medium -t 60 "..."
 # give up if the optimum is longer than 18 moves
-omelettehedron optimal solve --tier medium -l 18 "..."
+omelettehedron solve optimal --tier medium -l 18 "..."
 # a position given as the algorithm that solves it
-omelettehedron optimal solve --tier medium --inverse "U F BL B' ..."
-# per-iteration progress (depth, nodes, tasks, time) on stderr
-omelettehedron optimal solve --tier medium -v "..."
+omelettehedron solve optimal --tier medium --inverse "U F BL B' ..."
+# per-iteration progress (depth, nodes, tasks, time) and the statistics on stderr
+omelettehedron solve optimal --tier medium -v "..."
 # what the search is doing while it runs (each depth as it ends, "no solution of at most D
 # moves", nodes and nodes/s, and a line every second during a long depth; see the README)
-omelettehedron optimal solve --tier medium --progress "..."
+omelettehedron solve optimal --tier medium --progress "..."
 # together with the two-phase solver: it finds upper bounds, this solver lower bounds
-omelettehedron combined --tier large --opt-tier large "..."
+omelettehedron solve combined --tier large --optimal-tier large "..."
 # generate the tables ahead of time
-omelettehedron optimal gen --tier medium
+omelettehedron gen optimal --tier medium
 # benchmark: seeded random-move scrambles (the two-phase bench sets), one line per position
-omelettehedron optimal bench --tier medium -N 10 --scramble-len 17 --seed 1717 -j 1
+omelettehedron bench optimal --tier medium -N 10 --scramble-len 17 --seed 1717 -j 1
 ```
 
-`--tier` is required. `--tables DIR` / `$FTO_TABLES` / `./tables` hold the tables, as for the
-two-phase solver; the optimal solver's files start with `opt-`. Before generating, the disk
+It prints as `solve two-phase` does: each lower bound proven (every completed depth) as it
+comes, then the solution and the result line (see the README's [Usage](../README.md#usage)).
+Without `--tier`, it uses the largest tier whose tables are all there. `--tables DIR` /
+`$FTO_TABLES` / `./tables` hold the tables, as for the two-phase solver; the optimal solver's
+files start with `opt-`. Before generating, the disk
 space and free memory are checked for all tables of the tier (`--force` skips the check);
 `--min-free-memory GB` leaves that much memory to the rest of the machine (added to the check,
 and the large tier's 21 GB table stops generating, writing nothing, if the free memory falls

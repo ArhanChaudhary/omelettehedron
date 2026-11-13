@@ -203,7 +203,7 @@ optimisation.
   * `--lower-bound L` resumes a long proof: the search finds a first solution, then starts its
     passes at L (from a previous run's "pass L − 1 done" line of `--progress`);
   * a lower bound proven elsewhere while the search runs (`progress::Watch::lower`: the optimal
-    solver's, in `omelettehedron combined --two-phase passes`) is used the same way, and a pass
+    solver's, in `omelettehedron solve combined --passes`) is used the same way, and a pass
     whose target it passes is left (checked between tasks) for a pass at that bound. Every
     completed phase-1 depth D outside a pass, and every completed pass T, is reported as a
     lower bound (D + 2, with slices D + 1; T + 1; at most the best length, which counts when a

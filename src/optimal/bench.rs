@@ -47,8 +47,8 @@ pub struct Summary {
 }
 
 /// Solve `n` seeded positions (random-move scrambles of `scramble_len` face turns, the same as
-/// the two-phase solver's `bench --scramble-len`, or random positions) and summarise; each
-/// position's result is printed as it completes.
+/// `bench two-phase --scramble-len`, or random positions) and summarise; each position's result
+/// is printed as it completes.
 pub fn run<B: Bounds>(
     b: &B,
     tier: &str,

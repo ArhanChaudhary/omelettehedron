@@ -4,7 +4,7 @@
 //! Strings go in as (pointer, length) of UTF-8 in buffers from `fto_alloc`. Results come out
 //! as text in an output buffer (`fto_output`, `fto_output_len`): JSON after a call that
 //! returns 0, an error message after one that returns -1. Table files (the format of the
-//! native `gen`, `Table2::save`) are copied in by the caller into buffers from
+//! native `gen two-phase`, `Table2::save`) are copied in by the caller into buffers from
 //! `fto_table_buffer`, then checked and installed by `fto_load`; `fto_export` hands out the
 //! generated tables in the same format.
 //!

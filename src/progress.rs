@@ -5,9 +5,9 @@
 //!   no extra work per node for this: the iteration lines are printed between iterations, and
 //!   the heartbeat runs on a thread of its own that reads the counters the search already keeps
 //!   (the node count is updated once per task).
-//! * Links between two searches of the same position (`omelettehedron combined`): a stop flag
-//!   they share, a callback for every new bound on the optimal length, and a lower bound proven
-//!   elsewhere that the two-phase solver's target-length passes start from.
+//! * Links between two searches of the same position (`omelettehedron solve combined`): a stop
+//!   flag they share, a callback for every new bound on the optimal length, and a lower bound
+//!   proven elsewhere that the two-phase solver's target-length passes start from.
 //!
 //! [`Watch::default`] changes nothing: the searches run as without it.
 

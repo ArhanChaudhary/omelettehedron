@@ -27,9 +27,9 @@ mv=()
 gap=()
 run() { # name, extra bench arguments... (with the environment in `gap` for both runs)
     local name=$1; shift
-    env "${gap[@]}" "$bin" bench --tier "$tier" "${mv[@]}" "$@" \
+    env "${gap[@]}" "$bin" bench two-phase --tier "$tier" "${mv[@]}" "$@" \
         --json "$out/$name-early.json" > /dev/null
-    env "${gap[@]}" FTO_FULL_PROOF=1 "$bin" bench --tier "$tier" "${mv[@]}" "$@" \
+    env "${gap[@]}" FTO_FULL_PROOF=1 "$bin" bench two-phase --tier "$tier" "${mv[@]}" "$@" \
         --json "$out/$name-full.json" > /dev/null
 }
 same_nodes=()

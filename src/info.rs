@@ -1,4 +1,4 @@
-//! What can be said about a position without pruning tables (`omelettehedron info`): whether
+//! What can be said about a position without pruning tables (`omelettehedron show`): whether
 //! it is solved, its symmetries, how many pieces are solved, whether it is in the two-phase
 //! solver's subgroups `H_A` and `H_B`, and a lower bound from small distance tables built in
 //! memory (corners, the centres of each orbit and the edges' A-faces taken one at a time; tens
@@ -65,7 +65,7 @@ pub struct Bounds {
     pub edges: u8,
 }
 
-/// What `info` reports about a position.
+/// What `show` reports about a position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct Info {
     pub solved: bool,

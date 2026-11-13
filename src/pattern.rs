@@ -291,7 +291,7 @@ pub struct Record {
     pub text: String,
 }
 
-/// Split a list of patterns (`solve --patterns`) into records, for [`parse`]. A `#` starts a
+/// Split a list of patterns (`solve ... --patterns`) into records, for [`parse`]. A `#` starts a
 /// comment, to the end of its line. A pattern takes one line or several: lines are joined until
 /// they hold 72 stickers. A blank line ends a pattern early, and so does a line that would take
 /// it past 72 stickers (that line starts the next pattern), so a pattern with a sticker too
