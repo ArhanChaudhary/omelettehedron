@@ -1,6 +1,7 @@
 //! End-to-end tests of the block-split solver (`omelettehedron::chen`), with the small tier's
 //! phase-1 table and the phase-2 tables built in memory once.
 
+use omelettehedron::chen::relaxed::{relaxed_targets, target_check, RelaxedAe};
 use omelettehedron::chen::search::solve;
 use omelettehedron::chen::space::space;
 use omelettehedron::chen::tables::{ChenTables, TableSet, P2};
@@ -59,6 +60,7 @@ fn solutions_solve() {
             solve(
                 t,
                 ct,
+                None,
                 cube,
                 frame,
                 &limits,
@@ -84,6 +86,7 @@ fn solutions_solve() {
         let o = solve(
             t,
             ct,
+            None,
             cube,
             Frame::identity(),
             &limits,
@@ -116,6 +119,7 @@ fn max_length_and_short_positions() {
         solve(
             t,
             ct,
+            None,
             cube,
             frame,
             &limits,
@@ -160,4 +164,62 @@ fn tables_bound_the_restricted_distance() {
     }
     assert_eq!(t.exact(&start), Some([0; 4]));
     assert!(t.ha_index(s, &start).is_some());
+}
+
+/// The relaxed phase-1 table of the small tier's index (built in memory once).
+fn relaxed() -> &'static RelaxedAe {
+    static R: OnceLock<RelaxedAe> = OnceLock::new();
+    R.get_or_init(|| RelaxedAe::generate(&tables().0.ae_ix, false))
+}
+
+/// With the relaxed target the solutions solve, a configuration of the phase-2 space is at
+/// phase-1 distance 0 (and `H'` among them), and a random position is no farther than from
+/// `H'`.
+#[test]
+fn relaxed_solutions_solve() {
+    let (t, ct) = tables();
+    let r = relaxed();
+    let s = space();
+    let f = omelettehedron::fast::fast();
+    // every configuration's index is a target (in the small tier's index, which has no edge
+    // chirality, some targets also hold positions that are no configuration)
+    assert_eq!(r.targets, relaxed_targets(&t.ae_ix));
+    let (hits, n) = target_check(&t.ae_ix, &r.targets);
+    assert!(hits > 0 && hits <= n);
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(21);
+    for &(xa, ep) in s.cfgs.iter().step_by(997) {
+        let c = Cube {
+            ep,
+            xa,
+            ..Cube::random(&mut rng)
+        };
+        assert_eq!(r.exact(&t.ae_ix, &f.of(&c)), Some(0));
+    }
+    for _ in 0..200 {
+        let c = Cube::random(&mut rng);
+        let x = f.of(&c);
+        assert!(r.exact(&t.ae_ix, &x).unwrap() <= t.exact_fast(&x).0);
+    }
+    for len in [0, 3, 7, 11] {
+        let scr: Vec<PhysMove> = (0..len)
+            .map(|_| PhysMove::face(rng.gen_range(0..8), rng.gen()))
+            .collect();
+        let (cube, frame) = scramble_to_cube(&scr);
+        let limits = Limits {
+            max_solutions: Some(2),
+            time: Some(Duration::from_secs(600)),
+            ..Limits::default()
+        };
+        let o = solve(
+            t,
+            ct,
+            Some(r),
+            cube,
+            frame,
+            &limits,
+            Report::Quiet,
+            &Default::default(),
+        );
+        check_solution(&scr, &o.solution.expect("a solution"));
+    }
 }

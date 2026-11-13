@@ -11,9 +11,11 @@
 //! * [`space`]: the block configurations and the move rule;
 //! * [`corners`]: corner states in the pattern view (for the corner table under symmetry);
 //! * [`tables`]: the phase-2 pruning tables;
+//! * [`relaxed`]: the relaxed phase-1 target (any configuration of the phase-2 space);
 //! * [`search`]: the two-phase loop.
 
 pub mod corners;
+pub mod relaxed;
 pub mod search;
 pub mod space;
 pub mod tables;

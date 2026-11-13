@@ -940,13 +940,24 @@ impl<I: AeIndex, const N: usize> Graph for AeGraph<'_, I, N> {
 /// The AE table of index `ix` in the metric of `moves`.
 pub fn build_ae<I: AeIndex>(ix: &I, moves: MoveSet, verbose: bool) -> Table2 {
     let name = format!("{}{}", ix.name(), moves.table_suffix());
-    let targets = ae_targets(ix);
+    build_ae_with(ix, moves, &ae_targets(ix), &name, verbose)
+}
+
+/// [`build_ae`] with other targets (indices at distance 0), e.g. the block split's relaxed
+/// phase-1 target ([`crate::chen::relaxed`]).
+pub fn build_ae_with<I: AeIndex>(
+    ix: &I,
+    moves: MoveSet,
+    targets: &[usize],
+    name: &str,
+    verbose: bool,
+) -> Table2 {
     if moves.slice {
         let g = AeGraph::<I, MAX_MOVES>::new(ix);
-        bfs(&g, ix.size(), &targets, &name, verbose)
+        bfs(&g, ix.size(), targets, name, verbose)
     } else {
         let g = AeGraph::<I, N_MOVES>::new(ix);
-        bfs(&g, ix.size(), &targets, &name, verbose)
+        bfs(&g, ix.size(), targets, name, verbose)
     }
 }
 

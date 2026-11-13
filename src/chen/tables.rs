@@ -246,6 +246,13 @@ pub enum ChenTableError {
         /// the table directory
         dir: String,
     },
+    /// The relaxed phase-1 target needs an AE index with a table of distances (small tier or
+    /// larger, see [`super::relaxed`]).
+    #[error("the relaxed phase-1 target has no table for the index {index} (use the small tier or larger)")]
+    NoRelaxedTable {
+        /// the index's table name
+        index: String,
+    },
 }
 
 /// Which optional phase-2 tables to use (AC and CC are always used).

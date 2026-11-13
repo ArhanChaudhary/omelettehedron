@@ -20,6 +20,7 @@
 //! The split restricts phase 2, so a solution it finds need not be optimal, and running out of
 //! phase-1 depths below the best proves nothing: [`Outcome::optimal`] is always false.
 
+use super::relaxed::RelaxedAe;
 use super::space::*;
 use super::tables::*;
 use crate::cube::*;
@@ -27,7 +28,7 @@ use crate::fast::*;
 use crate::geometry::{transpose, Mat, IDENTITY};
 use crate::notation::*;
 use crate::progress::{rate, Bound, Watch};
-use crate::prune::decode;
+use crate::prune::{decode, Table2};
 use crate::search::{Event, Limits, Outcome, Report};
 use crate::tables::{prefetch_at, AeIndex, Tables};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -124,6 +125,11 @@ struct Shared<'a, I: AeIndex> {
     budget: u64,
     /// `FTO_DEBUG`: a line per phase-2 iteration of each leaf on stderr
     debug: bool,
+    /// the phase-1 table: the tier's AE table (target `H'`), or the relaxed one
+    p1: &'a Table2,
+    /// phase 1 ends in any configuration of the phase-2 space ([`super::relaxed`]) instead of
+    /// in `H'`
+    relaxed: bool,
 }
 
 impl<I: AeIndex> Shared<'_, I> {
@@ -152,11 +158,11 @@ impl<I: AeIndex> Shared<'_, I> {
     #[inline]
     fn ae_bound(&self, y: &Fc, parent: u8) -> u8 {
         let t = self.t;
-        match t.ae_ix.bound(self.f, y, &t.ae) {
+        match t.ae_ix.bound(self.f, y, self.p1) {
             Some(h) => h,
             None => decode(
                 parent,
-                t.ae.get(t.ae_ix.index_fast(self.f, y, self.f.a_rank(y))),
+                self.p1.get(t.ae_ix.index_fast(self.f, y, self.f.a_rank(y))),
             ),
         }
     }
@@ -188,7 +194,9 @@ impl<I: AeIndex> Shared<'_, I> {
         let g = path.len();
         let last = path.last().copied().unwrap_or(usize::MAX);
         if g == depth {
-            if h == 0 && path.last().is_none_or(|&m| !is_a_move(m)) {
+            // (with the target H', a path that ends in a class-A move was in H' already: see
+            // `leaf_check` for the relaxed target)
+            if h == 0 && (self.relaxed || path.last().is_none_or(|&m| !is_a_move(m))) {
                 if let Some(leaf) = self.leaf_check(side, path, ctr) {
                     self.leaf(&leaf, ctr);
                 }
@@ -222,13 +230,22 @@ impl<I: AeIndex> Shared<'_, I> {
         }
     }
 
-    /// A phase-1 leaf candidate: `path` (moves of the side's frame) reaches `H'` by the tables.
-    /// Check it in full; the leaf with its phase-2 table distances if it is in `H'` and could
-    /// still improve on the best.
+    /// A phase-1 leaf candidate: `path` (moves of the side's frame) reaches the target (`H'`, or
+    /// any configuration when relaxed) by the tables. Check it in full; the leaf with its
+    /// phase-2 table distances if it is a target and could still improve on the best.
     fn leaf_check(&self, side: usize, path: &[usize], ctr: &mut Ctr) -> Option<Leaf> {
         let cube = self.sides[side].cube.apply_seq(path);
         let p = P2::of(&cube)?;
-        if !self.s.in_hprime(p.cfg) {
+        if self.relaxed {
+            // A path whose last move is allowed from a parent that is a configuration already
+            // is a shorter phase-1 path and a phase-2 move.
+            if let Some(&m) = path.last() {
+                let parent = self.s.id(&cube.apply(inverse_move(m)));
+                if parent.is_some_and(|c| self.s.next[c as usize][m & 15] != NONE) {
+                    return None;
+                }
+            }
+        } else if !self.s.in_hprime(p.cfg) {
             return None;
         }
         ctr.leaves[side] += 1;
@@ -541,11 +558,13 @@ fn leaf_budget() -> u64 {
 }
 
 /// Solve one position with the block split: the two-phase solver's tables `t` (phase 1 and
-/// the `H_A` table) and the phase-2 tables `ct`. `frame` is the physical frame of the
-/// scrambled position. Only the face metric is supported.
+/// the `H_A` table) and the phase-2 tables `ct`; with `relaxed`, phase 1 ends in any
+/// configuration of the phase-2 space, by that table ([`super::relaxed`]). `frame` is the
+/// physical frame of the scrambled position. Only the face metric is supported.
 pub fn solve<I: AeIndex>(
     t: &Tables<I>,
     ct: &ChenTables,
+    relaxed: Option<&RelaxedAe>,
     cube: Cube,
     frame: Frame,
     limits: &Limits,
@@ -570,7 +589,12 @@ pub fn solve<I: AeIndex>(
     };
     let f = fast();
     let x = [f.of(&cube), f.of(&cube_b)];
-    let roots = [(x[0], t.exact_fast(&x[0]).0), (x[1], t.exact_fast(&x[1]).0)];
+    let root_h = |y: &Fc| match relaxed {
+        // (a table of another layout is caught when loaded; a failed walk counts 0)
+        Some(r) => r.exact(&t.ae_ix, y).unwrap_or(0),
+        None => t.exact_fast(y).0,
+    };
+    let roots = [(x[0], root_h(&x[0])), (x[1], root_h(&x[1]))];
     let sh = Shared {
         t,
         ct,
@@ -600,6 +624,8 @@ pub fn solve<I: AeIndex>(
         best: Mutex::new((None, vec![])),
         budget: leaf_budget(),
         debug: std::env::var_os("FTO_DEBUG").is_some(),
+        p1: relaxed.map_or(&t.ae, |r| &r.tab),
+        relaxed: relaxed.is_some(),
     };
     let threads = rayon::current_num_threads();
     let first = roots[0].1.min(roots[1].1) as usize;

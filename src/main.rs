@@ -28,6 +28,7 @@
 
 use clap::{Parser, Subcommand};
 use omelettehedron::bench;
+use omelettehedron::chen::relaxed::RelaxedAe;
 use omelettehedron::chen::tables::ChenTables;
 use omelettehedron::combined::TwoPhaseMode;
 use omelettehedron::cube::{Cube, MoveSet};
@@ -103,6 +104,16 @@ enum Method {
     TwoPhase,
     /// the block split (`omelettehedron::chen`)
     Chen,
+    /// the block split with phase 1 ending in any configuration of the phase-2 space, not only
+    /// with the hexagons intact (`omelettehedron::chen::relaxed`; small tier or larger)
+    ChenRelaxed,
+}
+
+impl Method {
+    /// Whether this is one of the block split's methods.
+    fn is_chen(self) -> bool {
+        matches!(self, Method::Chen | Method::ChenRelaxed)
+    }
 }
 
 /// A move family for `--moves`.
@@ -496,7 +507,7 @@ fn table_error(dir: &Path, e: &std::io::Error) -> Error {
 
 /// Reject options that `--method chen` does not support (before any table is loaded).
 fn check_method(tab: &TableArgs, two_phase_only: &[(bool, &str)]) -> anyhow::Result<()> {
-    if tab.method != Method::Chen {
+    if !tab.method.is_chen() {
         return Ok(());
     }
     anyhow::ensure!(
@@ -516,7 +527,7 @@ fn check_method(tab: &TableArgs, two_phase_only: &[(bool, &str)]) -> anyhow::Res
 /// and 6.9e6 nodes for two, none within 1.5e7 and 2.3e7 nodes (100 s) for the other two.
 fn load_chen(tab: &TableArgs) -> anyhow::Result<Option<ChenTables>> {
     use anyhow::Context as _;
-    if tab.method != Method::Chen {
+    if !tab.method.is_chen() {
         return Ok(None);
     }
     let dir = table_dir(tab.tables.as_deref());
@@ -541,6 +552,32 @@ fn load_chen(tab: &TableArgs) -> anyhow::Result<Option<ChenTables>> {
         );
     }
     Ok(Some(ct))
+}
+
+/// The relaxed phase-1 table of the tier's AE index with `--method chen-relaxed` (generated
+/// if missing), else `None`.
+fn load_relaxed<I: AeIndex>(tab: &TableArgs, ix: &I) -> anyhow::Result<Option<RelaxedAe>> {
+    use anyhow::Context as _;
+    if tab.method != Method::ChenRelaxed {
+        return Ok(None);
+    }
+    let dir = table_dir(tab.tables.as_deref());
+    let t0 = std::time::Instant::now();
+    let r = RelaxedAe::load(&dir, ix, tab.verbose).with_context(|| {
+        format!(
+            "cannot load the relaxed phase-1 table from {}",
+            dir.display()
+        )
+    })?;
+    if tab.verbose {
+        eprintln!(
+            "relaxed phase-1 table: {:.1} MB, {} targets, in {:.2} s",
+            r.tab.bytes() as f64 / 1e6,
+            r.targets.len(),
+            t0.elapsed().as_secs_f64()
+        );
+    }
+    Ok(Some(r))
 }
 
 fn read_scrambles(args: &[String]) -> Vec<String> {
@@ -705,10 +742,11 @@ fn solve_batch<I: AeIndex>(tables: &Tables<I>, jobs: &[BatchJob], limits: &Limit
 }
 
 /// The solver of `--method`: the two-phase solver with tables `t`, or the block split with
-/// `t` and its phase-2 tables `chen`.
+/// `t` and its phase-2 tables `chen` (and with the relaxed phase-1 table `relaxed`).
 struct Solver<'a, I: AeIndex> {
     t: &'a Tables<I>,
     chen: Option<&'a ChenTables>,
+    relaxed: Option<&'a RelaxedAe>,
 }
 
 impl<I: AeIndex> Solver<'_, I> {
@@ -721,9 +759,16 @@ impl<I: AeIndex> Solver<'_, I> {
         watch: &Watch,
     ) -> omelettehedron::search::Outcome {
         match self.chen {
-            Some(ct) => {
-                omelettehedron::chen::search::solve(self.t, ct, cube, frame, limits, report, watch)
-            }
+            Some(ct) => omelettehedron::chen::search::solve(
+                self.t,
+                ct,
+                self.relaxed,
+                cube,
+                frame,
+                limits,
+                report,
+                watch,
+            ),
             None => solve_watched(self.t, cube, frame, limits, report, watch),
         }
     }
@@ -1174,6 +1219,7 @@ fn run(cli: Cli) -> Result<(), Error> {
                     &Solver {
                         t: &t,
                         chen: load_chen(&tab)?.as_ref(),
+                        relaxed: load_relaxed(&tab, &t.ae_ix)?.as_ref(),
                     },
                     &positions,
                     &limits,
@@ -1232,6 +1278,15 @@ fn run(cli: Cli) -> Result<(), Error> {
                         }
                         eprintln!("CC depth histogram {:?}", ct.cc.hist);
                     }
+                    if let Some(r) = load_relaxed(&tab, &t.ae_ix)? {
+                        let (hits, n) =
+                            omelettehedron::chen::relaxed::target_check(&t.ae_ix, &r.targets);
+                        eprintln!(
+                            "relaxed phase 1: {n} target indices ({hits} with a configuration \
+                             as their representative); depth histogram {:?}",
+                            r.tab.hist
+                        );
+                    }
                     // (read it now: `gen` checks every table of the tier)
                     if let (Some(lazy), Some(cbe)) = (&t.cbs, &t.cbe) {
                         let Some(cbs) = lazy.get(&cbe.ix) else {
@@ -1261,9 +1316,17 @@ fn run(cli: Cli) -> Result<(), Error> {
             let p = pool(tab.threads)?;
             p.install(|| {
                 dispatch!(tab, |t, name| {
+                    let relaxed = load_relaxed(&tab, &t.ae_ix)?;
                     let s = match load_chen(&tab)? {
                         Some(ct) => bench::run_with(
-                            &format!("{name} (chen)"),
+                            &format!(
+                                "{name} ({})",
+                                if relaxed.is_some() {
+                                    "chen-relaxed"
+                                } else {
+                                    "chen"
+                                }
+                            ),
                             &t.moves.name(),
                             scrambles,
                             seed,
@@ -1274,6 +1337,7 @@ fn run(cli: Cli) -> Result<(), Error> {
                                 omelettehedron::chen::search::solve(
                                     &t,
                                     &ct,
+                                    relaxed.as_ref(),
                                     c,
                                     Frame::identity(),
                                     &limits,
@@ -1686,6 +1750,7 @@ fn solve_pattern_list(
     p.install(|| {
         dispatch!(tab, |t, _name| {
             let chen = load_chen(tab)?;
+            let relaxed = load_relaxed(tab, &t.ae_ix)?;
             for job in &jobs {
                 match job {
                     Ok(j) => {
@@ -1697,6 +1762,7 @@ fn solve_pattern_list(
                             &Solver {
                                 t: &t,
                                 chen: chen.as_ref(),
+                                relaxed: relaxed.as_ref(),
                             },
                             &[(j.cube, j.frame, j.label.clone())],
                             limits,
