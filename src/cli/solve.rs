@@ -26,9 +26,9 @@ pub enum Method {
     /// is proven optimal
     ///
     /// Each better solution is printed as soon as it is found. Without --time, --max-length or
-    /// --max-solutions the search runs until its best solution is proven optimal. With --passes
-    /// it proves optimality faster (target-length passes), but finds no solution until it
-    /// reaches the optimal length.
+    /// --max-solutions the search runs until its best solution is proven optimal. With --optimal
+    /// it goes straight for an optimal solution, which is faster, but shows no solution until
+    /// it reaches the optimal length.
     TwoPhase(TwoPhaseArgs),
     /// The optimal solver: its first solution is optimal
     ///
@@ -59,18 +59,19 @@ pub struct TwoPhaseArgs {
     /// than the best so far)
     #[arg(short = 'n', long, value_name = "N", help_heading = "Limits")]
     max_solutions: Option<u64>,
-    /// Prove optimality with target-length passes: faster than improving step by step (one
-    /// thread: about 2.6x), but no solution is found until the optimal length is reached
+    /// Use the two-phase solver to find an optimal solution: faster than improving step by
+    /// step (one thread: about 2.6x; target-length passes), but no solution is shown until the
+    /// optimal length is reached
     #[arg(long, conflicts_with_all = ["max_length", "max_solutions"], help_heading = "Search")]
-    passes: bool,
-    /// With --passes, to resume a long proof: no solution has fewer than this many moves, as
+    optimal: bool,
+    /// With --optimal, to resume a long proof: no solution has fewer than this many moves, as
     /// an earlier run of the same position printed ("pass N done: no solution of at most N
     /// moves" with --progress gives N + 1). The search finds a first solution, then starts its
     /// passes here. A wrong value can give a wrong answer
     #[arg(
         long,
         value_name = "MOVES",
-        requires = "passes",
+        requires = "optimal",
         help_heading = "Search"
     )]
     lower_bound: Option<usize>,
@@ -137,11 +138,11 @@ pub struct CombinedArgs {
     usual: UsualArgs,
     #[command(flatten)]
     limits: LimitArgs,
-    /// The two-phase solver proves optimality with target-length passes, which start from the
-    /// largest lower bound either solver has proven (as `solve two-phase --passes`), instead of
-    /// improving its best solution step by step
+    /// The two-phase solver goes straight for an optimal solution (as `solve two-phase
+    /// --optimal`: target-length passes, from the largest lower bound either solver has
+    /// proven), instead of improving its best solution step by step
     #[arg(long, help_heading = "Search")]
-    passes: bool,
+    optimal: bool,
     /// Threads in all (default: all cores), split evenly between the two solvers
     #[arg(short = 'j', long, help_heading = "Search")]
     threads: Option<usize>,
@@ -275,11 +276,11 @@ fn two_phase(a: &TwoPhaseArgs) -> Result<(), Error> {
     // improvements). Passes: it is a cancellation deadline, which keeps the passes.
     let limits = tp::Limits {
         max_solutions: a.max_solutions,
-        time: if a.passes { None } else { time },
-        cancel_after: if a.passes { time } else { None },
+        time: if a.optimal { None } else { time },
+        cancel_after: if a.optimal { time } else { None },
         max_length: a.limits.max_length,
         lower_bound: a.lower_bound,
-        improve: !a.passes,
+        improve: !a.optimal,
         ..tp::Limits::default()
     };
     let quiet = a.output.quiet;
@@ -491,7 +492,7 @@ fn both(a: &CombinedArgs) -> Result<(), Error> {
     let cfg = combined::Config {
         time,
         max_length: a.limits.max_length,
-        mode: if a.passes {
+        mode: if a.optimal {
             TwoPhaseMode::Passes
         } else {
             TwoPhaseMode::Improve

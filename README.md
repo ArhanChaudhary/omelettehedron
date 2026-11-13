@@ -130,9 +130,9 @@ target/release/omelettehedron solve two-phase --tier large "U R' BL F D B' L BR"
 # stop after 2 seconds
 target/release/omelettehedron solve two-phase --tier large -t 2 "R U' L F' BR B' ..."
 
-# prove optimality faster, with target-length passes (about 2.6x faster on one thread), but
-# no solution is printed until the optimal one
-target/release/omelettehedron solve two-phase --tier large --passes "U R' BL F D B' L BR"
+# use the two-phase solver to find an optimal solution: faster (about 2.6x on one thread,
+# with target-length passes), but no solution is printed until the optimal one
+target/release/omelettehedron solve two-phase --tier large --optimal "U R' BL F D B' L BR"
 
 # stop at the first solution of at most 22 moves
 target/release/omelettehedron solve two-phase --tier large -l 22 "..."
@@ -152,10 +152,10 @@ target/release/omelettehedron solve two-phase --tier large --inverse "U F BL B' 
 # show what the search is doing while it runs (stderr; see "Progress" below)
 target/release/omelettehedron solve two-phase --tier large --progress "U R' BL F D B' L BR"
 
-# resume a long optimal proof: an earlier run (--passes --progress) printed "pass 20 done: no
+# resume a long optimal proof: an earlier run (--optimal --progress) printed "pass 20 done: no
 # solution of at most 20 moves", so no solution is shorter than 21 (a wrong bound can give a
 # wrong answer)
-target/release/omelettehedron solve two-phase --tier large --passes --progress --lower-bound 21 "..."
+target/release/omelettehedron solve two-phase --tier large --optimal --progress --lower-bound 21 "..."
 
 # slice turns allowed (generates the slice tables on first use)
 target/release/omelettehedron solve two-phase --tier large --moves slice "U R' BL F D B' L BR"
@@ -277,7 +277,7 @@ The distances of the symmetric positions are in [docs/SYMMETRIC.md](docs/SYMMETR
 `--progress` (for every `solve` method) prints what the search is doing to stderr while it
 runs: each iteration as it ends (its depth, nodes, nodes per second, the best length so far and
 the lower bound proven so far), each target-length pass that ends ("no solution of at most T
-moves", with `--passes`), and, during a long iteration, a line every second with the nodes so
+moves", with `--optimal`), and, during a long iteration, a line every second with the nodes so
 far and how many of its tasks have started. `--progress=5` prints that line every 5 seconds,
 `--progress=0` never. The search does no extra work for it: on 48 threads it is as
 fast as without, and short solves on one thread (24 ms each) take about 0.4 ms longer, the
@@ -548,7 +548,7 @@ D R' BR BL' B BR' L' U' D B' BR D F' R F' BL U R D R
 
 The two solvers help each other. The optimal solver stops as soon as the two-phase solver's
 best length is proven, so it never runs the depth of that length, its longest. With
-`--passes`, the two-phase solver's target-length passes start from the largest lower bound
+`--optimal`, the two-phase solver's target-length passes start from the largest lower bound
 either solver has proven.
 
 * `--tier` and `--optimal-tier` choose the two solvers' tables; without them, each solver takes
@@ -558,7 +558,7 @@ either solver has proven.
 * `-j` sets the threads in all; `--two-phase-threads` and `--optimal-threads` set each
   solver's share.
 * By default the two-phase solver improves its best solution step by step, as `solve
-  two-phase` does: each better solution as soon as it can. `--passes` uses its target-length
+  two-phase` does: each better solution as soon as it can. `--optimal` uses its target-length
   passes instead. Both prove optimality about as fast (below), but the passes find no solution
   until they reach the optimal length: on edge_hard, `passes` found its first solution after
   123 s, the default (`improve`) a 21-move (optimal) one after 0.5 s. Under a time limit,

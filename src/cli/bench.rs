@@ -19,7 +19,7 @@ pub enum Solver {
     /// solution and whether it was proven optimal; then means, and nodes per second
     ///
     /// Without --time, --max-length or --max-solutions each position is solved to a proof of
-    /// optimality with target-length passes (as `solve two-phase --passes`).
+    /// optimality with target-length passes (as `solve two-phase --optimal`).
     TwoPhase(TwoPhaseArgs),
     /// Benchmark the optimal solver: each position's optimal length, nodes and time, then a
     /// summary
