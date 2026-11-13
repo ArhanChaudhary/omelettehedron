@@ -46,6 +46,8 @@ for why this split was chosen and how it compares with alternatives (and
 [docs/CHEN.md](docs/CHEN.md) for Chen Shuang's block split, which we measured and set aside),
 [docs/RESULTS.md](docs/RESULTS.md) for measured speed and solution lengths, and
 [docs/OPTIMIZATION_LOG.md](docs/OPTIMIZATION_LOG.md) for how it got there.
+[docs/COSET.md](docs/COSET.md) describes `fto-coset`, a separate coset solver for `H_A`
+(the cube20 method), and why same-coloured centres limit it.
 
 On 48 threads a random position gets its first solution in about 6 ms (23 moves on average),
 21.5 moves after 1 s and 21.2 after 5 s; a proof of optimality takes from a few seconds to about
