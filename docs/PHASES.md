@@ -105,6 +105,9 @@ d:  0  1   2    3     4     5      6       7       8       9    10  11
 n:  1  8  48  288  1728  9896  51808  220111  480467  166276  2457  32
 ```
 
+The 32 positions at 11 moves (4 up to symmetry), with patterns, scrambles and solutions, are
+listed in [PHASE2_ANTIPODES.md](PHASE2_ANTIPODES.md).
+
 Phase 2 is a greedy walk down an exact 4-bit distance table indexed by
 (corner state, edge state): 933,120 entries, 456 KB. Each phase-2 solution is
 optimal within H_A and costs O(length).
