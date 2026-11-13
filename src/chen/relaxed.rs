@@ -21,6 +21,19 @@
 //! Either way the search checks a leaf in full ([`super::space::Space::id`]). The tiny tier's
 //! index has no table of distances to build from, so the relaxed target needs the small tier
 //! or larger.
+//!
+//! The 447,120 configurations fall into 27 target indices of the 288-fold indices. Phase-1
+//! distances (over the table entries): medium max 11, mean 8.45 (`H'`: 14, 10.94); small, a
+//! lower bound, max 10, mean 7.61 (`H'`: 12, 10.10). Generation: 4.7 s at 48 threads and
+//! 147 s on one (medium, 1.03 GB), 0.7 s and 19.7 s (small, 129 MB).
+//!
+//! Measured on 100 random positions (seed 1, 10 s each; mean best length, paired difference
+//! with a 95% interval): against the target `H'`, shorter at every checkpoint, by 0.70 +- 0.22
+//! (small) and 0.58 +- 0.23 (medium) moves at 10 s on one thread, by 0.6-1.3 moves at 0.1 s
+//! on 16 and 48 threads and by 0.02-0.16 (within the intervals) at 10 s there; first solutions
+//! about 1 move shorter and 0.70-0.78x the time. Against the two-phase solver at 10 s: on par on
+//! the small tier on one thread (-0.17 +- 0.23), behind otherwise (+0.21 to +0.45). It reads the
+//! tier's own AE table too, so the medium tier needs 2.5 GB instead of 1.4 GB.
 
 use super::space::space;
 use super::tables::ChenTableError;
