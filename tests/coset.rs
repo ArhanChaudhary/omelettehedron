@@ -284,6 +284,35 @@ fn relabelled_sequences_improve_soundly() {
     assert!(seen_better >= 30);
 }
 
+/// Why the B-centres are told apart: marking every sequence that takes the position into H_A
+/// as a pattern (`labelled: false`) gives marks that no sequence achieves on the element itself
+/// (the optimal solver shows one of them, element 301457 of this coset with mark 10, needs 11
+/// moves).
+#[test]
+fn pattern_marks_are_not_backed_by_the_sequences() {
+    let t = tables();
+    let opt = Options {
+        target: 11,
+        max_search: 11,
+        stop_when_covered: false,
+        keep_paths: true,
+        chunks: 1,
+        labelled: false,
+        relabellings: false,
+    };
+    let c = coset::solve(t, &scramble("R U L' B"), &opt, |_| {}).unwrap();
+    let unbacked = (0..N_COSET as u32)
+        .step_by(97)
+        .filter(|&p| c.marks.d[p as usize] != UNSET)
+        .filter(|&p| {
+            let (_, z) = c.element(&t.p2, p).unwrap();
+            c.solution_any(&t.p2, &z)
+                .is_none_or(|s| s.len() > usize::from(c.marks.d[p as usize]))
+        })
+        .count();
+    assert!(unbacked > 0);
+}
+
 /// The inverse of an internal word undoes it.
 #[test]
 fn invert_undoes() {
