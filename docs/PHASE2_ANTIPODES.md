@@ -1,0 +1,137 @@
+# Phase-2 antipodes
+
+[Documentation home](../README.md) · [Two-phase design](PHASES.md)
+
+Phase 2 of the two-phase solver works in the positions solvable with U, F, BR and BL turns
+alone: 933,120 positions. A breadth-first search over them with those turns gives the exact
+distance distribution (as in [PHASES.md](PHASES.md)):
+
+| Moves | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Positions | 1 | 8 | 48 | 288 | 1,728 | 9,896 | 51,808 | 220,111 | 480,467 | 166,276 | 2,457 | 32 |
+
+The 32 positions at 11 moves are listed below, in 4 classes up to symmetry. Each has the
+pattern (the format of `omelettehedron show`), a scramble that makes it from solved, and a
+solution, both with U, F, BR and BL turns only. Checks:
+
+* `omelettehedron show` turns every scramble into exactly the listed pattern;
+* the optimal solver (`omelettehedron solve optimal`) gives 11 moves for all 32 with every
+  face allowed, so they need 11 moves on the whole puzzle too.
+
+The search used a sticker model separate from the solver (2026-11-13).
+
+## A class of 2: 12 symmetries (T, 12 rotations)
+
+```
+OWWWAWWWG BBBYYPPYP AGGGOGGGW YYYBBRRBR / RRRPPYYPY WOOOGOOOA PPPRRBBRB GAAAWAAAO
+  scramble: BL' BR BL' F U BL BR F' U' F' U'
+  solution: U F U F BR' BL' U' F' BL BR' BL
+OWWWAWWWG BBYYYBPPP AGGGOGGGW YYBBBYRRR / RRPPPRYYY WOOOGOOOA PPRRRPBBB GAAAWAAAO
+  scramble: BR BL' U BL F BL U' F U' F' U'
+  solution: U F U F' U BL' F' BL' U' BL BR'
+```
+
+## A class of 6: 4 symmetries (S4, 2 rotations, 2 reflections)
+
+```
+WWWWWWWWW RRBRRBRPR GGGGGGGGG PPYPPYPRP / BBPBBYBPB OOOOOOOOO YYRYYBYRY AAAAAAAAA
+  scramble: BR' U' BR' F U F' BL' BR U' F U'
+  solution: U F' U BR' BL F U' F' BR U BR
+WWWWWWWWW RRBRRBRYR GGGGGGGGG PPBPPRPRP / BBPBBYBYB OOOOOOOOO YYPYYPYRY AAAAAAAAA
+  scramble: F' BL U BL' BR' F U' BL U' F' U'
+  solution: U F U BL' U F' BR BL U' BL' F
+WWWWWWWWW RRBRRPRPR GGGGGGGGG PPBPPYPBP / BBRBBYBYB OOOOOOOOO YYRYYPYRY AAAAAAAAA
+  scramble: F' BL F' U BR' BL' F BL U' F' U'
+  solution: U F U BL' F' BL BR U' F BL' F
+WWWWWWWWW RRYRRBRYR GGGGGGGGG PPYPPRPRP / BBPBBRBPB OOOOOOOOO YYPYYBYBY AAAAAAAAA
+  scramble: BR U' F BL' BR' U BR F' U' F' U'
+  solution: U F U F BR' U' BR BL F' U BR'
+WWWWWWWWW RRYRRPRPR GGGGGGGGG PPYPPYPBP / BBRBBRBPB OOOOOOOOO YYRYYBYBY AAAAAAAAA
+  scramble: BR F BR' BL' U F' BR F' U' F' U'
+  solution: U F U F BR' F U' BL BR F' BR'
+WWWWWWWWW RRYRRPRYR GGGGGGGGG PPBPPRPBP / BBRBBRBYB OOOOOOOOO YYPYYPYBY AAAAAAAAA
+  scramble: BL F BL F U' F BL' BR U F' U'
+  solution: U F U' BR' BL F' U F' BL' F' BL'
+```
+
+## A class of 12: 2 symmetries (Cs, a reflection)
+
+```
+OWWWAWWWG BBBYYBPRP AGGGOGGGW YYPBBPRRR / RRPPPYYBY WOOOGOOOA PPYRRYBRB GAAAWAAAO
+  scramble: BR BL F BR BL BR' BL BR U' F' U'
+  solution: U F U BR' BL' BR BL' BR' F' BL' BR'
+OWWWAWWWG BBBYYRPPP AGGGOGGGW YYPBBYRPR / RRBPPYYBY WOOOGOOOA PPRRRYBRB GAAAWAAAO
+  scramble: BL' F' U BR F' BL' F BL' BR F' U'
+  solution: U F BR' BL F' BL F BR' U' F BL
+OWWWAWWWG BBBYYRPRP AGGGOGGGW YYBBBPRPR / RRBPPYYYY WOOOGOOOA PPYRRPBRB GAAAWAAAO
+  scramble: F BR' BL' F U' F BL' F U' F' U'
+  solution: U F U F' BL F' U F' BL BR F'
+OWWWAWWWG BBRYYBPRP AGGGOGGGW YYYBBPRRR / RRPPPBYPY WOOOGOOOA PPYRRBBYB GAAAWAAAO
+  scramble: BL BR BL' BR BL F BR BL U' F' U'
+  solution: U F U BL' BR' F' BL' BR' BL BR' BL'
+OWWWAWWWG BBRYYBPYP AGGGOGGGW YYPBBRRRR / RRPPPBYBY WOOOGOOOA PPPRRYBYB GAAAWAAAO
+  scramble: BR BL' BR U' BR BL' BR' BL' BR F' U'
+  solution: U F BR' BL BR BL BR' U BR' BL BR'
+OWWWAWWWG BBRYYPPPP AGGGOGGGW YYPBBYRBR / RRRPPBYBY WOOOGOOOA PPRRRYBYB GAAAWAAAO
+  scramble: BR BL' BR' BL' BR F' BR BL' BR F' U'
+  solution: U F BR' BL BR' F BR' BL BR BL BR'
+OWWWAWWWG BBRYYPPRP AGGGOGGGW YYBBBPRBR / RRRPPBYYY WOOOGOOOA PPYRRPBYB GAAAWAAAO
+  scramble: F BR' F BR' F BL' BR' F BL' F' U'
+  solution: U F BL F' BR BL F' BR F' BR F'
+OWWWAWWWG BBRYYRPPP AGGGOGGGW YYYBBYRPR / RRBPPBYPY WOOOGOOOA PPRRRBBYB GAAAWAAAO
+  scramble: BL' U BR' U BR' U F' BR' U F' U'
+  solution: U F U' BR F U' BR U' BR U' BL
+OWWWAWWWG BBRYYRPYP AGGGOGGGW YYBBBRRPR / RRBPPBYYY WOOOGOOOA PPPRRPBYB GAAAWAAAO
+  scramble: BL' U BR' BL' U BR' U BR' U F' U'
+  solution: U F U' BR U' BR U' BL BR U' BL
+OWWWAWWWG BBYYYPPRP AGGGOGGGW YYPBBPRBR / RRRPPRYBY WOOOGOOOA PPYRRYBBB GAAAWAAAO
+  scramble: BL U' F' BR' BL BR' U F' BL F' U'
+  solution: U F BL' F U' BR BL' BR F U BL'
+OWWWAWWWG BBYYYRPRP AGGGOGGGW YYYBBPRPR / RRBPPRYPY WOOOGOOOA PPYRRBBBB GAAAWAAAO
+  scramble: F BR' F U' F BR' BL' F U' F' U'
+  solution: U F U F' BL BR F' U F' BR F'
+OWWWAWWWG BBYYYRPYP AGGGOGGGW YYPBBRRPR / RRBPPRYBY WOOOGOOOA PPPRRYBBB GAAAWAAAO
+  scramble: BL U' F BR' BL BR' U' F' BL F' U'
+  solution: U F BL' F U BR BL' BR F' U BL'
+```
+
+## A class of 12: 2 symmetries (C2, a half-turn rotation)
+
+```
+OWWWAWWWG BBBYYPPRP AGGGOGGGW YYPBBPRBR / RRRPPYYBY WOOOGOOOA PPYRRYBRB GAAAWAAAO
+  scramble: BR F' U' BR U' BR' F' BR U' F' U'
+  solution: U F U BR' F BR U BR' U F BR'
+OWWWAWWWG BBBYYRPRP AGGGOGGGW YYYBBPRPR / RRBPPYYPY WOOOGOOOA PPYRRBBRB GAAAWAAAO
+  scramble: BR F' BR BL BR F' BR' BL U F' U'
+  solution: U F U' BL' BR F BR' BL' BR' F BR'
+OWWWAWWWG BBBYYRPYP AGGGOGGGW YYPBBRRPR / RRBPPYYBY WOOOGOOOA PPPRRYBRB GAAAWAAAO
+  scramble: F' BR BL F' BL' U' F' BR U' F' U'
+  solution: U F U BR' F U BL F BL' BR' F
+OWWWAWWWG BBRYYBPPP AGGGOGGGW YYPBBYRRR / RRPPPBYBY WOOOGOOOA PPRRRYBYB GAAAWAAAO
+  scramble: BR U F' BR U' F BR F' U' F' U'
+  solution: U F U F BR' F' U BR' F U' BR'
+OWWWAWWWG BBRYYBPRP AGGGOGGGW YYBBBPRRR / RRPPPBYYY WOOOGOOOA PPYRRPBYB GAAAWAAAO
+  scramble: BL BR' F BL' BR F BL F' U' F' U'
+  solution: U F U F BL' F' BR' BL F' BR BL'
+OWWWAWWWG BBRYYPPRP AGGGOGGGW YYYBBPRBR / RRRPPBYPY WOOOGOOOA PPYRRBBYB GAAAWAAAO
+  scramble: BL BR U' BR' F' U' BL F' U' F' U'
+  solution: U F U F BL' U F BR U BR' BL'
+OWWWAWWWG BBRYYPPYP AGGGOGGGW YYPBBRRBR / RRRPPBYBY WOOOGOOOA PPPRRYBYB GAAAWAAAO
+  scramble: BR' U F' BR' F' U BR' F' U F' U'
+  solution: U F U' F BR U' F BR F U' BR
+OWWWAWWWG BBRYYRPPP AGGGOGGGW YYBBBYRPR / RRBPPBYYY WOOOGOOOA PPRRRPBYB GAAAWAAAO
+  scramble: BL U BR BL' U BR' BL F' U' F' U'
+  solution: U F U F BL' BR U' BL BR' U' BL'
+OWWWAWWWG BBRYYRPYP AGGGOGGGW YYYBBRRPR / RRBPPBYPY WOOOGOOOA PPPRRBBYB GAAAWAAAO
+  scramble: BL F' U' BR' F' BR BL F' U' F' U'
+  solution: U F U F BL' BR' F BR U F BL'
+OWWWAWWWG BBYYYBPRP AGGGOGGGW YYPBBPRRR / RRPPPRYBY WOOOGOOOA PPYRRYBBB GAAAWAAAO
+  scramble: F' BR F BL BR' F BL' BR U' F' U'
+  solution: U F U BR' BL F' BR BL' F' BR' F
+OWWWAWWWG BBYYYRPPP AGGGOGGGW YYPBBYRPR / RRBPPRYBY WOOOGOOOA PPRRRYBBB GAAAWAAAO
+  scramble: F' BR BL' U BR' BL U BR U' F' U'
+  solution: U F U BR' U' BL' BR U' BL BR' F
+OWWWAWWWG BBYYYRPRP AGGGOGGGW YYBBBPRPR / RRBPPRYYY WOOOGOOOA PPYRRPBBB GAAAWAAAO
+  scramble: BR' BL' U F BL' U BR' F U' F U'
+  solution: U F' U F' BR U' BL F' U' BL BR
+```
