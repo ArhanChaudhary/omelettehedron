@@ -86,6 +86,8 @@ pub struct PCorners {
     pub sym: Vec<[u16; N_SYM]>,
     /// the solved state
     pub solved: u16,
+    /// each state: the piece and the orientation at each corner place (as in [`Cube`])
+    pub states: Vec<([u8; 6], [u8; 6])>,
 }
 
 impl PCorners {
@@ -151,6 +153,7 @@ impl PCorners {
             next,
             sym,
             solved: 0,
+            states,
         }
     }
 }

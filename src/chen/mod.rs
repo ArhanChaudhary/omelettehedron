@@ -15,6 +15,7 @@
 //! * [`search`]: the two-phase loop.
 
 pub mod corners;
+pub mod p2bfs;
 pub mod relaxed;
 pub mod search;
 pub mod space;

@@ -44,6 +44,62 @@ them a turn of each other. The phase-2 space is therefore 447,120 x 960 corner s
 B-centre colourings = 1.59 x 10^14 positions (37,260 x 11,520 x 369,600 in the pattern view), 12
 times the 1.3 x 10^13 that a closed set of configurations would give.
 
+## Breadth-first search of phase 2 (`chen-p2bfs`)
+
+`src/bin/chen-p2bfs.rs` and `src/chen/p2bfs/`: an exact breadth-first search of the whole phase-2
+space, for its distance distribution, its antipodes and the deepest position of `H'`.
+
+**Size.** Each pattern-view configuration goes with all 11,520 corner states, not 960: the fixed
+frame's 12 frames are the 12 places of corner piece 0 (6 corners, 2 orientations) in the pattern
+view, and 8 of the 16 face turns move that corner, so no frame is closed. Taking the corners up
+to a whole turn (960 states) would identify solved with 11 other positions (solved with the
+corners turned as a whole) and give distances to the nearest of the 12. So the space is 37,260 x
+11,520 x 369,600 = 1.586 x 10^14 positions, 6,610,224,733,560 up to the 24 symmetries; the
+search's index has 1,611 classes x 369,600 x 11,520 = 6.86 x 10^12 slots, 857 GB at a bit each.
+
+**Search.** A *block* is the 11,520 corner states of one (configuration class, B-centre
+colouring): a move takes a block to one block, its bits permuted by a table (the move and the
+symmetry back to the class representative). The move graph is undirected, so layer d + 1 is the
+children of layer d minus layers d and d - 1: only layers are stored, one file per class,
+blocks compressed (runs of empty or full blocks, lists of bits, plain blocks) in checksummed
+chunks of 4,096. A step splits the classes into parts that fit the memory budget (classes joined
+by U, F, BR and BL turns kept together: those moves never leave a part), and per part one thread
+reads the layer-d files of the classes with a move into it while the workers OR each block's
+children into the part's blocks in memory; the stabilisers' images are added, the new blocks
+minus layers d and d - 1 are written and counted (slots, positions, positions up to symmetry by
+fixed points). Each part is recorded in `manifest.json` when written, so a stopped search
+resumes at the next part. `antipodes` lists a layer's positions up to symmetry with a shortest
+solution (IDA* with the AC, PX and CC tables, in face turns) and the scramble that is its inverse.
+
+A dense block is permuted 32 bits at a time: the corner states are numbered permutation x 32 +
+orientations, and each (move, symmetry) maps the 32 orientations of a permutation to those of
+one permutation by an affine map of the bit index (byte lookups, then a flip). Layer files can
+be spread over several disks (`--store`, class c on the (c mod n)-th), and several threads read
+them during a push (`--readers`).
+
+**Cost.** Uniformly random phase-2 positions (480, IDA*) are at distance 14-23, 19.6 on average
+(20: 26%, 19 and 21: 21% each; 11 of the 480 not finished after 12 minutes, at 22 or more), so
+about six layers are dense (a bit in most blocks: 857 GB each as stored) and two of them are on
+disk at once at the peak: the search needs about 1.7 TB of layer space and writes about 5.7 TB
+in all (an estimate from that distribution).
+
+```sh
+chen-p2bfs run --dir DIR --ram-gb 55          # start or resume (Ctrl-C or --max-minutes: resume later)
+chen-p2bfs status --dir DIR                   # layers so far, totals, the H' classes' deepest layers
+chen-p2bfs antipodes --dir DIR --tables T --out antipodes.tsv
+```
+
+**Checks** (`tests/p2bfs.rs`, and on the command line): the positions per depth of the full
+space are 1, 16, 160, 1,344, 10,464, 78,152 (Chen Shuang's twsearch counts), 560,100, 3,812,363
+(the sticker model of `/data3/scratch/chen`, and a plain search without symmetry), 24,234,475 at
+depth 8; the instances with the corners or the B-centres dropped give the AC and PX tables'
+histograms exactly; a quotient instance (corner permutation x colourings up to renaming the
+colours, 8.9 x 10^9 slots, depth 17) gives the in-memory table search's counts at every depth,
+in one part and in many small parts stopped and resumed after every few; the orbit counts equal a
+count of one canonical slot per orbit; sampled slots of layers 3 to 8 have that IDA* distance;
+solutions of layer-8 positions replay to solved, with allowed moves only, on the independent
+sticker model, and `omelettehedron show` gives the stated pattern for each scramble.
+
 ## Tables
 
 | Table | File | Entries | Size | Max | Mean |
