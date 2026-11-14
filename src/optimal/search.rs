@@ -21,8 +21,7 @@ use super::tables::{exact, Bounds, MAX_K};
 use crate::cube::*;
 use crate::notation::{solution_to_physical, Frame, PhysMove};
 use crate::progress::{self, rate, with_heartbeat, Bound, Watch};
-use crate::prune::decode;
-use crate::tables::prefetch_at;
+use crate::prune::{decode, Prun};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
@@ -412,7 +411,7 @@ impl<B: Bounds, const N: usize> Shared<'_, B, N> {
                 if let (true, Some(nk)) = (keep, nk) {
                     let ix = self.b.index(nk, &ev.ys[u]);
                     ev.idx[u][nk] = ix;
-                    prefetch_at(&self.b.table(nk).data, ix >> 5);
+                    self.b.table(nk).prefetch(ix);
                 }
                 next += usize::from(keep);
             }
@@ -456,7 +455,7 @@ impl<B: Bounds, const N: usize> Shared<'_, B, N> {
             };
             let ix = self.b.index_with(k, y, pre);
             ev.idx[u % N][k] = ix;
-            prefetch_at(&tab.data, ix >> 5);
+            tab.prefetch(ix);
         }
     }
 

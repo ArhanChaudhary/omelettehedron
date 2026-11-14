@@ -17,6 +17,156 @@ pub struct Table2 {
     pub hist: Vec<u64>,
 }
 
+/// A table as the searches read it: entry `i`'s distance mod 3 ([`Table2`], or [`Table5`] for
+/// the largest tables), the prefetch of its word, and the number of distances.
+pub trait Prun: Sync {
+    /// Distance mod 3 of entry `i`.
+    fn get(&self, i: usize) -> u8;
+    /// Prefetch the word that holds entry `i`.
+    fn prefetch(&self, i: usize);
+    /// Number of distances (the largest plus one).
+    fn depths(&self) -> usize;
+}
+
+impl Prun for Table2 {
+    #[inline(always)]
+    fn get(&self, i: usize) -> u8 {
+        Table2::get(self, i)
+    }
+    #[inline(always)]
+    fn prefetch(&self, i: usize) {
+        crate::tables::prefetch_at(&self.data, i >> 5);
+    }
+    fn depths(&self) -> usize {
+        self.hist.len()
+    }
+}
+
+/// Distances mod 3 packed five to a byte (base 3: 3^5 = 243 <= 256), forty to a word: 1.6 bits
+/// per entry instead of [`Table2`]'s 2, for the largest tables (0.8x the memory, the same
+/// values). Made from a complete [`Table2`] ([`Table5::pack`]), read-only.
+pub struct Table5 {
+    pub data: HugeBuf<u64>,
+    pub n: usize,
+    /// number of entries at each distance
+    pub hist: Vec<u64>,
+}
+
+/// The base-3 digits of every byte: `TRITS[b][j]` is digit `j` of `b` (rows of 8 so that the
+/// row is a shift; bytes from 243 up never occur).
+static TRITS: [[u8; 8]; 256] = {
+    let mut t = [[0u8; 8]; 256];
+    let mut b = 0;
+    while b < 256 {
+        let mut x = b;
+        let mut j = 0;
+        while j < 5 {
+            t[b][j] = (x % 3) as u8;
+            x /= 3;
+            j += 1;
+        }
+        b += 1;
+    }
+    t
+};
+
+/// Entries per word of a [`Table5`].
+const PER5: usize = 40;
+
+/// Word `w` of the packed form of the 2-bit words `src` (`n` entries).
+fn pack_word(src: &[u64], n: usize, w: usize) -> u64 {
+    let mut out = 0u64;
+    for k in 0..8 {
+        let mut b = 0u64;
+        for j in (0..5).rev() {
+            let i = w * PER5 + k * 5 + j;
+            let v = if i < n {
+                (src[i >> 5] >> ((i & 31) << 1)) & 3
+            } else {
+                0
+            };
+            // (3 marks an entry never reached; a complete table has none)
+            b = b * 3 + v.min(2);
+        }
+        out |= b << (8 * k);
+    }
+    out
+}
+
+impl Table5 {
+    #[inline(always)]
+    pub fn get(&self, i: usize) -> u8 {
+        let q = i / 5;
+        let b = (self.data[q >> 3] >> ((q & 7) << 3)) as u8;
+        TRITS[usize::from(b)][(i - q * 5) & 7]
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.data.len() * 8
+    }
+
+    /// Pack a complete 2-bit table in place: the words are rewritten front to back (a packed
+    /// word needs 1.25 words of the input, so the writes never pass the unread input), and the
+    /// memory of the fifth that is no longer needed is released.
+    pub fn pack(t: Table2) -> Table5 {
+        // (output words per round: computed in parallel from the input, then written)
+        const ROUND: usize = 1 << 22;
+        let Table2 { mut data, n, hist } = t;
+        let words = n.div_ceil(PER5);
+        let mut tmp = vec![0u64; ROUND.min(words)];
+        let mut w0 = 0;
+        while w0 < words {
+            let w1 = (w0 + ROUND).min(words);
+            let src: &[u64] = &data;
+            tmp[..w1 - w0]
+                .par_chunks_mut(1 << 12)
+                .enumerate()
+                .for_each(|(c, out)| {
+                    for (j, x) in out.iter_mut().enumerate() {
+                        *x = pack_word(src, n, w0 + (c << 12) + j);
+                    }
+                });
+            data[w0..w1].copy_from_slice(&tmp[..w1 - w0]);
+            w0 = w1;
+        }
+        data.truncate(words);
+        Table5 { data, n, hist }
+    }
+
+    /// Write the table to `path` (through a temporary file, renamed when complete).
+    ///
+    /// # Errors
+    ///
+    /// If the file cannot be written.
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        save_file(path, MAGIC5, self.n, &self.hist, &self.data)
+    }
+
+    /// Read a table of `n` entries from `path` (written by [`Table5::save`]).
+    ///
+    /// # Errors
+    ///
+    /// If the file cannot be read, or has the wrong format, size or checksum.
+    pub fn load(path: &Path, n: usize) -> std::io::Result<Table5> {
+        let (data, hist) = load_file(path, MAGIC5, n, n.div_ceil(PER5))?;
+        Ok(Table5 { data, n, hist })
+    }
+}
+
+impl Prun for Table5 {
+    #[inline(always)]
+    fn get(&self, i: usize) -> u8 {
+        Table5::get(self, i)
+    }
+    #[inline(always)]
+    fn prefetch(&self, i: usize) {
+        crate::tables::prefetch_at(&self.data, i / PER5);
+    }
+    fn depths(&self) -> usize {
+        self.hist.len()
+    }
+}
+
 /// Decode the exact child distance from the parent distance and the child's mod-3 value.
 #[inline(always)]
 pub fn decode(parent: u8, v: u8) -> u8 {
@@ -53,47 +203,62 @@ impl Table2 {
     ///
     /// If the file cannot be read, or has the wrong format, size or checksum.
     pub fn load(path: &Path, n: usize) -> std::io::Result<Table2> {
-        let err = |m: &str| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("{}: {m}", path.display()),
-            )
-        };
-        let mut f = std::io::BufReader::with_capacity(1 << 16, std::fs::File::open(path)?);
-        let mut b8 = [0u8; 8];
-        f.read_exact(&mut b8)?;
-        if &b8 != b"FTOPRUN2" {
-            return Err(err("bad magic"));
-        }
-        f.read_exact(&mut b8)?;
-        if u64::from_le_bytes(b8) as usize != n {
-            return Err(err("size mismatch (table from a different version?)"));
-        }
-        f.read_exact(&mut b8)?;
-        let nh = u64::from_le_bytes(b8) as usize;
-        let mut hist = vec![];
-        for _ in 0..nh {
-            f.read_exact(&mut b8)?;
-            hist.push(u64::from_le_bytes(b8));
-        }
-        f.read_exact(&mut b8)?;
-        let sum = u64::from_le_bytes(b8);
-        let words = n.div_ceil(32);
-        let offset = (32 + 8 * nh) as u64;
-        let file = f.into_inner();
-        // Read in parallel and checksum each piece while it is in cache; the buffer is not
-        // zeroed first since every word is overwritten.
-        let mut data = HugeBuf::<u64>::for_overwrite(words);
-        let sums: std::io::Result<Vec<u64>> = data
-            .par_chunks_mut(CK * GROUP)
-            .enumerate()
-            .map(|(gi, g)| read_and_hash(&file, offset, gi * GROUP, g))
-            .collect();
-        if sums?.into_iter().fold(0, |a, b| a ^ b) != sum {
-            return Err(err("checksum mismatch"));
-        }
+        let (data, hist) = load_file(path, MAGIC2, n, n.div_ceil(32))?;
         Ok(Table2 { data, n, hist })
     }
+}
+
+/// File magic of a [`Table2`] and of a [`Table5`].
+const MAGIC2: [u8; 8] = *b"FTOPRUN2";
+const MAGIC5: [u8; 8] = *b"FTOPRUN5";
+
+/// Read the words of a table file with magic `magic`, `n` entries and `words` words, and its
+/// histogram.
+fn load_file(
+    path: &Path,
+    magic: [u8; 8],
+    n: usize,
+    words: usize,
+) -> std::io::Result<(HugeBuf<u64>, Vec<u64>)> {
+    let err = |m: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{}: {m}", path.display()),
+        )
+    };
+    let mut f = std::io::BufReader::with_capacity(1 << 16, std::fs::File::open(path)?);
+    let mut b8 = [0u8; 8];
+    f.read_exact(&mut b8)?;
+    if b8 != magic {
+        return Err(err("bad magic"));
+    }
+    f.read_exact(&mut b8)?;
+    if u64::from_le_bytes(b8) as usize != n {
+        return Err(err("size mismatch (table from a different version?)"));
+    }
+    f.read_exact(&mut b8)?;
+    let nh = u64::from_le_bytes(b8) as usize;
+    let mut hist = vec![];
+    for _ in 0..nh {
+        f.read_exact(&mut b8)?;
+        hist.push(u64::from_le_bytes(b8));
+    }
+    f.read_exact(&mut b8)?;
+    let sum = u64::from_le_bytes(b8);
+    let offset = (32 + 8 * nh) as u64;
+    let file = f.into_inner();
+    // Read in parallel and checksum each piece while it is in cache; the buffer is not
+    // zeroed first since every word is overwritten.
+    let mut data = HugeBuf::<u64>::for_overwrite(words);
+    let sums: std::io::Result<Vec<u64>> = data
+        .par_chunks_mut(CK * GROUP)
+        .enumerate()
+        .map(|(gi, g)| read_and_hash(&file, offset, gi * GROUP, g))
+        .collect();
+    if sums?.into_iter().fold(0, |a, b| a ^ b) != sum {
+        return Err(err("checksum mismatch"));
+    }
+    Ok((data, hist))
 }
 
 /// Write a table of `n` entries with histogram `hist` and words `data` to `path` (through a
@@ -103,9 +268,20 @@ impl Table2 {
 ///
 /// If the file cannot be written.
 pub fn save_words(path: &Path, n: usize, hist: &[u64], data: &[u64]) -> std::io::Result<()> {
+    save_file(path, MAGIC2, n, hist, data)
+}
+
+/// [`save_words`] with file magic `magic`.
+fn save_file(
+    path: &Path,
+    magic: [u8; 8],
+    n: usize,
+    hist: &[u64],
+    data: &[u64],
+) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     let mut f = std::io::BufWriter::with_capacity(1 << 24, std::fs::File::create(&tmp)?);
-    f.write_all(b"FTOPRUN2")?;
+    f.write_all(&magic)?;
     f.write_all(&(n as u64).to_le_bytes())?;
     f.write_all(&(hist.len() as u64).to_le_bytes())?;
     for h in hist {
@@ -157,7 +333,13 @@ pub fn file_state(path: &Path, entries: u64) -> FileState {
         b.copy_from_slice(&head[8 * i..8 * i + 8]);
         u64::from_le_bytes(b)
     };
-    if read.is_err() || &head[..8] != b"FTOPRUN2" {
+    let per_word = match &head[..8] {
+        _ if read.is_err() => 0,
+        m if m == MAGIC2.as_slice() => 32,
+        m if m == MAGIC5.as_slice() => PER5 as u64,
+        _ => 0,
+    };
+    if per_word == 0 {
         return FileState::Bad("not a table file".into());
     }
     let (n, nh) = (word(1), word(2));
@@ -166,11 +348,12 @@ pub fn file_state(path: &Path, entries: u64) -> FileState {
             "{n} entries where this version's table has {entries}"
         ));
     }
-    // magic, n, histogram length, histogram, checksum, then the 2-bit entries in words
+    // magic, n, histogram length, histogram, checksum, then the entries in words (32 or 40
+    // per word)
     let want = nh
         .checked_mul(8)
         .and_then(|h| h.checked_add(32))
-        .and_then(|h| h.checked_add(n.div_ceil(32).checked_mul(8)?));
+        .and_then(|h| h.checked_add(n.div_ceil(per_word).checked_mul(8)?));
     match want {
         Some(w) if w == len => FileState::Complete,
         Some(w) => FileState::Bad(format!("{len} bytes where the complete file has {w}")),
@@ -883,6 +1066,35 @@ mod tests {
         let b = bfs(&g, 1000, &[0], "cycle", false);
         assert_eq!(a.hist, b.hist);
         assert!((0..1000).all(|i| a.get(i) == b.get(i)));
+    }
+
+    /// A packed table holds the 2-bit table's values (sizes around the 40-entry word and byte
+    /// boundaries), survives a save and load, and its file is judged complete; a 2-bit loader
+    /// refuses it.
+    #[cfg(unix)]
+    #[test]
+    fn packed_tables() {
+        let dir =
+            std::env::temp_dir().join(format!("omelettehedron-packed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for n in [1, 4, 5, 6, 39, 40, 41, 999, 1000, 4096 * 40 + 7] {
+            let g = Ring(n);
+            let t = bfs(&g, n, &[0], "cycle", false);
+            let want: Vec<u8> = (0..n).map(|i| t.get(i)).collect();
+            let hist = t.hist.clone();
+            let p = Table5::pack(t);
+            assert_eq!(p.data.len(), n.div_ceil(40));
+            assert!((0..n).all(|i| p.get(i) == want[i]), "n = {n}");
+            assert_eq!(p.hist, hist);
+            let path = dir.join(format!("ring-{n}.prun"));
+            p.save(&path).unwrap();
+            assert_eq!(file_state(&path, n as u64), FileState::Complete);
+            let q = Table5::load(&path, n).unwrap();
+            assert!((0..n).all(|i| q.get(i) == want[i]));
+            assert_eq!(q.depths(), hist.len());
+            assert!(Table2::load(&path, n).is_err());
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A saved table is complete; a truncated or padded one, one of another size, a file that
