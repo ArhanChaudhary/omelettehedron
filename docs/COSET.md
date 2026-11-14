@@ -115,7 +115,9 @@ the random coset); with 60 s all 31 got one (22 or 23 moves).
 **The deepest coset found**, that of D4h 5.165 (18 from `H_A`), after phase 1 to 19 moves
 (86 s): exact labelled distances 18: 2, 19: 86; bounds 20: 621, 21: 3,618, 22: 19,965,
 23: 96,490, 24: 322,669, 25: 409,730, 26: 79,831, 27: 108. So 120,782 elements are proven
-within 23 (47,593 by the labelled sequences alone) and 812,338 are not covered.
+within 23 (47,593 by the labelled sequences alone) and 812,338 are not covered. Of 5,000
+random elements, the two-phase solver left 164 (3.3%) without a solution of at most 23 moves
+within 3 s, more than for the depth-17 coset (1.55%).
 
 ## Cost of a coset at 23
 
