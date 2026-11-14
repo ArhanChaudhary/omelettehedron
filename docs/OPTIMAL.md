@@ -106,6 +106,8 @@ table is consistent (its value changes by at most one per move).
 | `opt-ce-sym48.prun` | corners x edge permutation, 48 symmetries | 40 x 239,500,800 = 9,580,032,000 | 2.4 GB | 13 | 10.56 |
 | `ae-sym288-triples.prun` (two-phase) | A-centres x edge A-triples, to `H_A` | 515,961,600 | 129 MB | 12 | 10.10 |
 | `ae-sym288-chiral.prun` (two-phase) | A-centres x edge A-triples x chirality, to `H_A` | 4,127,692,800 | 1.03 GB | 14 | 10.94 |
+| `opt-cbe-sym6.prun` | corners x B-centre colouring x ordered positions of one A-face's edges, 6 symmetries | 172 x 369,600 x 1,320 = 83,913,984,000 | 21.0 GB | 14 | 10.98 |
+| `opt-ea-sym288.prun` | edge permutation x A-centre colouring, up to rotation and to cycling the A-triples together, 288 symmetries | 1,396 x 79,833,600 = 111,447,705,600 | 27.9 GB | 14 | 12.05 |
 
 The last two are the two-phase solver's A-centre/edge tables (its small and medium tiers'
 files, shared, read through its public index `tables::AeSym`). They hold the distance to
@@ -124,6 +126,7 @@ Tiers (`--tier`):
 | `small` | edges, corners x B-centres, corners x A-centres, A-centres/edge triples on both sides | 195 MB |
 | `medium` | corners x edges, corners x B-centres, corners x A-centres, A-centres/edges (with chirality) on both sides | 3.4 GB |
 | `large` | A-centres/edges (with chirality) on both sides, and corners x B-centres x edge triple to solved for the 4 A-triples and the 4 B-triples (no corner x centre lookups: a triple lookup is never below the corner x centre value of its orbit; no corners x edges: it costs more than it prunes) | 22.0 GB |
+| `huge` | edges x A-centres to solved on both sides (it projects onto the A-centre/edge table, which is left out), then corners x B-centres and corners x A-centres | 27.9 GB |
 
 (The corner x edge table subsumes the edge table: every corner x edge path is an edge path.)
 
@@ -166,6 +169,20 @@ repositioning, which preserve `H_A` but not the solved state).
 * An AE-to-solved table (A-centres x edge triples x chirality) can use only the symmetries
   that fix the front corner (4 class-preserving ones): it includes no corners, so no `R`.
   That is 2.7e11 entries (68 GB), not built.
+* **Edges x A-centres** (huge tier, `optimal/ea.rs`): no corners, so the projection lives up to
+  the 12 whole-puzzle rotations (any rotation of the solved state counts as solved, as for the
+  two-phase tables), and the 288 pairs of the two-phase A-centre/edge table (relabel by `g`,
+  reposition by `t`, both proper or both improper) keep its distance to solved: `t g^-1` is a
+  rotation, so a pair is a rotation after the conjugation by `g`. The index is the two-phase
+  table's A-colouring class (1,396 with the stabiliser copies) and the edge permutation after the
+  class's symmetry pair. The edges are taken up to `C`, the relabelling that moves every edge to
+  the next piece of its A-triple (all four triples one step at once): a relabelling commutes with
+  the moves, proper symmetries commute with `C` and improper ones invert it, so this is again a
+  projection with the same symmetries; it merges the solved state with the two states four
+  A-face turns away (an A-face turn moves no A-centre off its face) and divides the table by 3
+  (83.6 GB without it). Normal form: the piece at position 0 is the first of its triple (4
+  choices) and positions 1..10 are ranked (11!/2). The second lookup is the table on the
+  `SWAP_AB` conjugate (B-centres with the edges up to cycling the B-triples).
 * **Corners x B-centres x edge triple** (large tier, `optimal/cbe.rs`): the table follows the
   three edges of A-face 0 in order, so only the 6 class-preserving symmetries that fix A-face 0
   reduce it: 172 corner classes. A lookup for A-face `k` conjugates with a symmetry that maps
@@ -183,6 +200,13 @@ repositioning, which preserve `H_A` but not the solved state).
   indices are invariant (up to equivalent indices) under their symmetries; ranks round-trip.
 * `optimal/tables.rs`: the reduced corner x centre table equals an unreduced 89 MB BFS on
   3,000 random positions and all their neighbours, through both centre orbits.
+* `optimal/ea.rs`: the index is invariant (up to equivalent indices) under the 288 pairs and
+  `C`, a decoded entry has its own index, the second lookup is the first of the `SWAP_AB`
+  conjugate; **brute force:** a sparse BFS over the table's own indices (the generator's steps and
+  equivalents) to depth 5 gives every position within 5 moves the distance of its projection,
+  keyed independently of the index (the least of its 864 images under the pairs and `C`).
+  (`--ignored`, with the 27.9 GB table: lengths equal the brute force, bounds admissible,
+  consistent, never below the A-centre/edge values.)
 * `optimal/cbe.rs`: every lookup's symmetry maps the corner state onto its representative
   and the lookup's triple onto triple 0; the eight lookups of a position and of each of its
   48 conjugates agree (up to order and equivalent indices); a decoded entry has its own index;
@@ -627,6 +651,109 @@ so it is left out: 22.0 GB instead of 24.4, lookups per node 2.36 -> 2.27 (17-mo
 19-move set, time 0.979x (1 thread, 17-move set; rounds 0.971, 0.970, 0.988) and 0.954x (48
 threads, 19-move set; 0.950, 0.956, 0.956).
 
+## Optimisation round 4: what the memory buys (the `huge` tier, `optimal/ea-huge`)
+
+From medium to large (6.5 times the memory) the nodes fell 4x on the 19-move set, but the time
+on the 17-move set only to 0.82x. By Korf's time-space trade-off nodes fall about as fast as a
+well-chosen table grows, so the question was whether the 21 GB could be spent better.
+
+**Prediction.** Exact values of every lookup on 2e7 uniformly random positions (each table
+walked down to solved; `archive/table-design`, `examples/tabsample.rs`), and Korf's formula on the
+maximum of a design's lookups: relative nodes = sum over k of 12.93^-k P(bound <= k). It
+predicts medium -> large 0.265x; measured: 0.249x on the 19-move set (48 threads, to the first
+solution) and 0.29x / 0.35x on the completed iterations of the 15- / 17-move sets.
+
+**Why the large tier gains little per byte.**
+
+* A table's strength follows the number of projections it tells apart, and what they cost
+  depends on how many symmetries reduce it. The A-centre/edge table tells apart 9.1e10 (24
+  per entry: of its 288 symmetries 12 are whole-puzzle rotations), corners x edges 2.3e11 (24
+  per entry), the triple table 4.7e11, but in 21 GB: 5.6 per entry, because one face's ordered
+  edge triple is kept by only 6 of the 48 symmetries. So it tells apart only twice what corners
+  x edges does in 2.4 GB, and its mean (10.98) is barely above the A-centre/edge table's (10.94).
+* The maximum saturates: every table of the tiers tops out at 12 or 13. The large tier's
+  maximum is at most 11 on 18.5% of random positions and at most 12 on 99.7%, and the terms of
+  k >= 12 are a floor (0.0065 of its 0.0208): raising every position's bound to at least 12
+  would still leave 0.31x its nodes. More lookups of tables that deep cannot get past it.
+* Overlap: corners x edges adds 0.6% to the large tier (0.994x); with two of the eight triple
+  lookups the prediction is 2.1x, with all eight 1x.
+
+**A table with more projections per byte.** The whole edge permutation with the A-centre
+colouring, without corners, up to rotation: the 288 symmetries of the A-centre/edge table, and
+up to `C` (every A-triple cycled one step) 1.11e11 entries in 27.9 GB, 2.5e12 projections
+(5.3 times the triple table's in 1.3 times its bytes; see [Symmetry](#symmetry)). It projects
+onto the A-centre/edge table, so it replaces it. Depths 0..14: 1, 9, 30, 100, 1,000, 11,016,
+120,671, 1,313,221, 14,222,194, 153,412,603, 1,621,596,219, 15,229,542,072, 69,669,498,668,
+24,756,585,897, 1,401,899; mean 12.05. Generated in 246 s on 48 threads (368 s with writing the
+file), peak memory the table itself.
+
+Predictions (Korf's formula on the same 2e7 positions; nodes relative to the large tier):
+
+| design | memory | mean bound | bound <= 11 | nodes vs large |
+|---|---|---|---|---|
+| medium | 3.4 GB | 11.27 | 71.2% | 3.78 |
+| large | 22.0 GB | 11.82 | 18.5% | 1 |
+| large + corners x edges | 24.4 GB | 11.82 | 18.4% | 0.994 |
+| large, every bound raised to at least 12 | | | 0 | 0.310 |
+| edges x A-centres, one side | 27.9 GB | 12.05 | 15.3% | 8.8 |
+| **edges x A-centres, both sides** (with corners x centres: 0.306) | 27.9 GB | 12.37 | 2.45% | **0.307** |
+| the same + corners x edges | 30.3 GB | 12.37 | 2.44% | 0.298 |
+| the same + the eight triple lookups | 48.9 GB | 12.39 | 0.72% | 0.225 |
+| the whole edge permutation (no `C`) x A-centres, both sides, + corners x centres | 83.6 GB (66.9 packed) | 12.84 | 0.38% | 0.094 |
+
+(The two sides are nearly independent: each alone is at most 11 on 15.3% of the positions, the
+two together on 2.45%, against 2.33% if they were independent.) The last row was computed
+without its table, on 1e6 of the positions: IDA* in the projection's own graph bounded by the
+quotient table (`examples/fullea.rs` on `archive/table-design`; mean 12.52 per side against
+12.05). Within this family the trade-off holds: three times the memory, 3.3 times fewer nodes.
+
+**The `huge` tier**: edges x A-centres on both sides, then the corner x centre lookups (4.7 MB,
+cache-resident, read only for the children the first two keep: the edge x A-centre table holds
+no corners). Same optimal lengths on every set. Quiet machine, bench lock, the same binary for
+both tiers, interleaved rounds:
+
+| set | threads | large | huge | time | nodes |
+|---|---|---|---|---|---|
+| 10 x 17 moves, seed 1717 | 1 | 4.83 s, 7.82e7 nodes | 0.74, 0.78 s, 1.79e7 nodes | 0.153x, 0.160x | 0.229x |
+| 10 x 19 moves, seed 1919 | 48 | 9.79, 9.82 s, 6.28e9 nodes | 2.17, 2.20 s, 2.17e9 nodes | 0.221x, 0.223x | 0.345x |
+
+(Two rounds; two earlier rounds with the same lookups in an experiment build gave 0.154x,
+0.153x and 0.238x, 0.222x. Lookups per node 1.36 on the 17-move set against 2.27; nodes/s on
+one thread 2.4e7 against 1.6e7.)
+
+The nodes of the completed iterations (deterministic on one thread) fell as predicted or a
+little more: 0.240x on the 17-move set and 0.269x on the 19-move set (predicted 0.306x); to the
+first solution the last iteration's task order adds noise (0.23x / 0.35x). A node costs less
+than in the large tier (fewer lookups, and no 21 GB triple table), so the time falls further
+than the nodes.
+
+Hard positions (48 threads; `-l 21`: every iteration up to 21 moves, none has a solution that
+short; the same binary):
+
+| position | large: depth-21 nodes, time | huge | nodes | time |
+|---|---|---|---|---|
+| tri_adj+edge_opp | 4.38e9, 10.2 s | 3.21e9, 3.4 s | 0.73x | 0.33x |
+| tri_adj+edge_adj | 1.07e10, 23.1 s | 1.11e10, 11.5 s | 1.03x | 0.50x |
+| tri_adj-[Uf_Fu;Db_Bd] | 3.77e10, 78.8 s | 2.53e10, 26.1 s | 0.67x | 0.33x |
+| tri_adj+[UB_FD,NL_MR] | 1.36e10, 29.6 s | 8.88e9, 9.5 s | 0.65x | 0.32x |
+| edge_hard (21), depth 20 | 1.05e11, 155.3 s | 1.55e10, 15.8 s | 0.15x | 0.10x |
+
+edge_hard is proven 21 in 20.2 s (large: 226.5 s; the two-phase solver: 56-63 s). The random
+positions of `bench-randopt.sh` (48 threads): 18.3 s, 27.5 s, 3.2 s for seeds 1, 2, 3 (21, 21, 20
+moves; large 66.4, 143.4, 73.3 s; the two-phase solver's optimal mode about 53, 49, 4 s): with
+the huge tier the optimal solver proves them, and the 17- and 19-move sets (0.75 s against 2.24
+s on one thread, 2.2 s against 7.0 s on 48), faster than the two-phase solver. On the
+symmetric 23-move positions the triple table's corners matter more (0.65-1.03x the nodes). The
+weak spot is a position whose edges and centres are solved: the edge x A-centre lookups read 0
+on the corner 6-flip, and the corner x centre lookups bound it alone near the root: 32.8 s
+(large 0.34 s, medium 21.6 s; without the corner x centre lookups more than 60 s).
+
+Variants measured (`neg/optimal-ea-ce`), against the huge tier: with corners x edges (30.3 GB)
+0.96x the nodes of the completed iterations but 0.89x the nodes/s on one thread (the 6-flip
+16.9 s), left out; with the eight triple lookups instead of the corner x centre ones (48.9 GB,
+`optimal/ea-cbe`) 0.75x the nodes (predicted 0.73x), time 0.94x on one thread (17-move set) and
+1.14x on 48 (19-move set), the 6-flip 0.56 s.
+
 ## Open
 
 * Printing improvements (`-p`) has no use here (the first solution is optimal); resuming a
@@ -656,10 +783,18 @@ lookups with early exits (0.82x time), slice turns, the corner x B-centre x edge
 solved (the `large` tier, round 2: 0.47x time at 48 threads on 19 moves, the corner 6-flip 58x
 faster), next-stage prefetch and the sibling pipeline, SIMD piece positions, the first stage's
 A-centre/edge class entries prefetched with the children (round 3: about 0.74x / 0.70x time,
-medium / large, 1 thread). Measured and not kept: the two-phase CBE table as a saturating second
-stage, an A-centre/edge class prefetch pass before every stage, per-node lookup orders.
+medium / large, 1 thread), the edge x A-centre table up to rotation and `C` (the `huge` tier,
+round 4: 27.9 GB, 0.24x / 0.27x the nodes of the large tier's completed iterations, 0.15x /
+0.23x its time on the 17- / 19-move sets). Measured and not kept: the two-phase CBE table as a
+saturating second stage, an A-centre/edge class prefetch pass before every stage, per-node
+lookup orders, corners x edges in the huge tier.
 
 Next, by expected value:
+
+0. **The huge tier's memory**: values packed five to a byte (3^5 = 243 <= 256) would hold the
+   same table in 22.3 GB, the large tier's size; without `C` the edge x A-centre table needs
+   83.6 GB (66.9 GB packed), for a predicted 0.31x the nodes of the huge tier (0.094x the large
+   tier's).
 
 1. **The table-read stall** (still the largest single cost, about 26-35% of the samples, all in
    the first stage): neither lanes (more work in flight) nor 1 GiB pages (no TLB misses)
@@ -668,7 +803,8 @@ Next, by expected value:
    A-centre/edge table to solved with chirality would prune about as much as the triple table
    (0.34x on the 13-move set) but needs 68.7 GB; added to the triple table, the one without
    chirality (8.6 GB more) would take the 13-move set only from 0.342x to 0.322x (estimated the
-   same way): not worth it.
+   same way): not worth it. (Done differently in round 4: up to rotation the same kind of table
+   keeps 288 symmetries instead of 4.)
 3. **A centres table** (A x B colourings to solved, 4.3 GB): only 0.88x nodes when estimated
    on its own; not worth it.
 

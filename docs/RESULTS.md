@@ -85,6 +85,25 @@ positions, and edge_hard (67.9 s) and the corner 6-flip (624 s) under `-t 1800`,
 without it. Without `-t` (optimal mode) edge_hard takes 62.8 s and the 6-flip 117 s. Since
 `opt/tl-cbs` time-limited runs use it too; see [Under a time limit](#under-a-time-limit-opttl-cbs).
 
+## The optimal solver's huge tier (2026-11-13, `optimal/ea-huge`; not in the reference run)
+
+The `huge` tier (27.9 GB: an edge x A-centre table to solved with 288 symmetries on both sides,
+and corners x centres; [OPTIMAL.md](OPTIMAL.md#optimisation-round-4-what-the-memory-buys-the-huge-tier-optimalea-huge))
+against the large tier (22.0 GB), the same binary, quiet machine, bench lock, two rounds:
+
+| set | threads | large | huge | huge / large |
+|---|---|---|---|---|
+| 10 x 17 moves (seed 1717) | 1 | 4.83 s, 7.82e7 nodes | 0.74, 0.78 s, 1.79e7 nodes | 0.153x, 0.160x time, 0.229x nodes |
+| 10 x 19 moves (seed 1919) | 48 | 9.79, 9.82 s, 6.28e9 nodes | 2.17, 2.20 s, 2.17e9 nodes | 0.221x, 0.223x time, 0.345x nodes |
+
+Random positions (48 threads, one position per seed as in `bench-randopt.sh`, proven optimal):
+huge 18.3 s (seed 1, 21 moves, 1.95e10 nodes), 27.5 s (seed 2, 21 moves, 2.91e10 nodes), 3.2 s
+(seed 3, 20 moves, 3.33e9 nodes); the large tier took 66.4 / 143.4 / 73.3 s and the two-phase
+solver's optimal mode about 53 / 49 / 4 s (earlier mains, see above). With the huge tier the
+optimal solver proves these positions and the two sets faster than the two-phase solver's
+optimal mode (17-move set 0.75 s against 2.24 s on one thread, 19-move set 2.2 s against 7.0 s on
+48).
+
 ## Progress and both solvers at once
 
 Measured on 2026-11-11 (`feat/progress-combined`, 48-core EPYC, large tiers, under the bench

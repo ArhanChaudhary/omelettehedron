@@ -18,6 +18,7 @@
 pub mod bench;
 pub mod cbe;
 pub mod coords;
+pub mod ea;
 pub mod search;
 pub mod sym;
 pub mod tables;
