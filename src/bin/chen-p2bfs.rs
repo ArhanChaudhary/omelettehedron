@@ -294,6 +294,16 @@ enum Cmd {
         #[arg(long)]
         geodesic: bool,
     },
+    /// The relaxed phase-1 distance along given solutions (how far each leaves the phase-2
+    /// space): a tab-separated file with the pattern in column 5 and the solution in column 9
+    Radius {
+        /// Directory of the relaxed phase-1 table
+        #[arg(long)]
+        tables: PathBuf,
+        /// The solutions
+        #[arg(long)]
+        input: PathBuf,
+    },
     /// The positions of a layer (the last by default) up to symmetry, with solutions
     Antipodes {
         /// Search directory
@@ -640,6 +650,7 @@ fn main() -> Result<()> {
             solutions.as_deref(),
         )?,
         Cmd::Paths { dir, tables } => paths(&dir, &tables)?,
+        Cmd::Radius { tables, input } => radius(&tables, &input)?,
         Cmd::Bad {
             dir,
             tables,
@@ -1280,5 +1291,64 @@ fn paths(dir: &Path, tables: &Path) -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+/// `radius`: the relaxed phase-1 distance after each move of each solution.
+fn radius(tables: &Path, input: &Path) -> Result<()> {
+    use omelettehedron::chen::relaxed::RelaxedAe;
+    use omelettehedron::notation::{parse_moves, Frame};
+    use omelettehedron::tables::AeSym;
+    let ix = AeSym::new(true);
+    let relaxed = RelaxedAe::load(tables, &ix, false).context("loading the relaxed table")?;
+    let f = omelettehedron::fast::fast();
+    let text = std::fs::read_to_string(input).with_context(|| input.display().to_string())?;
+    let mut hist = std::collections::BTreeMap::new();
+    for line in text
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+    {
+        let c: Vec<&str> = line.split('\t').collect();
+        let (Some(pat), Some(sol)) = (c.get(4), c.get(8)) else {
+            continue;
+        };
+        if *sol == "-" {
+            continue;
+        }
+        let parsed = omelettehedron::pattern::parse(pat).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut cube =
+            omelettehedron::pattern::position(&parsed).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let moves = parse_moves(sol).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let d1 = |x: &omelettehedron::cube::Cube| relaxed.exact(&ix, &f.of(x)).unwrap_or(99);
+        let mut fr = Frame::identity();
+        let mut profile = vec![d1(&cube)];
+        for pm in moves.iter().copied() {
+            let (m, nf) = fr.to_internal(pm);
+            cube = cube.apply(m);
+            fr = nf;
+            profile.push(d1(&cube));
+        }
+        if cube != omelettehedron::cube::Cube::solved() {
+            bail!(
+                "{}: the solution does not solve the position",
+                c.first().unwrap_or(&"?")
+            );
+        }
+        let top = profile.iter().copied().max().unwrap_or(0);
+        *hist.entry(top).or_insert(0) += 1;
+        println!(
+            "{}\t{}\t{}\t{}\tmax d1 {top}\t{}",
+            c.first().unwrap_or(&""),
+            c.get(1).unwrap_or(&""),
+            c.get(2).unwrap_or(&""),
+            moves.len(),
+            profile
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
+    println!("solutions by the largest relaxed phase-1 distance along them: {hist:?}");
     Ok(())
 }
