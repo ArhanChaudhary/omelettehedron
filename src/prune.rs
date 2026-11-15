@@ -743,6 +743,38 @@ impl<'g, G: Graph> Bfs<'g, G> {
         self.hist.extend(counts);
     }
 
+    /// How many entries hold each value (0..4, 3 = not reached) in each block of `block`
+    /// entries, in order (`block` a multiple of 32; the last block may be shorter). For
+    /// histograms weighted per block, e.g. by the number of positions an entry stands for
+    /// ([`crate::tables::build_ae_weighted`]).
+    pub fn code_counts(&self, block: usize) -> Vec<[u64; 4]> {
+        let words = (block / 32).max(1);
+        let n = self.n;
+        self.raw
+            .par_chunks(words)
+            .enumerate()
+            .map(|(b, chunk)| {
+                let mut c = [0u64; 4];
+                for (k, &w) in chunk.iter().enumerate() {
+                    // entries past the end of the table (in the last word) are left out
+                    let first = (b * words + k) * 32;
+                    let valid = n.saturating_sub(first).min(32);
+                    let mask = if valid == 32 {
+                        LOW
+                    } else {
+                        LOW & ((1u64 << (2 * valid)) - 1)
+                    };
+                    let (lo, hi) = (w & LOW, (w >> 1) & LOW);
+                    c[0] += u64::from((!hi & !lo & mask).count_ones());
+                    c[1] += u64::from((!hi & lo & mask).count_ones());
+                    c[2] += u64::from((hi & !lo & mask).count_ones());
+                    c[3] += u64::from((hi & lo & mask).count_ones());
+                }
+                c
+            })
+            .collect()
+    }
+
     /// The table with the distance histogram.
     pub fn finish(self) -> Table2 {
         if self.verbose {

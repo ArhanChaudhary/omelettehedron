@@ -961,6 +961,44 @@ pub fn build_ae_with<I: AeIndex>(
     }
 }
 
+/// [`build_ae_with`] (face turns) that also counts the A-centre/edge states at each distance:
+/// the entries of block `k` (the entries `k * block..(k + 1) * block`) stand for `weight[k]`
+/// states each (for [`AeSym`], a block is an A-centre class and its weight the class size).
+/// Returns the table and the weighted counts per distance.
+pub fn build_ae_weighted<I: AeIndex>(
+    ix: &I,
+    targets: &[usize],
+    block: usize,
+    weight: &[u64],
+    name: &str,
+    verbose: bool,
+) -> (Table2, Vec<u128>) {
+    let g = AeGraph::<I, N_MOVES>::new(ix);
+    let mut b = crate::prune::Bfs::new(&g, ix.size(), targets, 0, name, verbose);
+    let weighted = |counts: &[[u64; 4]], code: usize| -> u128 {
+        counts
+            .iter()
+            .zip(weight)
+            .map(|(c, &w)| u128::from(c[code]) * u128::from(w))
+            .sum()
+    };
+    let mut counts = b.code_counts(block);
+    let mut hist = vec![weighted(&counts, 0)];
+    let mut cur = 0u8;
+    while b.unvisited() > 0 {
+        let next = (cur + 1) % 3;
+        // (older entries holding `next` keep it: the new ones are the difference)
+        let before = weighted(&counts, usize::from(next));
+        if b.level(cur, next) == 0 {
+            break;
+        }
+        counts = b.code_counts(block);
+        hist.push(weighted(&counts, usize::from(next)) - before);
+        cur = next;
+    }
+    (b.finish(), hist)
+}
+
 /// All tables needed by the solver, for one AE index type and move set.
 pub struct Tables<I: AeIndex> {
     /// the move set: the phase-1 tables hold distances in its metric, and the search uses it
