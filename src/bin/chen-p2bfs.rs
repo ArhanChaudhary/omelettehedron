@@ -784,7 +784,7 @@ fn joint(
     solutions: Option<&Path>,
 ) -> Result<()> {
     use omelettehedron::chen::p2bfs::joint::{
-        ae_depths, check_d1, check_geodesic, geodesic, Joint, Phase2Slots,
+        ae_depths, check_d1, check_geodesic, geodesic, state_counts, Joint, Phase2Slots,
     };
     use omelettehedron::chen::relaxed::RelaxedAe;
     use omelettehedron::tables::{AeIndex, AeSym};
@@ -966,6 +966,9 @@ fn joint(
         bail!("MISMATCH: {bad} entries break the geodesic set's rule");
     }
     println!("the geodesic set is exactly the backward closure (all entries checked)");
+    let (all, on) = state_counts(&ix, &dep, &geo);
+    println!("A-centre/edge states per distance: {all:?}");
+    println!("of them on the geodesic set: {on:?}");
     // explicit solutions of sampled candidates: an alternative optimal phase-1 solution, then
     // a phase-2 solution by IDA* within 24 moves (independent of the layer files)
     let f = omelettehedron::fast::fast();

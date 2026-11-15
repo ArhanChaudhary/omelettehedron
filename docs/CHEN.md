@@ -102,7 +102,9 @@ layer S25; every such position is `s v` with `s` in S25 and `v` 11 moves along w
 phase-1 distance rises by one each step. The check computes exact phase-1 distances of all
 4,127,692,800 entries of the relaxed index (equal to the table entry by entry, mod 3), the
 entries on a shortest path to the 3 entries at distance 11 (25, 95, 158, 171, 185, 182, 176,
-165, 157, 64, 8, 3 per distance; checked to be exactly the backward closure), and from one
+165, 157, 64, 8, 3 per distance; checked to be exactly the backward closure; as A-centre/edge
+states 5,412, 25,152, 41,184, 45,792, 47,232, 47,808, 46,368, 45,504, 41,472, 16,560, 1,536 and
+96, the weights giving every distance's exact state count), and from one
 position of each of the 49,804 classes of S25 (the 24 symmetries keep the phase-1 distance,
 checked on 20,000 random positions, and S25) enumerates the 1,534,416 candidates `s v`: each
 has another optimal phase-1 solution ending outside S25, so none needs an explicit solution.

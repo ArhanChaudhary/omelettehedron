@@ -582,3 +582,46 @@ impl Joint<'_> {
         n
     }
 }
+
+/// The A-centre/edge *states* per distance, of all entries and of the geodesic set: each entry
+/// stands for one state per A-centre colouring of its class (the weights of the chiral index),
+/// for comparison with a search without symmetry.
+pub fn state_counts(ix: &AeSym, dep: &AeDepths, geo: &Geodesic) -> (Vec<u128>, Vec<u128>) {
+    let mut weight = vec![0u64; ix.cls.rep.len()];
+    for &v in ix.cls.sym.iter() {
+        if let Some(w) = weight.get_mut((v & 0xffff) as usize) {
+            *w += 1;
+        }
+    }
+    let n = ix.size();
+    let cs = ix.class_size();
+    let levels = dep.hist.len();
+    (0..n.div_ceil(CHUNK))
+        .into_par_iter()
+        .map(|c| {
+            let mut all = vec![0u128; levels];
+            let mut on = vec![0u128; levels];
+            for i in c * CHUNK..((c + 1) * CHUNK).min(n) {
+                let d = dep.get(i) as usize;
+                let w = u128::from(weight.get(i / cs).copied().unwrap_or(0));
+                if let Some(a) = all.get_mut(d) {
+                    *a += w;
+                }
+                if geo.contains(i) {
+                    if let Some(a) = on.get_mut(d) {
+                        *a += w;
+                    }
+                }
+            }
+            (all, on)
+        })
+        .reduce(
+            || (vec![0; levels], vec![0; levels]),
+            |(a, b), (c, d)| {
+                (
+                    a.iter().zip(&c).map(|(x, y)| x + y).collect(),
+                    b.iter().zip(&d).map(|(x, y)| x + y).collect(),
+                )
+            },
+        )
+}
