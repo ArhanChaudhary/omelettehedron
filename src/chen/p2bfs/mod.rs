@@ -7,10 +7,12 @@
 //! * [`engine`]: the search, one layer per step, a part of the next layer at a time in memory,
 //!   resumable after any part;
 //! * [`reference`]: independent searches to check it against;
-//! * [`solve`]: positions of slots, and their shortest phase-2 solutions by IDA*.
+//! * [`solve`]: positions of slots, and their shortest phase-2 solutions by IDA*;
+//! * [`joint`]: the joint check of the relaxed phase 1 and the last phase-2 layer.
 
 pub mod codec;
 pub mod engine;
 pub mod instance;
+pub mod joint;
 pub mod reference;
 pub mod solve;

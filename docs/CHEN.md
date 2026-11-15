@@ -89,6 +89,28 @@ chen-p2bfs status --dir DIR                   # layers so far, totals, the H' cl
 chen-p2bfs antipodes --dir DIR --tables T --out antipodes.tsv
 ```
 
+**Result** (complete run, 2026-11-15): every one of the 1.586 x 10^14 positions is reached;
+the distance is at most 25. Positions per distance (up to symmetry in brackets): 13: 9.8 x
+10^10, 14: 4.0 x 10^11, 15: 1.5 x 10^12, 16: 4.4 x 10^12, 17: 1.14 x 10^13, 18: 2.30 x 10^13, 19:
+3.59 x 10^13, 20: 4.00 x 10^13, 21: 2.80 x 10^13, 22: 1.18 x 10^13, 23: 2.0 x 10^12, 24: 5.3 x
+10^10, 25: 1,180,056 (49,804). The deepest position of `H'` is at 24.
+
+**Joint check** (`chen-p2bfs joint`, `src/chen/p2bfs/joint.rs`): every position is within 35
+moves. The relaxed phase 1 needs at most 11 moves (10 or fewer: 10 + 25 = 35). A position at 11
+needs more than 35 with this split only if every optimal phase-1 solution ends in the last
+layer S25; every such position is `s v` with `s` in S25 and `v` 11 moves along which the
+phase-1 distance rises by one each step. The check computes exact phase-1 distances of all
+4,127,692,800 entries of the relaxed index (equal to the table entry by entry, mod 3), the
+entries on a shortest path to the 3 entries at distance 11 (25, 95, 158, 171, 185, 182, 176,
+165, 157, 64, 8, 3 per distance; checked to be exactly the backward closure), and from one
+position of each of the 49,804 classes of S25 (the 24 symmetries keep the phase-1 distance,
+checked on 20,000 random positions, and S25) enumerates the 1,534,416 candidates `s v`: each
+has another optimal phase-1 solution ending outside S25, so none needs an explicit solution.
+Sampled candidates (60) were solved explicitly, phase 1 then phase 2 by IDA*, in at most 33
+moves, replayed on the independent sticker model; their optimal phase-1 solutions end 135 times
+in S25 (at least once each) and 95,001 times outside. With all its checks: 2 min 19 s at 48
+threads, 6.0 GB.
+
 **Checks** (`tests/p2bfs.rs`, and on the command line): the positions per depth of the full
 space are 1, 16, 160, 1,344, 10,464, 78,152 (Chen Shuang's twsearch counts), 560,100, 3,812,363
 (the sticker model of `/data3/scratch/chen`, and a plain search without symmetry), 24,234,475 at

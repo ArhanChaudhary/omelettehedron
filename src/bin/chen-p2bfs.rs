@@ -235,6 +235,39 @@ enum Cmd {
         #[arg(long, default_value_t = 30)]
         max: usize,
     },
+    /// The joint check of the two phases (see `omelettehedron::chen::p2bfs::joint`): exact
+    /// relaxed phase-1 distances, the geodesic set, membership checks, then every candidate
+    /// above the last layer resolved or listed
+    Joint {
+        /// Search directory (complete, its last layer kept)
+        #[arg(long)]
+        dir: PathBuf,
+        /// Directory of the relaxed phase-1 table and the phase-2 tables
+        #[arg(long)]
+        tables: PathBuf,
+        /// Random positions for the checks of d1 (table, exact array, conjugates)
+        #[arg(long, default_value_t = 2000)]
+        checks: u64,
+        /// Random phase-2 positions solved by IDA* (within 24 moves) that must test outside the
+        /// layer
+        #[arg(long, default_value_t = 16)]
+        outside: usize,
+        /// Process only the first N classes of the layer (to time the run)
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Write the unresolved candidates here (tab-separated: pattern of the fixed-frame
+        /// position, then the position's coordinates)
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Classes of the layer whose first candidates get an explicit solution (phase-1
+        /// alternative plus an IDA* phase-2 solution)
+        #[arg(long, default_value_t = 100)]
+        sample: usize,
+        /// Write those solutions here (tab-separated: pattern, phase-1 and phase-2 lengths,
+        /// length, solution in face turns)
+        #[arg(long)]
+        solutions: Option<PathBuf>,
+    },
     /// The positions of a layer (the last by default) up to symmetry, with solutions
     Antipodes {
         /// Search directory
@@ -551,6 +584,25 @@ fn main() -> Result<()> {
                 i.n_class
             );
         }
+        Cmd::Joint {
+            dir,
+            tables,
+            checks,
+            outside,
+            limit,
+            out,
+            sample,
+            solutions,
+        } => joint(
+            &dir,
+            &tables,
+            checks,
+            outside,
+            limit,
+            out.as_deref(),
+            sample,
+            solutions.as_deref(),
+        )?,
         Cmd::Antipodes {
             dir,
             tables,
@@ -717,4 +769,273 @@ fn status(dir: &Path, i: &Instance, m: &Manifest) {
             p.parts.len()
         );
     }
+}
+
+/// `joint`: the joint check, with its checks first.
+#[allow(clippy::too_many_arguments)]
+fn joint(
+    dir: &Path,
+    tables: &Path,
+    checks: u64,
+    outside: usize,
+    limit: Option<usize>,
+    out: Option<&Path>,
+    sample: usize,
+    solutions: Option<&Path>,
+) -> Result<()> {
+    use omelettehedron::chen::p2bfs::joint::{
+        ae_depths, check_d1, check_geodesic, geodesic, Joint, Phase2Slots,
+    };
+    use omelettehedron::chen::relaxed::RelaxedAe;
+    use omelettehedron::tables::{AeIndex, AeSym};
+    use std::time::Instant;
+    let t0 = Instant::now();
+    let m = load(dir)?;
+    if !m.complete {
+        bail!("{}: the search is not complete", dir.display());
+    }
+    let last = m.depth().context("no layer")?;
+    let ix = AeSym::new(true);
+    let relaxed = RelaxedAe::load(tables, &ix, false).context("loading the relaxed table")?;
+    println!(
+        "relaxed table: {} entries, {} target entries, entries per distance {:?}",
+        ix.size(),
+        relaxed.targets.len(),
+        relaxed.tab.hist
+    );
+    // exact distances, checked against the table entry by entry (mod 3) and per distance
+    let dep = ae_depths(&ix, &relaxed.targets, true);
+    println!(
+        "exact distances: entries per distance {:?} ({:.0} s)",
+        dep.hist,
+        t0.elapsed().as_secs_f64()
+    );
+    if dep.hist != relaxed.tab.hist {
+        bail!("MISMATCH: the exact distances' histogram is not the table's");
+    }
+    let bad = {
+        use rayon::prelude::*;
+        (0..ix.size())
+            .into_par_iter()
+            .filter(|&i| dep.get(i) % 3 != relaxed.tab.get(i))
+            .count()
+    };
+    if bad > 0 {
+        bail!("MISMATCH: {bad} entries differ from the table mod 3");
+    }
+    println!("every entry agrees with the table (mod 3)");
+    let n = check_d1(&ix, &relaxed, &dep, checks).map_err(|e| anyhow::anyhow!(e))?;
+    println!(
+        "d1 of {n} random positions: the table's walk, the exact array and all 24 conjugates agree"
+    );
+    let geo = geodesic(&ix, &dep);
+    println!(
+        "geodesic set (entries on a shortest path to distance {}), per distance: {:?} ({:.0} s)",
+        geo.top,
+        geo.per_level,
+        t0.elapsed().as_secs_f64()
+    );
+    // the layer, and membership checks
+    let layer = Phase2Slots::load(dir, last)?;
+    println!(
+        "layer {last}: {} slots, {} classes",
+        layer.len(),
+        layer.reps.len()
+    );
+    let mut missing = 0;
+    let s48 = omelettehedron::optimal::sym::sym48();
+    for (k, &slot) in layer.reps.iter().enumerate() {
+        let c = layer.cube(slot).context("slot without a position")?;
+        if layer.contains(&c) != Some(true) {
+            missing += 1;
+        }
+        if k % 97 == 0 {
+            for sy in 0..24 {
+                let (cc, _) = s48.conj_cube(&c, sy).context("conjugate")?;
+                if layer.contains(&cc) != Some(true) {
+                    missing += 1;
+                }
+            }
+        }
+    }
+    if missing > 0 {
+        bail!("MISMATCH: {missing} positions of the layer test outside it");
+    }
+    println!(
+        "all {} classes' positions test in the layer, and the conjugates of every 97th",
+        layer.reps.len()
+    );
+    let ct = ChenTables::load(
+        tables,
+        TableSet {
+            sb: false,
+            px: true,
+        },
+        false,
+    )
+    .context("loading the phase-2 tables")?;
+    let solver = Solver::new(&ct);
+    let s = omelettehedron::chen::space::space();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0x5025);
+    let mut lens = vec![];
+    for _ in 0..outside {
+        let mut l = omelettehedron::cube::Cube::solved().xb;
+        rand::seq::SliceRandom::shuffle(&mut l[..], &mut rng);
+        let mut xb = [0u8; 16];
+        xb[..12].copy_from_slice(&l);
+        let st = PState {
+            q: rng.gen_range(0..s.pat.cfg.len()) as u16,
+            pc: rng.gen_range(0..s.corners.next.len()) as u16,
+            xb,
+        };
+        let sol = solver
+            .solve_par(&st, last - 1)
+            .context("a random position beyond 24")?;
+        let p2 = solver.views().to_p2(&st);
+        let (xa, ep) = s.cfgs[p2.cfg as usize];
+        let (cp, co) = omelettehedron::coord::corners().id_to_state[p2.c as usize];
+        let mut xbf = [0u8; 12];
+        xbf.copy_from_slice(&p2.xb[..12]);
+        let c = omelettehedron::cube::Cube {
+            cp,
+            co,
+            ep,
+            xa,
+            xb: xbf,
+        };
+        if layer.contains(&c) != Some(false) {
+            bail!(
+                "MISMATCH: a position at distance {} tests in the layer",
+                sol.len()
+            );
+        }
+        lens.push(sol.len());
+    }
+    println!(
+        "{outside} random positions solved within {} moves ({lens:?}) test outside",
+        last - 1
+    );
+    // the check
+    let mut layer = layer;
+    if let Some(l) = limit {
+        layer.reps.truncate(l);
+    }
+    let j = Joint {
+        ix: &ix,
+        dep: &dep,
+        geo: &geo,
+        layer: &layer,
+    };
+    let t1 = Instant::now();
+    let r = j.run(true);
+    println!(
+        "joint: {} starts ({} on the geodesic set), {} candidates, {} resolved by another \
+         optimal phase-1 solution, {} unresolved, {} anomalies; {} downward nodes; {:.0} s",
+        r.starts,
+        r.starts_on_geodesics,
+        r.candidates,
+        r.resolved,
+        r.unresolved.len(),
+        r.anomalies,
+        r.down_nodes,
+        t1.elapsed().as_secs_f64()
+    );
+    let lines: Vec<String> = r
+        .unresolved
+        .iter()
+        .map(|c| {
+            format!(
+                "{}\t{:?}",
+                omelettehedron::pattern::format(&omelettehedron::pattern::of_cube(c)),
+                c
+            )
+        })
+        .collect();
+    for l in lines.iter().take(20) {
+        println!("unresolved: {l}");
+    }
+    if let Some(out) = out {
+        std::fs::write(out, lines.join("\n") + "\n").with_context(|| out.display().to_string())?;
+    }
+    if r.anomalies > 0 {
+        bail!("{} anomalies", r.anomalies);
+    }
+    // the geodesic set is exactly the backward closure
+    let bad = check_geodesic(&ix, &dep, &geo);
+    if bad > 0 {
+        bail!("MISMATCH: {bad} entries break the geodesic set's rule");
+    }
+    println!("the geodesic set is exactly the backward closure (all entries checked)");
+    // explicit solutions of sampled candidates: an alternative optimal phase-1 solution, then
+    // a phase-2 solution by IDA* within 24 moves (independent of the layer files)
+    let f = omelettehedron::fast::fast();
+    let step = (layer.reps.len() / sample.max(1)).max(1);
+    let mut lines = vec![];
+    let mut longest = 0;
+    let mut ends = (0u64, 0u64);
+    for &slot in layer.reps.iter().step_by(step).take(sample) {
+        let sc = layer.cube(slot).context("slot without a position")?;
+        for q in j.candidates_from(&sc, 2) {
+            let d1 = relaxed.exact(&ix, &f.of(&q)).context("walk")?;
+            let (inside, outside) = j.count_ends(&q);
+            if inside == 0 || outside == 0 {
+                bail!("MISMATCH: {inside} optimal solutions end inside, {outside} outside");
+            }
+            ends.0 += inside;
+            ends.1 += outside;
+            let (w, e) = j
+                .alternative(&q)
+                .context("a candidate without an alternative")?;
+            let mut c = q;
+            for &m in &w {
+                c = c.apply(m);
+            }
+            let p2 = omelettehedron::chen::tables::P2::of(&e).context("no phase-2 position")?;
+            if c != e || d1 != 11 || w.len() != 11 {
+                bail!("MISMATCH: d1 {d1}, path of {} moves", w.len());
+            }
+            let st = solver.views().of_p2(&p2);
+            let sol2 = solver
+                .solve_par(&st, last - 1)
+                .context("the end needs more than 24 moves")?;
+            let sol2f = solver
+                .views()
+                .to_fixed(&st, &sol2)
+                .context("a phase-2 move without a fixed-frame move")?;
+            let all: Vec<usize> = w.iter().chain(&sol2f).copied().collect();
+            let mut z = q;
+            for &m in &all {
+                z = z.apply(m);
+            }
+            if z != omelettehedron::cube::Cube::solved() {
+                bail!("MISMATCH: the joined solution does not solve the candidate");
+            }
+            let phys = omelettehedron::notation::solution_to_physical(
+                omelettehedron::notation::Frame::identity(),
+                &all,
+                false,
+            );
+            longest = longest.max(phys.len());
+            lines.push(format!(
+                "{}\t{}\t{}\t{}\t{}",
+                omelettehedron::pattern::format(&omelettehedron::pattern::of_cube(&q)),
+                w.len(),
+                sol2.len(),
+                phys.len(),
+                format_moves(&phys)
+            ));
+        }
+    }
+    println!(
+        "{} sampled candidates solved explicitly: 11 + at most {} = at most {longest} moves; \
+         their optimal phase-1 solutions end {} times in the layer and {} times outside",
+        lines.len(),
+        longest - 11,
+        ends.0,
+        ends.1
+    );
+    if let Some(p) = solutions {
+        std::fs::write(p, lines.join("\n") + "\n").with_context(|| p.display().to_string())?;
+    }
+    Ok(())
 }

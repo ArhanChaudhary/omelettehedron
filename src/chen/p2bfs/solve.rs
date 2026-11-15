@@ -96,6 +96,44 @@ impl Views {
         P2 { cfg, c, xb }
     }
 
+    /// The pattern-view position of a fixed-frame phase-2 position (its configuration's frame
+    /// turned back).
+    pub fn of_p2(&self, p2: &P2) -> PState {
+        let s = space();
+        let cfg = p2.cfg as usize;
+        let r = s.rot.get(cfg).copied().unwrap_or(0) as usize;
+        PState {
+            q: s.pat.of_cfg.get(cfg).copied().unwrap_or(0),
+            pc: s
+                .corners
+                .of_fixed
+                .get(r * crate::coord::N_CORNER + p2.c as usize)
+                .copied()
+                .unwrap_or(0),
+            xb: s.pattern_xb(p2.cfg, &p2.xb),
+        }
+    }
+
+    /// A pattern-view solution (internal move indices read as pattern-view face turns) as
+    /// internal moves of the fixed frame: at each step the internal move that leads to the
+    /// same next position. `None` if a step has none.
+    pub fn to_fixed(&self, st: &PState, sol: &[usize]) -> Option<Vec<usize>> {
+        let s = space();
+        let mut cur = *st;
+        let mut out = Vec::with_capacity(sol.len());
+        for &m in sol {
+            let next = self.apply(&cur, m)?;
+            let (a, b) = (self.to_p2(&cur), self.to_p2(&next));
+            let mf = (0..N_MOVES).find(|&k| {
+                a.apply(s, k)
+                    .is_some_and(|x| x.cfg == b.cfg && x.c == b.c && x.xb[..12] == b.xb[..12])
+            })?;
+            out.push(mf);
+            cur = next;
+        }
+        Some(out)
+    }
+
     /// The fixed-frame corner id and B-centre colouring of a pattern-view position's corners
     /// and B-centres (for the CC table).
     #[inline]

@@ -144,3 +144,87 @@ fn full_instance_first_depths() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Membership in a layer (`joint::Phase2Slots`): every position of layer 5 of the full
+/// instance tests in it, with its conjugates by the 24 symmetries that keep the face classes;
+/// every position of layer 4, and positions a few allowed moves from solved, test out; and
+/// the conversions between the pattern view and the fixed frame invert each other.
+#[test]
+fn layer_membership() {
+    use omelettehedron::chen::p2bfs::joint::Phase2Slots;
+    use omelettehedron::chen::p2bfs::solve::{PState, Views};
+    use omelettehedron::chen::tables::P2;
+    use omelettehedron::cube::{Cube, N_MOVES};
+    use rand::{Rng, SeedableRng};
+    let inst = Instance::new(Kind::FULL);
+    let dir = tmp_dir("member");
+    let mut cfg = config(&dir, 1 << 33);
+    cfg.max_depth = Some(5);
+    let mut b = Bfs::open(&inst, cfg).unwrap();
+    assert_eq!(b.run().unwrap(), Outcome::Stopped);
+    let l5 = Phase2Slots::load(&dir, 5).unwrap();
+    let l4 = Phase2Slots::load(&dir, 4).unwrap();
+    assert_eq!(l5.reps.len() as u64, b.manifest().levels[5].orbits);
+    let s48 = omelettehedron::optimal::sym::sym48();
+    for (k, &slot) in l5.reps.iter().enumerate() {
+        let c = l5.cube(slot).unwrap();
+        assert_eq!(l5.contains(&c), Some(true));
+        assert_eq!(l4.contains(&c), Some(false));
+        if k % 50 == 0 {
+            for s in 0..24 {
+                let (cc, _) = s48.conj_cube(&c, s).unwrap();
+                assert_eq!(l5.contains(&cc), Some(true));
+            }
+        }
+    }
+    for &slot in &l4.reps {
+        let c = l4.cube(slot).unwrap();
+        assert_eq!(l4.contains(&c), Some(true));
+        assert_eq!(l5.contains(&c), Some(false));
+    }
+    // positions at most 4 allowed moves from solved are not at distance 5
+    let s = omelettehedron::chen::space::space();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(25);
+    let views = Views::new();
+    for _ in 0..2000 {
+        let mut c = Cube::solved();
+        for _ in 0..rng.gen_range(0..5) {
+            let m = rng.gen_range(0..N_MOVES);
+            if s.id(&c)
+                .is_some_and(|id| s.next[id as usize][m] != u32::MAX)
+            {
+                c = c.apply(m);
+            }
+        }
+        assert_eq!(l5.contains(&c), Some(false));
+        // the pattern view and back
+        let p2 = P2::of(&c).unwrap();
+        let st: PState = views.of_p2(&p2);
+        let back = views.to_p2(&st);
+        assert_eq!(
+            (back.cfg, back.c, &back.xb[..12]),
+            (p2.cfg, p2.c, &p2.xb[..12])
+        );
+        // a pattern-view path as fixed-frame moves
+        let mut path = vec![];
+        let mut cur = st;
+        for _ in 0..6 {
+            let m = rng.gen_range(0..N_MOVES);
+            if let Some(n) = views.apply(&cur, m) {
+                path.push(m);
+                cur = n;
+            }
+        }
+        let fixed = views.to_fixed(&st, &path).unwrap();
+        let mut q = p2;
+        for &m in &fixed {
+            q = q.apply(s, m).unwrap();
+        }
+        let want = views.to_p2(&cur);
+        assert_eq!(
+            (q.cfg, q.c, &q.xb[..12]),
+            (want.cfg, want.c, &want.xb[..12])
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -778,7 +778,7 @@ pub fn ae_targets<I: AeIndex>(ix: &I) -> Vec<usize> {
 /// A part of each neighbour (its class-table entry) is tabulated per class and move. (Fast
 /// coordinates: small tier 2.2 -> 1.5 s, AE medium generation 9.4 -> 8.1 s at 48T; the
 /// per-class table: AE medium 7.6 -> 6.1 s, medium tier 8.1 -> 6.7 s; when added, opt/gen.)
-struct AeGraph<'a, I: AeIndex, const N: usize> {
+pub(crate) struct AeGraph<'a, I: AeIndex, const N: usize> {
     ix: &'a I,
     f: &'static FastTables,
     /// [`mset_labels`], held here: a `OnceLock` read per entry is an atomic load, cheap
@@ -797,14 +797,14 @@ struct AeGraph<'a, I: AeIndex, const N: usize> {
 /// edge labelling): the neighbour by move m of the entry with bits b is
 /// `base[m] + (relab(g[m], b ^ flips[m]) & 7)`.
 #[derive(Clone, Copy)]
-struct AeGroup<const N: usize> {
+pub(crate) struct AeGroup<const N: usize> {
     base: [usize; N],
     g: [u8; N],
     flips: [u8; N],
 }
 
 impl<'a, I: AeIndex, const N: usize> AeGraph<'a, I, N> {
-    fn new(ix: &'a I) -> Self {
+    pub(crate) fn new(ix: &'a I) -> Self {
         let f = fast();
         // `decode` reads the move tables; their lazy initialisation runs parallel work, so it
         // must not start inside a rayon job (the initialising thread could steal a job that
