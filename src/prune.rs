@@ -775,6 +775,29 @@ impl<'g, G: Graph> Bfs<'g, G> {
             .collect()
     }
 
+    /// The indices of the entries holding `code` (a full scan: for few entries, e.g. the
+    /// unvisited ones before the last level, [`crate::tables::ae_farthest`]).
+    pub fn indices_with_code(&self, code: u8) -> Vec<usize> {
+        let n = self.n;
+        let words = 1 << 15;
+        self.raw
+            .par_chunks(words)
+            .enumerate()
+            .flat_map_iter(|(b, chunk)| {
+                let mut v = vec![];
+                for (k, &w) in chunk.iter().enumerate() {
+                    let first = (b * words + k) * 32;
+                    for j in 0..32 {
+                        if first + j < n && (w >> (2 * j)) & 3 == u64::from(code) {
+                            v.push(first + j);
+                        }
+                    }
+                }
+                v
+            })
+            .collect()
+    }
+
     /// The table with the distance histogram.
     pub fn finish(self) -> Table2 {
         if self.verbose {

@@ -999,6 +999,29 @@ pub fn build_ae_weighted<I: AeIndex>(
     (b.finish(), hist)
 }
 
+/// The entries farthest from `targets` in the AE index's graph (face turns), and their
+/// distance: the breadth-first search of [`build_ae_with`], keeping the entries that the last
+/// level reaches.
+pub fn ae_farthest<I: AeIndex>(ix: &I, targets: &[usize]) -> (u8, Vec<usize>) {
+    let g = AeGraph::<I, N_MOVES>::new(ix);
+    let mut b = crate::prune::Bfs::new(&g, ix.size(), targets, 0, "farthest", false);
+    let (mut cur, mut depth) = (0u8, 0u8);
+    let mut rest = vec![];
+    while b.unvisited() > 0 {
+        // (once few entries are left, list them: the level that reaches them all is the last)
+        if b.unvisited() <= 1 << 24 {
+            rest = b.indices_with_code(3);
+        }
+        let next = (cur + 1) % 3;
+        if b.level(cur, next) == 0 {
+            break;
+        }
+        depth += 1;
+        cur = next;
+    }
+    (depth, rest)
+}
+
 /// All tables needed by the solver, for one AE index type and move set.
 pub struct Tables<I: AeIndex> {
     /// the move set: the phase-1 tables hold distances in its metric, and the search uses it
