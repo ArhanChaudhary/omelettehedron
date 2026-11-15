@@ -268,6 +268,32 @@ enum Cmd {
         #[arg(long)]
         solutions: Option<PathBuf>,
     },
+    /// Counts of ascending phase-1 paths and of the candidates they give from the last two
+    /// layers (an estimate for a bound one move lower)
+    Paths {
+        /// Search directory (complete)
+        #[arg(long)]
+        dir: PathBuf,
+        /// Directory of the relaxed phase-1 table
+        #[arg(long)]
+        tables: PathBuf,
+    },
+    /// The bad sets above the last layer (positions all of whose optimal phase-1 solutions
+    /// end in it), level by level, to a top distance
+    Bad {
+        /// Search directory (complete)
+        #[arg(long)]
+        dir: PathBuf,
+        /// Directory of the relaxed phase-1 table
+        #[arg(long)]
+        tables: PathBuf,
+        /// Top distance (default: the largest)
+        #[arg(long)]
+        top: Option<u8>,
+        /// Keep only positions on the geodesic set to the largest distance
+        #[arg(long)]
+        geodesic: bool,
+    },
     /// The positions of a layer (the last by default) up to symmetry, with solutions
     Antipodes {
         /// Search directory
@@ -603,6 +629,31 @@ fn main() -> Result<()> {
             sample,
             solutions.as_deref(),
         )?,
+        Cmd::Paths { dir, tables } => paths(&dir, &tables)?,
+        Cmd::Bad {
+            dir,
+            tables,
+            top,
+            geodesic,
+        } => {
+            use omelettehedron::chen::p2bfs::joint::{
+                ae_depths, bad_sets, geodesic as geo_set, Phase2Slots,
+            };
+            use omelettehedron::chen::relaxed::RelaxedAe;
+            use omelettehedron::tables::AeSym;
+            let m = load(&dir)?;
+            let last = m.depth().context("no layer")?;
+            let ix = AeSym::new(true);
+            let relaxed = RelaxedAe::load(&tables, &ix, false).context("relaxed table")?;
+            let dep = ae_depths(&ix, &relaxed.targets, false);
+            let g = geodesic.then(|| geo_set(&ix, &dep));
+            let top = top.unwrap_or((dep.hist.len() - 1) as u8);
+            let layer = Phase2Slots::load(&dir, last)?;
+            let sizes = bad_sets(&ix, &dep, &layer, top, g.as_ref(), true);
+            println!(
+                "bad sets above layer {last} (to distance {top}, geodesic {geodesic}): {sizes:?}"
+            );
+        }
         Cmd::Antipodes {
             dir,
             tables,
@@ -1039,6 +1090,116 @@ fn joint(
     );
     if let Some(p) = solutions {
         std::fs::write(p, lines.join("\n") + "\n").with_context(|| p.display().to_string())?;
+    }
+    Ok(())
+}
+
+/// `paths`: ascending phase-1 path counts per configuration class, weighted by the layers'
+/// positions per class.
+fn paths(dir: &Path, tables: &Path) -> Result<()> {
+    use omelettehedron::chen::p2bfs::joint::{
+        ae_depths, geodesic, path_counts, Joint, Phase2Slots,
+    };
+    use omelettehedron::chen::relaxed::RelaxedAe;
+    use omelettehedron::coord::Coords;
+    use omelettehedron::tables::{AeIndex, AeSym};
+    use std::time::Instant;
+    let t0 = Instant::now();
+    let m = load(dir)?;
+    let last = m.depth().context("no layer")?;
+    let i = Instance::new(Kind::FULL);
+    let ix = AeSym::new(true);
+    let relaxed = RelaxedAe::load(tables, &ix, false).context("loading the relaxed table")?;
+    let dep = ae_depths(&ix, &relaxed.targets, false);
+    let top = (dep.hist.len() - 1) as u8;
+    let s = omelettehedron::chen::space::space();
+    // the A-centre/edge entry of each configuration class (its representative, frame 0)
+    let entry: Vec<usize> = (0..i.n_class)
+        .map(|c| {
+            let (xa, ep) = s.cfgs[s.pat.cfg[i.rep[c] as usize] as usize];
+            ix.index(&Coords::of(&omelettehedron::cube::Cube {
+                xa,
+                ep,
+                ..omelettehedron::cube::Cube::solved()
+            }))
+        })
+        .collect();
+    let pos = |d: usize| -> Vec<f64> {
+        m.levels.get(d).map_or(vec![0.0; i.n_class], |l| {
+            (0..i.n_class)
+                .map(|c| (i.class_size(c) * l.per_class.get(c).copied().unwrap_or(0)) as f64)
+                .collect()
+        })
+    };
+    let (p_last, p_prev) = (pos(last), pos(last - 1));
+    let all_cfg: f64 = (0..i.n_class).map(|c| i.class_size(c) as f64).sum();
+    for l in [top, top - 1] {
+        let val = path_counts(&ix, &dep, l);
+        let per: Vec<f64> = entry.iter().map(|&e| f64::from(val[e])).collect();
+        let uniform: f64 = (0..i.n_class)
+            .map(|c| i.class_size(c) as f64 * per[c])
+            .sum::<f64>()
+            / all_cfg;
+        let maxp = per.iter().copied().fold(0.0, f64::max);
+        let from = |p: &[f64]| -> (f64, f64) {
+            let n: f64 = p.iter().sum();
+            let c: f64 = p.iter().zip(&per).map(|(a, b)| a * b).sum();
+            (c, c / n.max(1.0))
+        };
+        let (c_last, a_last) = from(&p_last);
+        let (c_prev, a_prev) = from(&p_prev);
+        println!(
+            "paths of {l} moves up to distance {l}: per configuration at most {maxp:.4e}, \
+             {uniform:.4e} on average over all phase-2 positions; from layer {last}: \
+             {c_last:.6e} candidates ({a_last:.4e} per position); from layer {}: {c_prev:.6e} \
+             ({a_prev:.4e} per position) ({:.0} s)",
+            last - 1,
+            t0.elapsed().as_secs_f64()
+        );
+        if l == top {
+            // the same from the layer's slots, and per class representative (the joint
+            // check's enumeration)
+            let layer = Phase2Slots::load(dir, last)?;
+            let mut by_slot = 0f64;
+            let mut by_rep = 0f64;
+            let reps: std::collections::HashSet<_> = layer.reps.iter().copied().collect();
+            omelettehedron::chen::p2bfs::engine::for_slots(
+                &Layout::of(dir, &m),
+                &i,
+                last,
+                0..i.n_class,
+                |c, x, p| {
+                    if let Some(cube) = layer.cube((c as u32, x as u32, p as u32)) {
+                        let v = f64::from(val[ix.index(&Coords::of(&cube))]);
+                        by_slot += i.class_size(c) as f64 * v;
+                        if reps.contains(&(c as u32, x as u32, p as u32)) {
+                            by_rep += v;
+                        }
+                    }
+                },
+            )?;
+            println!(
+                "check: from the layer's slots {by_slot:.6e} candidates; per class \
+                 representative {by_rep:.0} (the joint check enumerated 1,534,416)"
+            );
+            // the measured rate of the joint check (enumeration and resolution)
+            let geo = geodesic(&ix, &dep);
+            let j = Joint {
+                ix: &ix,
+                dep: &dep,
+                geo: &geo,
+                layer: &layer,
+            };
+            let t1 = Instant::now();
+            let r = j.run(false);
+            let secs = t1.elapsed().as_secs_f64();
+            println!(
+                "joint check: {} candidates in {secs:.3} s = {:.3e} per second ({} threads)",
+                r.candidates,
+                r.candidates as f64 / secs,
+                rayon::current_num_threads()
+            );
+        }
     }
     Ok(())
 }

@@ -625,3 +625,106 @@ pub fn state_counts(ix: &AeSym, dep: &AeDepths, geo: &Geodesic) -> (Vec<u128>, V
             },
         )
 }
+
+/// The number of ascending paths (the distance rising by one at each move) from each entry's
+/// states to distance `top`, per entry (`f32`: an estimate's precision): 1 at `top`, then per
+/// distance below the sum over the 16 moves of the children one distance up. A class function
+/// of the states, so the entry's representative stands for all of them.
+pub fn path_counts(ix: &AeSym, dep: &AeDepths, top: u8) -> Vec<f32> {
+    use std::sync::atomic::AtomicU32;
+    let g = AeGraph::<AeSym, N_MOVES>::new(ix);
+    let n = ix.size();
+    // (f32 bits; a distance's entries are written while the one above is read)
+    let val: Vec<AtomicU32> = (0..n)
+        .into_par_iter()
+        .map(|i| AtomicU32::new(if dep.get(i) == top { 1f32.to_bits() } else { 0 }))
+        .collect();
+    let get = |j: usize| f32::from_bits(val[j].load(Ordering::Relaxed));
+    for k in (0..top).rev() {
+        (0..n.div_ceil(CHUNK)).into_par_iter().for_each(|c| {
+            let mut cache = None;
+            for i in c * CHUNK..((c + 1) * CHUNK).min(n) {
+                if dep.get(i) != k {
+                    continue;
+                }
+                let mut s = 0f64;
+                g.neighbours(i, &mut cache, |j| {
+                    if dep.get(j) == k + 1 {
+                        s += f64::from(get(j));
+                    }
+                });
+                val[i].store((s as f32).to_bits(), Ordering::Relaxed);
+            }
+        });
+    }
+    val.into_iter()
+        .map(|v| f32::from_bits(v.into_inner()))
+        .collect()
+}
+
+/// The *bad sets*: `B_0` the layer's positions, and `B_{k+1}` the positions at phase-1
+/// distance `k + 1` all of whose moves down one distance lead into `B_k` (so all of whose
+/// optimal phase-1 solutions end in the layer). `B_{k+1}` lies among the moves up from `B_k`,
+/// so each level is found from the one below. With `geo`, only positions on the geodesic set
+/// (at their distance) are kept, for a top at the index's largest distance. The sets are
+/// closed under the 24 symmetries that keep the face classes (all images are kept). Returns
+/// the sizes of `B_0 ..= B_top` (positions).
+pub fn bad_sets(
+    ix: &AeSym,
+    dep: &AeDepths,
+    layer: &Phase2Slots,
+    top: u8,
+    geo: Option<&Geodesic>,
+    verbose: bool,
+) -> Vec<u64> {
+    let s48 = crate::optimal::sym::sym48();
+    let d1 = |c: &Cube| {
+        let i = ix.index(&Coords::of(c));
+        (dep.get(i), geo.is_none_or(|g| g.contains(i)))
+    };
+    // B_0: every position of the layer (the 24 images of each class's position)
+    let mut cur: HashSet<Cube> = layer
+        .reps
+        .par_iter()
+        .flat_map_iter(|&slot| {
+            let c = layer.cube(slot);
+            (0..N_SYM).filter_map(move |s| c.and_then(|c| s48.conj_cube(&c, s)).map(|x| x.0))
+        })
+        .collect();
+    let mut sizes = vec![cur.len() as u64];
+    for k in 0..top {
+        let ups: HashSet<Cube> = cur
+            .par_iter()
+            .flat_map_iter(|c| {
+                (0..N_MOVES)
+                    .map(move |m| c.apply(m))
+                    .filter(|n| d1(n) == (k + 1, true))
+            })
+            .collect();
+        let below = &cur;
+        let bad: Vec<Cube> = ups
+            .par_iter()
+            .filter(|z| {
+                (0..N_MOVES).all(|m| {
+                    let n = z.apply(m);
+                    d1(&n).0 != k || below.contains(&n)
+                })
+            })
+            .copied()
+            .collect();
+        cur = bad.into_iter().collect();
+        if verbose {
+            eprintln!(
+                "bad set {}: {} positions (of {} moves up from the set below)",
+                k + 1,
+                cur.len(),
+                ups.len()
+            );
+        }
+        sizes.push(cur.len() as u64);
+        if cur.is_empty() {
+            break;
+        }
+    }
+    sizes
+}
