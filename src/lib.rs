@@ -46,6 +46,7 @@
 //! separate optimal solver (`optimal`, single-phase IDA* to the solved state).
 pub mod autotier;
 pub mod bench;
+pub mod bfs5;
 pub mod cbe;
 pub mod cbsym;
 pub mod combined;

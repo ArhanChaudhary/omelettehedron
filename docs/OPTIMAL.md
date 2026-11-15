@@ -109,6 +109,7 @@ table is consistent (its value changes by at most one per move).
 | `ae-sym288-chiral.prun` (two-phase) | A-centres x edge A-triples x chirality, to `H_A` | 4,127,692,800 | 1.03 GB | 14 | 10.94 |
 | `opt-cbe-sym6.prun` | corners x B-centre colouring x ordered positions of one A-face's edges, 6 symmetries | 172 x 369,600 x 1,320 = 83,913,984,000 | 21.0 GB | 14 | 10.98 |
 | `opt-ea-sym288-p5.prun` | edge permutation x A-centre colouring, up to rotation and to cycling the A-triples together, 288 symmetries; packed five to a byte | 1,396 x 79,833,600 = 111,447,705,600 | 22.3 GB (27.9 GB at 2 bits) | 14 | 12.05 |
+| `opt-eafull-sym288-p5.prun` | edge permutation x A-centre colouring, up to rotation, 288 symmetries; packed five to a byte | 1,396 x 239,500,800 = 334,343,116,800 | 66.9 GB (83.6 GB at 2 bits) | 15 | 12.52 |
 
 The last two are the two-phase solver's A-centre/edge tables (its small and medium tiers'
 files, shared, read through its public index `tables::AeSym`). They hold the distance to
@@ -128,6 +129,7 @@ Tiers (`--tier`):
 | `medium` | corners x edges, corners x B-centres, corners x A-centres, A-centres/edges (with chirality) on both sides | 3.4 GB |
 | `large` | A-centres/edges (with chirality) on both sides, and corners x B-centres x edge triple to solved for the 4 A-triples and the 4 B-triples (no corner x centre lookups: a triple lookup is never below the corner x centre value of its orbit; no corners x edges: it costs more than it prunes) | 22.0 GB |
 | `huge` | edges x A-centres to solved on both sides (it projects onto the A-centre/edge table, which is left out), then corners x B-centres and corners x A-centres; packed five to a byte | 22.3 GB |
+| `giant` | the same with the whole edge permutation (not up to cycling the A-triples; it projects onto the huge tier's table) | 66.9 GB |
 
 (The corner x edge table subsumes the edge table: every corner x edge path is an edge path.)
 
@@ -777,6 +779,96 @@ on one thread (17-move set) and 0.23x on 48 (19-move set). Generating it (`gen o
 huge`): 6 min 53 s at `nice 10` on 48 threads (the 2-bit search 315 s, then packing and writing
 22.3 GB), peak memory 27.4 GB (the 2-bit table).
 
+## Optimisation round 5: the whole edge permutation (the `giant` tier, `optimal/ea-full`)
+
+Round 4 predicted that the edge x A-centre table without the quotient by `C` (the whole edge
+permutation, 3.34e11 entries) would cut the huge tier's nodes to about 0.31x (Korf's formula on
+the whole projection's distances of 1e6 random positions, found without the table). Its 2-bit
+form (83.6 GB) does not fit in this machine's memory, so it is made straight into the packed
+form.
+
+**Breadth-first search into a packed table (`bfs5.rs`).** A packed entry holds a distance mod
+3, with no fourth value for "not visited", so the unvisited entries share a value with a
+class of visited ones, chosen per level so that the steps can tell them apart:
+
+* forward levels (small frontiers): the unvisited entries hold `(L + 1) mod 3`, shared with the
+  levels `L - 2`, `L - 5`, ...; those are listed (in files beside the table) and moved to the
+  frontier's value first, so a neighbour of the frontier holding `(L + 1) mod 3` is unvisited
+  and is set; then the unvisited entries move on (a pass over the table) and the moved levels
+  go back;
+* backward levels: the unvisited entries hold `L mod 3`, shared with `L - 3`, `L - 6`, ...; every
+  entry holding it is checked for a neighbour at `L - 1`. An unvisited entry has one exactly if
+  it is at level `L`, a visited one always has one (a neighbour a level lower), so neither
+  changes; the misses move on, and the level's size is the hits less the shared levels' sizes;
+* listed levels: the misses of a backward level are listed, and only they are checked next.
+
+Tests: the packed search equals the 2-bit search entry for entry on synthetic graphs with
+equivalent indices (up to 4e6 entries, every kind of step, lists in memory and in files) and
+on the corner x centre and edge tables; it remakes the huge tier's table with the same
+histogram and checksum as the 2-bit search plus packing (`--ignored`; 284 s against 246 s).
+
+**The table** (`opt-eafull-sym288-p5.prun`, 66.9 GB): generated in 13 min 53 s on 48 threads
+(the search 804 s: levels 1-12 forward, 12 taking 204 s; 13 backward, 482 s; 14 and 15 listed,
+47 s), peak memory 67.1 GB, up to 48 GB of lists beside it (removed when done). Depths 0..15:
+1, 9, 36, 138, 1,072, 11,472, 125,821, 1,369,696, 14,850,724, 160,482,714, 1,712,577,206,
+17,229,723,946, 124,069,059,872, 186,991,529,581, 4,163,384,427, 85; mean 12.52 (the round 4
+sample: 12.52 per side). It projects onto the huge tier's table, so the `giant` tier reads it
+in its place (the same lookups). The `--ignored` test checks the brute force's optimal
+lengths, admissibility and consistency, and the values of 1e5 random positions against the
+distances found by search bounded by the huge tier's table (round 4's estimate).
+
+Predicted (round 4): 0.306x the huge tier's nodes. Measured against the huge tier (the same
+binary, tables on the same disk, quiet machine, bench lock; two rounds; the same optimal lengths
+everywhere):
+
+| set | threads | huge | giant | time | nodes (completed iterations) |
+|---|---|---|---|---|---|
+| 10 x 17 moves, seed 1717 | 1 | 0.752, 0.750 s, 1.79e7 nodes | 0.391, 0.304 s, 6.74e6 | 0.52x, 0.41x | 0.376x (0.333x) |
+| 10 x 19 moves, seed 1919 | 48 | 2.181, 2.168 s, 2.17e9 | 0.977, 0.868 s, 7.16e8 | 0.45x, 0.40x | 0.330x (0.302x) |
+| random, seed 1 (21) | 48 | 18.40, 18.30 s, 1.95e10 | 6.11, 6.31 s, 5.50e9 | 0.33x, 0.34x | 0.282x (0.305x) |
+| random, seed 2 (21) | 48 | 27.81, 27.69 s, 2.91e10 | 10.51, 11.93 s, 1.06e10 | 0.38x, 0.43x | 0.365x (0.315x) |
+| random, seed 3 (20) | 48 | 3.20, 3.19 s, 3.33e9 | 4.32, 4.55 s, 3.93e9 | 1.35x, 1.43x | 1.18x (0.302x) |
+
+The completed iterations (the full trees) shrink as predicted, 0.30x-0.33x; to the first
+solution the last iteration's task order adds noise both ways (seed 3: 3.57e9 nodes in its last
+iteration against 2.13e9). A node costs more: 0.72-0.93x the huge tier's nodes/s on the sets
+(1T 1.72e7 and 2.22e7 against 2.38e7; 48T 7.33e8 and 8.26e8 against 9.94e8), so the time falls
+to 0.40-0.52x.
+
+Hard positions (48 threads; `-l 21`: every iteration up to 21 moves; two rounds, the same
+nodes; edge_hard and the 6-flip are proven within it):
+
+| position | huge: depth-21 nodes, time | giant | nodes | time |
+|---|---|---|---|---|
+| tri_adj+edge_opp | 3.21e9, 3.39 s | 8.93e8, 1.19 s | 0.28x | 0.35x |
+| tri_adj+edge_adj | 1.11e10, 11.6 s | 2.54e9, 3.18 s | 0.23x | 0.27x |
+| tri_adj-[Uf_Fu;Db_Bd] | 2.53e10, 26.0 s | 9.58e9, 11.5 s | 0.38x | 0.44x |
+| tri_adj+[UB_FD,NL_MR] | 8.88e9, 9.18 s | 2.45e9, 3.10 s | 0.28x | 0.34x |
+| edge_hard, proven 21 | 2.16e10 (all), 20.4 s | 7.53e9, 8.6 s | 0.35x | 0.42x |
+| corner 6-flip, proven 20 | 3.77e10 (all), 32.7 s | 5.83e10, 60.1 s | 1.55x | 1.84x |
+
+The corner 6-flip has its edges and centres solved, where neither table sees anything (the
+corner x centre lookups bound it); its iterations to 19 take 0.84x the nodes, and the last one
+meets the solution later.
+
+The four 23-move positions proven from scratch (48 threads, every iteration to the first
+solution; the time of the search, then the wall time with loading the tables):
+
+| position | huge: search, wall | giant: search, wall | time | nodes of the complete depth-22 iteration |
+|---|---|---|---|---|
+| tri_adj+edge_opp | 53.5 s, 53.9 s | 16.3 s, 43.8 s | 0.30x | 4.20e10 -> 1.17e10 (0.28x) |
+| tri_adj+edge_adj | 133.7 s, 134.1 s | 51.6 s, 80.5 s | 0.39x | 1.27e11 -> 3.23e10 (0.25x) |
+| tri_adj-[Uf_Fu;Db_Bd] | 421.1 s, 421.5 s | 211.9 s, 240.7 s | 0.50x | 3.08e11 -> 1.11e11 (0.36x) |
+| tri_adj+[UB_FD,NL_MR] | 123.9 s, 124.4 s | 54.7 s, 83.9 s | 0.44x | 1.18e11 -> 3.32e10 (0.28x) |
+
+All four: 5.6 minutes of search with the giant tier, 12.2 with the huge tier, against 44.5 with
+the large tier and 11.1 hours for the two-phase solver. (The huge tier's wall times have its
+table in the page cache; the giant tier's include about 28 s of reading 67 GB.)
+
+Peak memory: 67.0 GB with the giant tier (65,476,108 KiB), 22.5 GB with the huge tier. Loading
+the giant table from a 2.2 GB/s disk takes about 20 s on 48 threads and 75-100 s on one (the file
+does not stay in the page cache next to the loaded table on a 94 GB machine).
+
 ## Open
 
 * Printing improvements (`-p`) has no use here (the first solution is optimal); resuming a
@@ -808,15 +900,16 @@ faster), next-stage prefetch and the sibling pipeline, SIMD piece positions, the
 A-centre/edge class entries prefetched with the children (round 3: about 0.74x / 0.70x time,
 medium / large, 1 thread), the edge x A-centre table up to rotation and `C` (the `huge` tier,
 round 4: 27.9 GB, 0.24x / 0.27x the nodes of the large tier's completed iterations, 0.15x /
-0.23x its time on the 17- / 19-move sets). Measured and not kept: the two-phase CBE table as a
+0.23x its time on the 17- / 19-move sets), the same table with the whole edge permutation, made
+straight into its packed form (the `giant` tier, round 5: 66.9 GB, 0.30x the huge tier's nodes,
+0.40-0.52x its time on the sets; the four 23-move positions in 16 s to 3.5 min). Measured and not kept: the two-phase CBE table as a
 saturating second stage, an A-centre/edge class prefetch pass before every stage, per-node
 lookup orders, corners x edges in the huge tier.
 
 Next, by expected value:
 
-0. **More memory for the huge tier**: without `C` the edge x A-centre table needs 83.6 GB
-   (66.9 GB packed), for a predicted 0.31x the nodes of the huge tier (0.094x the large
-   tier's).
+0. **The giant tier's own table-read cost**: its nodes/s are 0.72-0.96x the huge tier's (a 67 GB
+   table misses the cache and TLB more), which takes back part of the 0.30x node count.
 
 1. **The table-read stall** (still the largest single cost, about 26-35% of the samples, all in
    the first stage): neither lanes (more work in flight) nor 1 GiB pages (no TLB misses)

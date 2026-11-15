@@ -104,6 +104,27 @@ optimal solver proves these positions and the two sets faster than the two-phase
 optimal mode (17-move set 0.75 s against 2.24 s on one thread, 19-move set 2.2 s against 7.0 s on
 48).
 
+## The optimal solver's giant tier (2026-11-15, `optimal/ea-full`; not in the reference run)
+
+The `giant` tier (67.0 GB: the huge tier's edge x A-centre table with the whole edge
+permutation, made straight into its packed form;
+[OPTIMAL.md](OPTIMAL.md#optimisation-round-5-the-whole-edge-permutation-the-giant-tier-optimalea-full))
+against the huge tier, the same binary, quiet machine, bench lock, two rounds:
+
+| item | threads | huge | giant | giant / huge |
+|---|---|---|---|---|
+| 10 x 17 moves (seed 1717) | 1 | 0.752, 0.750 s, 1.79e7 nodes | 0.391, 0.304 s, 6.74e6 nodes | 0.52x, 0.41x time |
+| 10 x 19 moves (seed 1919) | 48 | 2.18, 2.17 s, 2.17e9 nodes | 0.98, 0.87 s, 7.16e8 nodes | 0.45x, 0.40x |
+| random positions, seeds 1 / 2 / 3 | 48 | 18.4 / 27.8 / 3.2 s | 6.2 / 11.2 / 4.4 s | 0.34x / 0.40x / 1.39x |
+| the four 23-move positions, proven | 48 | 53.5 / 133.7 / 421.1 / 123.9 s | 16.3 / 51.6 / 211.9 / 54.7 s | 0.30x / 0.39x / 0.50x / 0.44x |
+| edge_hard, proven 21 | 48 | 20.4 s | 8.6 s | 0.42x |
+| corner 6-flip, proven 20 | 48 | 32.7 s | 60.1 s | 1.84x |
+
+(The 23-move positions in the order of `bench/hard.tsv`: tri_adj+edge_opp, tri_adj+edge_adj,
+tri_adj-[Uf_Fu;Db_Bd], tri_adj+[UB_FD,NL_MR]; the large tier took 266.5 / 803.0 / 1,155.1 / 447.8
+s and the two-phase solver 2.5-3.3 hours each.) Generating the table: 13 min 53 s, 67.1 GB of
+memory, up to 48 GB of scratch space.
+
 ## Progress and both solvers at once
 
 Measured on 2026-11-11 (`feat/progress-combined`, 48-core EPYC, large tiers, under the bench
