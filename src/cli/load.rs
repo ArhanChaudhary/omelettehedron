@@ -161,6 +161,10 @@ macro_rules! with_bounds {
                 let $b = t.huge().ok_or_else(missing)?;
                 $body
             }
+            OptTier::Giant => {
+                let $b = t.giant().ok_or_else(missing)?;
+                $body
+            }
         }
     }};
 }

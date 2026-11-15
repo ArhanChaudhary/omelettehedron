@@ -27,8 +27,12 @@
 //!
 //! Two lookups per position: the A-centres with the edges, and through `SWAP_AB` the B-centres
 //! with the edges (cycled by B-triple).
+//!
+//! [`EaIndex<true>`](EaFullIndex) is the same projection without the quotient by `C` (the giant
+//! tier): entry `class * N_EPERM + eperm_rank`, 3.34e11 entries, 66.9 GB packed five to a byte,
+//! generated straight into that form by [`crate::bfs5`].
 
-use super::coords::{eperm_unrank, opt_moves, OptMoves, Pos, N_EPERM};
+use super::coords::{eperm_rank, eperm_unrank, opt_moves, OptMoves, Pos, N_EPERM};
 use super::sym::sym48;
 use crate::coord::{triple_pieces, N_MSET};
 use crate::fast::{fast, masks, mset_labels, shuffle, FastTables};
@@ -61,8 +65,9 @@ fn rest_rank(e: &[u8; 16]) -> u32 {
     r
 }
 
-/// Index of the edge x A-centre table.
-pub struct EaIndex {
+/// Index of the edge x A-centre table: up to `C` (`FULL == false`, the huge tier's table) or
+/// the whole edge permutation (`FULL == true`, [`EaFullIndex`]).
+pub struct EaIndex<const FULL: bool = false> {
     /// A-colouring rank -> class id (low 16 bits) | g << 16 | t << 24
     sym: Vec<u32>,
     /// class id -> representative A-colouring rank
@@ -128,11 +133,17 @@ fn cyclic_triples() -> Option<[[u8; 3]; 4]> {
     })
 }
 
-impl EaIndex {
+/// The index of the whole projection (no quotient by `C`).
+pub type EaFullIndex = EaIndex<true>;
+
+impl<const FULL: bool> EaIndex<FULL> {
+    /// Entries per A-colouring class.
+    const PER_CLASS: usize = if FULL { N_EPERM } else { N_EQ };
+
     /// # Errors
     ///
     /// If no cyclic order of the triples is kept by the symmetries (not for this geometry).
-    pub fn new() -> std::io::Result<EaIndex> {
+    pub fn new() -> std::io::Result<EaIndex<FULL>> {
         let s = syms();
         let order = cyclic_triples()
             .ok_or_else(|| std::io::Error::other("no symmetric cyclic order of the A-triples"))?;
@@ -211,16 +222,19 @@ impl EaIndex {
         })
     }
 
-    /// Entries: A-colouring classes x edge permutations up to `C`.
+    /// Entries: A-colouring classes x edge permutations (up to `C` unless `FULL`).
     /// (More than 2^32: 64-bit targets only; saturates elsewhere.)
     pub fn size(&self) -> usize {
-        self.rep.len().saturating_mul(N_EQ)
+        self.rep.len().saturating_mul(Self::PER_CLASS)
     }
 
-    /// `qrank` of edge permutation `ep` after pair (g, t).
+    /// `qrank` of edge permutation `ep` after pair (g, t) (the plain rank if `FULL`).
     #[inline(always)]
     fn qrank(&self, ep: &[u8; 16], g: usize, t: usize) -> usize {
         let e = shuffle(&shuffle(&self.relab[g & 31], ep), &self.gath[t & 31]);
+        if FULL {
+            return eperm_rank(&e) as usize;
+        }
         let j = usize::from(self.to_first[usize::from(e[0] & 15)] & 3);
         let e = shuffle(&self.cpow[j], &e);
         usize::from(self.first_tri[usize::from(e[0] & 15)]) * N_REST + rest_rank(&e) as usize
@@ -237,7 +251,7 @@ impl EaIndex {
     fn index_ranked(&self, r: usize, ep: &[u8; 16]) -> usize {
         let v = self.sym.get(r).copied().unwrap_or(0);
         let (g, t) = ((v >> 16 & 0xff) as usize, (v >> 24) as usize);
-        (v & 0xffff) as usize * N_EQ + self.qrank(ep, g, t)
+        (v & 0xffff) as usize * Self::PER_CLASS + self.qrank(ep, g, t)
     }
 
     /// The A-centres and edges of lookup `k` of `p`: 0 the position's, 1 those of its
@@ -288,18 +302,22 @@ impl EaIndex {
 
     /// A projection (A-colouring, edge permutation) of index `i`.
     pub fn decode(&self, i: usize) -> ([u8; 16], [u8; 16]) {
-        let cl = i / N_EQ;
-        let q = i % N_EQ;
+        let cl = i / Self::PER_CLASS;
+        let q = i % Self::PER_CLASS;
         let r = self.rep.get(cl).copied().unwrap_or(0) as usize;
-        let first = self.firsts[(q / N_REST) & 3] as usize;
-        let ep = eperm_unrank((first * N_REST + q % N_REST) as u32);
+        let ep = if FULL {
+            eperm_unrank(q as u32)
+        } else {
+            let first = self.firsts[(q / N_REST) & 3] as usize;
+            eperm_unrank((first * N_REST + q % N_REST) as u32)
+        };
         (mset_labels()[r % N_MSET], ep)
     }
 
     /// The other indices of the projection of index `i` (its colouring representative has a
     /// non-trivial stabiliser).
     pub fn equivalents(&self, i: usize, out: &mut Vec<usize>) {
-        let cl = i / N_EQ;
+        let cl = i / Self::PER_CLASS;
         let Some(stab) = self.stab.get(cl) else {
             return;
         };
@@ -308,7 +326,7 @@ impl EaIndex {
         }
         let (_, ep) = self.decode(i);
         for &(g, t) in stab {
-            out.push(cl * N_EQ + self.qrank(&ep, g.into(), t.into()));
+            out.push(cl * Self::PER_CLASS + self.qrank(&ep, g.into(), t.into()));
         }
     }
 
@@ -324,12 +342,21 @@ impl EaIndex {
 }
 
 /// Moves between entries of the table.
-struct EaGraph<'a> {
-    ix: &'a EaIndex,
+pub struct EaGraph<'a, const FULL: bool> {
+    ix: &'a EaIndex<FULL>,
     mt: &'static OptMoves,
 }
 
-impl Graph for EaGraph<'_> {
+impl<'a, const FULL: bool> EaGraph<'a, FULL> {
+    pub fn new(ix: &'a EaIndex<FULL>) -> EaGraph<'a, FULL> {
+        EaGraph {
+            ix,
+            mt: opt_moves(),
+        }
+    }
+}
+
+impl<const FULL: bool> Graph for EaGraph<'_, FULL> {
     const MOVES: usize = crate::cube::N_MOVES;
     type Node = ([u8; 16], [u8; 16]);
     type Cache = ();
@@ -348,10 +375,7 @@ impl Graph for EaGraph<'_> {
 
 /// The table; `None` if `stop` was set before it was complete.
 pub fn build_ea(ix: &EaIndex, verbose: bool, stop: &AtomicBool) -> Option<Table2> {
-    let g = EaGraph {
-        ix,
-        mt: opt_moves(),
-    };
+    let g = EaGraph::new(ix);
     bfs_until(&g, ix.size(), &ix.targets(), "opt-ea", verbose, stop)
 }
 
@@ -372,7 +396,7 @@ mod tests {
     /// conjugate.
     #[test]
     fn index_is_symmetric() {
-        let ix = EaIndex::new().unwrap();
+        let ix = EaIndex::<false>::new().unwrap();
         eprintln!("A-colouring classes: {}", ix.rep.len());
         let s = syms();
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(11);
@@ -405,6 +429,63 @@ mod tests {
         let _ = rng.gen::<u8>();
     }
 
+    /// The whole projection's index is invariant (up to equivalent indices) under the 288 pairs
+    /// but tells the `C`-images of a position apart, decodes to itself, and projects onto the
+    /// quotient's: the quotient index of a decoded entry is that of the position (up to
+    /// equivalents), and the same for its three `C`-images.
+    #[test]
+    fn full_index_is_symmetric_and_projects_onto_the_quotient() {
+        let ix = EaFullIndex::new().unwrap();
+        let q = EaIndex::<false>::new().unwrap();
+        assert_eq!(ix.size(), q.size() * 3);
+        let s = syms();
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(13);
+        let mut distinct = 0;
+        for _ in 0..200 {
+            let c = Cube::random(&mut rng);
+            let (xa, ep) = ea_of(&c);
+            let i = ix.index_raw(&xa, &ep);
+            let mut eq = vec![i];
+            ix.equivalents(i, &mut eq);
+            for &(g, t) in &s.pairs {
+                let (g, t) = (usize::from(g), usize::from(t));
+                let mut l = [0u8; 12];
+                l.copy_from_slice(&xa[..12]);
+                let la = s.apply_a(g, t, &l);
+                let mut xa2 = [0u8; 16];
+                xa2[..12].copy_from_slice(&la);
+                let ep2 = shuffle(&shuffle(&ix.relab[g], &ep), &ix.gath[t]);
+                assert!(eq.contains(&ix.index_raw(&xa2, &ep2)), "pair ({g}, {t})");
+            }
+            let (dx, de) = ix.decode(i);
+            assert_eq!(ix.index_raw(&dx, &de), i);
+            let qi = q.index_raw(&xa, &ep);
+            let mut qeq = vec![qi];
+            q.equivalents(qi, &mut qeq);
+            assert!(qeq.contains(&q.index_raw(&dx, &de)));
+            let images: Vec<usize> = (0..3)
+                .map(|j| {
+                    let ep2 = shuffle(&ix.cpow[j], &ep);
+                    assert!(qeq.contains(&q.index_raw(&xa, &ep2)), "C^{j}");
+                    ix.index_raw(&xa, &ep2)
+                })
+                .collect();
+            let mut eq1 = vec![images[1]];
+            ix.equivalents(images[1], &mut eq1);
+            assert_eq!(images[0], i);
+            distinct += usize::from(
+                !eq.contains(&images[1]) && !eq.contains(&images[2]) && !eq1.contains(&images[2]),
+            );
+            let p = Pos::of(&c);
+            let w = Pos::of(&c.conjugate(&SWAP_AB).unwrap());
+            assert_eq!(ix.index(1, &p), ix.index(0, &w));
+            assert_eq!(ix.index_with(1, &p, ix.pre(1, &p)), ix.index(1, &p));
+        }
+        // (random positions' three images are three entries)
+        assert_eq!(distinct, 200);
+        let _ = rng.gen::<u8>();
+    }
+
     /// Brute force: the distances of the reduced graph (a sparse breadth-first search over the
     /// table's indices with the generator's own steps and equivalents) equal those of the
     /// projections of every position within 5 moves, the projection taken up to the 288 pairs
@@ -413,13 +494,21 @@ mod tests {
     /// projection of a position in the ball, the ball holds a witness.)
     #[test]
     fn reduced_graph_matches_brute_force() {
+        reduced_graph::<false>();
+    }
+
+    /// The same for the whole projection (no quotient by `C`; keyed by the least of the 288
+    /// images).
+    #[test]
+    fn full_reduced_graph_matches_brute_force() {
+        reduced_graph::<true>();
+    }
+
+    fn reduced_graph<const FULL: bool>() {
         use std::collections::HashMap;
         const R: u8 = 5;
-        let ix = EaIndex::new().unwrap();
-        let g = EaGraph {
-            ix: &ix,
-            mt: opt_moves(),
-        };
+        let ix = EaIndex::<FULL>::new().unwrap();
+        let g = EaGraph::new(&ix);
         let mt = opt_moves();
         let s = syms();
         let key = |p: &Pos| -> [u8; 24] {
@@ -433,7 +522,7 @@ mod tests {
                 for q in 0..12 {
                     e[usize::from(s.e_pos[t][q])] = s.e_piece[g][usize::from(p.ep[q])];
                 }
-                for j in 0..3 {
+                for j in 0..if FULL { 1 } else { 3 } {
                     let mut k = [0u8; 24];
                     k[..12].copy_from_slice(&a);
                     for q in 0..12 {
@@ -519,7 +608,7 @@ mod tests {
     /// neighbours of any equivalent position (the graph is well defined on classes).
     #[test]
     fn moves_respect_classes() {
-        let ix = EaIndex::new().unwrap();
+        let ix = EaIndex::<false>::new().unwrap();
         let mt = opt_moves();
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(12);
         for _ in 0..200 {

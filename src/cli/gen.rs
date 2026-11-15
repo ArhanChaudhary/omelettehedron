@@ -131,6 +131,9 @@ fn optimal(a: &OptimalArgs) -> Result<(), Error> {
         if let Some((_, ea, _)) = &t.ea {
             eprintln!("edges x A-centres depth histogram {:?}", ea.hist);
         }
+        if let Some((_, ea, _)) = &t.eafull {
+            eprintln!("edges (whole) x A-centres depth histogram {:?}", ea.hist);
+        }
         if let Some(ae) = &t.ae {
             eprintln!(
                 "A-centre/edge (to H_A, two-phase table) depth histogram {:?}",

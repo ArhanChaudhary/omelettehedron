@@ -418,8 +418,8 @@ fn medium_tier_matches_brute_force() {
     }
 }
 
-/// The large and huge tiers exist in the face metric only: with slices they are refused before
-/// any table is read or generated.
+/// The large, huge and giant tiers exist in the face metric only: with slices they are
+/// refused before any table is read or generated.
 #[test]
 fn large_tier_refuses_slices() {
     let slice = MoveSet {
@@ -437,6 +437,10 @@ fn large_tier_refuses_slices() {
         .unwrap();
     assert!(e.to_string().contains("huge tier"), "{e}");
     assert!(!dir.join("opt-ea-sym288-slice.prun").exists());
+    let e = OptTables::load(&dir, OptTier::Giant, slice, false)
+        .err()
+        .unwrap();
+    assert!(e.to_string().contains("giant tier"), "{e}");
 }
 
 /// The large tier (the medium tier and the 21 GB corner x B-centre x edge-triple table: loaded
@@ -570,12 +574,135 @@ fn huge_tier_matches_brute_force() {
         for m in 0..N_MOVES {
             let q = mt.apply(&p, m);
             let hq = exact(&b, &q).unwrap();
-            for k in 0..HugeBounds::K {
+            for k in 0..HugeBounds::<false>::K {
                 assert!(h[k].abs_diff(hq[k]) <= 1);
                 assert_eq!(decode(h[k], b.table(k).get(b.index(k, &q))), hq[k]);
             }
         }
     }
+}
+
+/// The packed search ([`omelettehedron::bfs5`], which makes the giant tier's table) remakes the
+/// huge tier's table (the same family, up to `C`; made by the 2-bit search and packed): the same
+/// histogram and checksum as `opt-ea-sym288-p5.prun` in `$FTO_TABLES` (only its header is read).
+#[test]
+#[ignore = "makes a 22.3 GB table; needs the huge tier's table file"]
+fn packed_search_remakes_the_huge_table() {
+    use omelettehedron::bfs5::{bfs5, Bfs5Config};
+    use omelettehedron::optimal::ea::{EaGraph, EaIndex};
+    use std::io::Read;
+    let dir = omelettehedron::tables::table_dir(None);
+    let mut f = std::fs::File::open(dir.join("opt-ea-sym288-p5.prun")).unwrap();
+    let mut head = vec![0u8; 24];
+    f.read_exact(&mut head).unwrap();
+    assert_eq!(&head[..8], b"FTOPRUN5");
+    let word = |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap());
+    let nh = word(&head[16..24]) as usize;
+    let mut rest = vec![0u8; 8 * nh + 8];
+    f.read_exact(&mut rest).unwrap();
+    let hist: Vec<u64> = rest[..8 * nh].chunks(8).map(word).collect();
+    let sum = word(&rest[8 * nh..]);
+    let ix = EaIndex::<false>::new().unwrap();
+    assert_eq!(word(&head[8..16]) as usize, ix.size());
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let scratch = std::env::temp_dir();
+    let cfg = Bfs5Config {
+        scratch: Some(scratch.as_path()),
+        ..Bfs5Config::new("opt-ea-check", true, &stop)
+    };
+    let t = bfs5(&EaGraph::new(&ix), ix.size(), &ix.targets(), &cfg)
+        .unwrap()
+        .unwrap();
+    assert_eq!(t.hist, hist);
+    assert_eq!(omelettehedron::prune::checksum(&t.data), sum);
+}
+
+/// The giant tier (the 66.9 GB packed table of the whole edge permutation x A-centres and the
+/// corner x centre table: loaded from `$FTO_TABLES`, generated if missing): the same optimal
+/// lengths as the brute force, bounds never above the brute-force distance (admissible),
+/// consistent tables, the medium tier's corner x centre values, edge x A-centre lookups never
+/// below the A-centre/edge values; and, given `$FTO_FULLEA` (records of
+/// `examples/fullea.rs` on `archive/table-design`: the whole projection's distances on random
+/// positions, found by search bounded by the huge tier's quotient table), the same values.
+#[test]
+#[ignore = "needs the giant and medium tiers' tables (70.3 GB; `gen optimal --tier giant`)"]
+fn giant_tier_matches_brute_force() {
+    let dir = omelettehedron::tables::table_dir(None);
+    let t = OptTables::load(&dir, OptTier::Giant, MoveSet::FACE, false).unwrap();
+    let b = t.giant().unwrap();
+    let tm = OptTables::load(&dir, OptTier::Medium, MoveSet::FACE, false).unwrap();
+    let medium = tm.medium().unwrap();
+    let mt = opt_moves();
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(110);
+    assert_eq!(exact(&b, &Pos::solved()), Some([0; MAX_K]));
+    for len in [0usize, 2, 4, 6, 8, 9, 10, 11, 12] {
+        for _ in 0..4 {
+            let scr = random_scramble(&mut rng, len);
+            let (c, fr) = scramble_to_cube(&scr);
+            let Some(truth) = mitm().distance(&c) else {
+                continue;
+            };
+            let h = exact(&b, &Pos::of(&c)).unwrap();
+            assert!(h.iter().all(|&x| usize::from(x) <= truth));
+            let o = pool(8).install(|| solve(&b, c, fr, &Limits::default(), false));
+            assert_eq!(o.length, Some(truth), "scramble {}", format_moves(&scr));
+            check_solution(&scr, &o.solutions[0]);
+        }
+    }
+    let mut tight = 0;
+    for _ in 0..300 {
+        let n = rng.gen_range(1..=10);
+        let c = Cube::solved().apply_seq(
+            &(0..n)
+                .map(|_| rng.gen_range(0..N_MOVES))
+                .collect::<Vec<_>>(),
+        );
+        let Some(d) = mitm().distance(&c) else {
+            continue;
+        };
+        let h = exact(&b, &Pos::of(&c)).unwrap();
+        assert!(
+            h.iter().all(|&x| usize::from(x) <= d),
+            "bound above distance {d}"
+        );
+        tight += usize::from(h[..2].iter().any(|&x| usize::from(x) == d));
+    }
+    assert!(tight > 0);
+    for _ in 0..100 {
+        let p = Pos::of(&Cube::random(&mut rng));
+        let h = exact(&b, &p).unwrap();
+        let hm = exact(&medium, &p).unwrap();
+        assert_eq!([h[2], h[3]], [hm[1], hm[2]]);
+        assert!(h[0] >= hm[3] && h[1] >= hm[4]);
+        for m in 0..N_MOVES {
+            let q = mt.apply(&p, m);
+            let hq = exact(&b, &q).unwrap();
+            for k in 0..GiantBounds::K {
+                assert!(h[k].abs_diff(hq[k]) <= 1);
+                assert_eq!(decode(h[k], b.table(k).get(b.index(k, &q))), hq[k]);
+            }
+        }
+    }
+    // the independent distances of `examples/fullea.rs` (seed 7, chunks of 4096 positions)
+    let Some(path) = std::env::var_os("FTO_FULLEA") else {
+        return;
+    };
+    let rec = std::fs::read(path).unwrap();
+    let n = (rec.len() / 4).min(100_000);
+    let mut checked = 0;
+    for ch in 0..n.div_ceil(4096) {
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(
+            7u64.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ ch as u64,
+        );
+        for k in 0..4096.min(n - ch * 4096) {
+            let p = Pos::of(&Cube::random(&mut rng));
+            let h = exact(&b, &p).unwrap();
+            let r = &rec[4 * (ch * 4096 + k)..];
+            assert_eq!([h[0], h[1]], [r[0], r[1]], "position {}", ch * 4096 + k);
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, n);
 }
 
 /// Symmetric start: on symmetric positions the filtered search (default) finds the same

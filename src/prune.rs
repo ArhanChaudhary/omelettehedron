@@ -54,7 +54,7 @@ pub struct Table5 {
 
 /// The base-3 digits of every byte: `TRITS[b][j]` is digit `j` of `b` (rows of 8 so that the
 /// row is a shift; bytes from 243 up never occur).
-static TRITS: [[u8; 8]; 256] = {
+pub(crate) static TRITS: [[u8; 8]; 256] = {
     let mut t = [[0u8; 8]; 256];
     let mut b = 0;
     while b < 256 {
@@ -71,7 +71,7 @@ static TRITS: [[u8; 8]; 256] = {
 };
 
 /// Entries per word of a [`Table5`].
-const PER5: usize = 40;
+pub(crate) const PER5: usize = 40;
 
 /// Word `w` of the packed form of the 2-bit words `src` (`n` entries).
 fn pack_word(src: &[u64], n: usize, w: usize) -> u64 {
@@ -491,7 +491,7 @@ pub trait Graph: Sync {
 /// medium depth 11 (ratio 3.4) forward 4.7 s vs backward 5.4 s, CBE depth 8 (ratio 6.6)
 /// backward 15.3 s vs forward 20.6 s; small-tier AE depth 10 (2.4) and CB depth 6 (3.0)
 /// differ by at most 0.1 s either way.
-const FORWARD_RATIO: u64 = 4;
+pub(crate) const FORWARD_RATIO: u64 = 4;
 
 /// Indices per work item (a multiple of 32, so that work items own whole words).
 const CH: usize = 1 << 14;
@@ -524,7 +524,7 @@ fn set_if_empty(tab: &[AtomicU64], i: usize, v: u8) -> bool {
 
 /// Hint that `p` will be written soon.
 #[inline(always)]
-fn prefetch_write<T>(p: &T) {
+pub(crate) fn prefetch_write<T>(p: &T) {
     #[cfg(target_arch = "x86_64")]
     // SAFETY: prefetch is a hint and never faults
     unsafe {
