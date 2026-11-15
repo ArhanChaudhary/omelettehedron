@@ -304,6 +304,49 @@ enum Cmd {
         #[arg(long)]
         input: PathBuf,
     },
+    /// Radius-N phase-2 distances (every position along the solution within relaxed
+    /// phase-1 distance N) of the positions of a file (pattern in column 5; a known lower bound,
+    /// e.g. the distance with every move allowed, in column 7), by IDA* with the optimal
+    /// solver's large tier as lower bounds
+    RadiusSolve {
+        /// The positions
+        #[arg(long)]
+        input: PathBuf,
+        /// Directory of the relaxed phase-1 table
+        #[arg(long)]
+        tables: PathBuf,
+        /// Directory of the optimal solver's tables (large tier)
+        #[arg(long)]
+        opt_tables: PathBuf,
+        /// Radii (each position is solved for each, in order)
+        #[arg(long, value_delimiter = ',', default_value = "1")]
+        n: Vec<u8>,
+        /// Give up on a length after this many seconds per position and radius (report the
+        /// bound proven)
+        #[arg(long, default_value_t = 600.0)]
+        seconds: f64,
+        /// Longest solution searched (the block rule's 25 is always an upper bound)
+        #[arg(long, default_value_t = 25)]
+        max: usize,
+        /// Wait before loading the tables while less memory than this is available, GB (and
+        /// before each position while less than this minus what the tables took)
+        #[arg(long, default_value_t = 30.0)]
+        min_available_gb: f64,
+        /// Append the results here (tab-separated: class, x, p, N, lower, upper, seconds,
+        /// nodes, solution, relaxed phase-1 distance after each move)
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Check an independent list of geodesic states and their neighbours' relaxed phase-1
+    /// distances (the phase-1 verifier's `geodesic.txt`) against the relaxed table
+    VerifyGeodesic {
+        /// The list
+        #[arg(long)]
+        file: PathBuf,
+        /// Directory of the relaxed phase-1 table
+        #[arg(long)]
+        tables: PathBuf,
+    },
     /// The positions of a layer (the last by default) up to symmetry, with solutions
     Antipodes {
         /// Search directory
@@ -651,6 +694,77 @@ fn main() -> Result<()> {
         )?,
         Cmd::Paths { dir, tables } => paths(&dir, &tables)?,
         Cmd::Radius { tables, input } => radius(&tables, &input)?,
+        Cmd::VerifyGeodesic { file, tables } => {
+            use omelettehedron::chen::p2bfs::joint::{ae_depths, verify_geodesic};
+            use omelettehedron::chen::relaxed::RelaxedAe;
+            use omelettehedron::tables::AeSym;
+            // the list's positions (its legend): A-centres, then the edges' A stickers
+            const A: [[i32; 3]; 12] = [
+                [2, 2, 5],
+                [2, 5, 2],
+                [5, 2, 2],
+                [2, -5, -2],
+                [2, -2, -5],
+                [5, -2, -2],
+                [-5, 2, -2],
+                [-2, 2, -5],
+                [-2, 5, -2],
+                [-5, -2, 2],
+                [-2, -5, 2],
+                [-2, -2, 5],
+            ];
+            const E: [[i32; 3]; 12] = [
+                [1, 4, 4],
+                [4, 1, 4],
+                [4, 4, 1],
+                [1, -4, -4],
+                [4, -4, -1],
+                [4, -1, -4],
+                [-4, 1, -4],
+                [-4, 4, -1],
+                [-1, 4, -4],
+                [-4, -4, 1],
+                [-4, -1, 4],
+                [-1, -4, 4],
+            ];
+            let ix = AeSym::new(true);
+            let relaxed = RelaxedAe::load(&tables, &ix, false).context("relaxed table")?;
+            let dep = ae_depths(&ix, &relaxed.targets, false);
+            let text =
+                std::fs::read_to_string(&file).with_context(|| file.display().to_string())?;
+            let r = verify_geodesic(&text, &ix, &dep, &relaxed.tab, &A, &E)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            println!(
+                "{} states, {} agree; {} neighbours, {} agree; {} distinct neighbours outside \
+                 the list; {} entries whose table value is not the distance mod 3",
+                r.states, r.states_ok, r.neighbours, r.neighbours_ok, r.outside, r.table_mismatch
+            );
+            for m in &r.mismatches {
+                println!("MISMATCH {m}");
+            }
+            if !r.mismatches.is_empty() || r.table_mismatch > 0 {
+                bail!("MISMATCH");
+            }
+        }
+        Cmd::RadiusSolve {
+            input,
+            tables,
+            opt_tables,
+            n,
+            seconds,
+            max,
+            min_available_gb,
+            out,
+        } => radius_solve(
+            &input,
+            &tables,
+            &opt_tables,
+            &n,
+            seconds,
+            max,
+            min_available_gb,
+            &out,
+        )?,
         Cmd::Bad {
             dir,
             tables,
@@ -1350,5 +1464,147 @@ fn radius(tables: &Path, input: &Path) -> Result<()> {
         );
     }
     println!("solutions by the largest relaxed phase-1 distance along them: {hist:?}");
+    Ok(())
+}
+
+/// Memory available (GB), from `/proc/meminfo` (`None` where there is none).
+fn available_gb() -> Option<f64> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let line = text.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    let kb: f64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb / 1e6)
+}
+
+/// `radius-solve`: radius-N distances of the positions of a file.
+#[allow(clippy::too_many_arguments)]
+fn radius_solve(
+    input: &Path,
+    tables: &Path,
+    opt_tables: &Path,
+    radii: &[u8],
+    seconds: f64,
+    max: usize,
+    min_available_gb: f64,
+    out: &Path,
+) -> Result<()> {
+    use omelettehedron::chen::p2bfs::joint::ae_depths;
+    use omelettehedron::chen::p2bfs::radius::{NearSet, Radius};
+    use omelettehedron::chen::relaxed::RelaxedAe;
+    use omelettehedron::cube::MoveSet;
+    use omelettehedron::notation::{solution_to_physical, Frame};
+    use omelettehedron::optimal::coords::{opt_moves, Pos};
+    use omelettehedron::optimal::tables::{OptTables, OptTier};
+    use omelettehedron::tables::AeSym;
+    use std::io::Write;
+    let ix = AeSym::new(true);
+    let near = {
+        let relaxed = RelaxedAe::load(tables, &ix, false).context("loading the relaxed table")?;
+        let dep = ae_depths(&ix, &relaxed.targets, false);
+        NearSet::new(&dep, radii.iter().copied().max().unwrap_or(0))
+    };
+    eprintln!(
+        "{} entries within relaxed phase-1 distance {}",
+        near.len(),
+        near.n
+    );
+    // memory: the threshold before the tables are loaded, then the same less what they took
+    let wait_for = |gb: f64| {
+        while available_gb().is_some_and(|g| g < gb) {
+            eprintln!("waiting: less than {gb:.1} GB available");
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
+    };
+    wait_for(min_available_gb);
+    let before = available_gb().unwrap_or(0.0);
+    let ot = OptTables::load(opt_tables, OptTier::Large, MoveSet::FACE, false)
+        .context("loading the optimal solver's large tier")?;
+    let taken = (before - available_gb().unwrap_or(before)).max(0.0);
+    let per_position = (min_available_gb - taken).max(4.0);
+    let b = ot.large().context("no large-tier bounds")?;
+    let text = std::fs::read_to_string(input).with_context(|| input.display().to_string())?;
+    // (position, radius) pairs already in the output: skipped, so that a stopped run resumes
+    let done: std::collections::HashSet<String> = std::fs::read_to_string(out)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.split('\t').take(4).collect::<Vec<_>>().join("\t"))
+        .collect();
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(out)
+        .with_context(|| out.display().to_string())?;
+    for &n in radii {
+        let r = Radius {
+            b: &b,
+            ix: &ix,
+            near: &near,
+            n,
+        };
+        for line in text
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        {
+            let c: Vec<&str> = line.split('\t').collect();
+            let (Some(pat), Some(known)) = (c.get(4), c.get(6)) else {
+                continue;
+            };
+            let from: usize = known.parse().unwrap_or(0);
+            let key = format!(
+                "{}\t{}\t{}\t{n}",
+                c.first().unwrap_or(&""),
+                c.get(1).unwrap_or(&""),
+                c.get(2).unwrap_or(&"")
+            );
+            if done.contains(&key) {
+                continue;
+            }
+            wait_for(per_position);
+            let parsed = omelettehedron::pattern::parse(pat).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let cube =
+                omelettehedron::pattern::position(&parsed).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let t0 = std::time::Instant::now();
+            let res = r
+                .solve(&cube, from, max, seconds)
+                .context("the position is outside the radius or a table does not walk")?;
+            let secs = t0.elapsed().as_secs_f64();
+            let (upper, sol, profile) = match &res.solution {
+                Some(path) => {
+                    // the relaxed phase-1 distance along it, and that it solves
+                    let mt = opt_moves();
+                    let mut p = Pos::of(&cube);
+                    let mut prof = vec![near.d1(&ix, &p).unwrap_or(99)];
+                    for &m in path {
+                        p = mt.apply(&p, m);
+                        prof.push(near.d1(&ix, &p).unwrap_or(99));
+                    }
+                    if p != Pos::of(&omelettehedron::cube::Cube::solved())
+                        || prof.iter().any(|&d| d > n)
+                    {
+                        bail!("a solution that does not solve or leaves the radius");
+                    }
+                    let phys = solution_to_physical(Frame::identity(), path, false);
+                    (
+                        path.len().to_string(),
+                        format_moves(&phys),
+                        prof.iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    )
+                }
+                None => ("25".to_string(), "-".to_string(), "-".to_string()),
+            };
+            let out_line = format!(
+                "{}\t{}\t{}\t{n}\t{}\t{upper}\t{secs:.1}\t{}\t{sol}\t{profile}",
+                c.first().unwrap_or(&""),
+                c.get(1).unwrap_or(&""),
+                c.get(2).unwrap_or(&""),
+                res.lower,
+                res.nodes
+            );
+            println!("{out_line}");
+            writeln!(f, "{out_line}").context("writing the results")?;
+        }
+    }
     Ok(())
 }

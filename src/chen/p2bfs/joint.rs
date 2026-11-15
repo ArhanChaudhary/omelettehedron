@@ -728,3 +728,209 @@ pub fn bad_sets(
     }
     sizes
 }
+
+/// The result of [`verify_geodesic`].
+#[derive(Default, Debug)]
+pub struct GeodesicCheck {
+    /// states listed
+    pub states: u64,
+    /// states whose distance agrees
+    pub states_ok: u64,
+    /// neighbours checked (16 per state)
+    pub neighbours: u64,
+    /// neighbours whose distance agrees
+    pub neighbours_ok: u64,
+    /// distinct neighbours not among the listed states
+    pub outside: u64,
+    /// entries whose table value is not the distance mod 3 (must be 0)
+    pub table_mismatch: u64,
+    /// disagreements, described (at most 100)
+    pub mismatches: Vec<String>,
+}
+
+/// Check an independent list of relaxed phase-1 distances (the phase-1 verifier's
+/// `geodesic.txt`): per line `level c e key | [16 neighbour levels]`, the key packing the colour
+/// at each A-centre position (2 bits x 12), the A-colour at each edge position (2 bits x 12,
+/// from bit 24) and each colour's chirality (bit 48 + colour: the parity of its pieces' order
+/// along its positions), positions and moves in the sticker model's coordinates (the A-centre
+/// positions `a_coords`, the edge positions' A stickers `e_coords`; neighbours by the moves U
+/// U' F F' BR BR' BL BL' R R' L L' B B' D D', pattern view). Each state and neighbour is made a
+/// position, indexed, and its exact distance compared (the table's mod-3 value too).
+///
+/// # Errors
+///
+/// A line or coordinate that cannot be read, or a move that takes an A sticker off the A
+/// faces.
+pub fn verify_geodesic(
+    text: &str,
+    ix: &AeSym,
+    dep: &AeDepths,
+    tab: &crate::prune::Table2,
+    a_coords: &[[i32; 3]; 12],
+    e_coords: &[[i32; 3]; 12],
+) -> Result<GeodesicCheck, String> {
+    let d = crate::cube::defs();
+    let sm = &d.sm;
+    let a_of = |v: usize| -> Option<usize> {
+        let s = sm.index_of(a_coords[v]);
+        (0..12).find(|&p| d.a_pos[p] == s)
+    };
+    let e_of = |v: usize| -> Option<usize> {
+        let s = sm.index_of(e_coords[v]);
+        (0..12).find(|&e| d.edge_slots[e][0] == s)
+    };
+    let ra: Vec<usize> = (0..12)
+        .map(a_of)
+        .collect::<Option<_>>()
+        .ok_or("an A-centre coordinate is no A-centre")?;
+    let re: Vec<usize> = (0..12)
+        .map(e_of)
+        .collect::<Option<_>>()
+        .ok_or("an edge coordinate is no edge's A sticker")?;
+    // pattern-view face turns as maps of A-centre and edge positions
+    let pm = crate::chen::space::pattern_moves();
+    let a_slot_of = |s: usize| (0..12).find(|&p| d.a_pos[p] == s);
+    let e_slot_of = |s: usize| (0..12).find(|&e| d.edge_slots[e][0] == s);
+    let order = [0usize, 3, 5, 6, 1, 2, 4, 7];
+    let mut moves: Vec<([usize; 12], [usize; 12])> = Vec::new();
+    for &f in &order {
+        for dir in 0..2 {
+            let perm = &pm[2 * f + dir];
+            let am: Option<Vec<usize>> = (0..12).map(|p| a_slot_of(perm[d.a_pos[p]])).collect();
+            let em: Option<Vec<usize>> = (0..12)
+                .map(|e| e_slot_of(perm[d.edge_slots[e][0]]))
+                .collect();
+            let (Some(am), Some(em)) = (am, em) else {
+                return Err("a move takes an A sticker off the A faces".into());
+            };
+            moves.push((
+                std::array::from_fn(|p| am[p]),
+                std::array::from_fn(|e| em[e]),
+            ));
+        }
+    }
+    let states: Vec<(u8, u64, Vec<u8>)> = text
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .map(|l| {
+            let (head, tail) = l.split_once('|').ok_or("a line without |")?;
+            let f: Vec<&str> = head.split_whitespace().collect();
+            let level: u8 = f.first().and_then(|v| v.parse().ok()).ok_or("level")?;
+            let key = f
+                .get(3)
+                .and_then(|v| u64::from_str_radix(v, 16).ok())
+                .ok_or("key")?;
+            let nb: Vec<u8> = tail
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(',')
+                .map(|v| v.trim().parse().map_err(|_| "neighbour level"))
+                .collect::<Result<_, _>>()?;
+            if nb.len() != 16 {
+                return Err("not 16 neighbours");
+            }
+            Ok((level, key, nb))
+        })
+        .collect::<Result<_, &str>>()?;
+    // the position of a key: centres, then each colour's pieces in its chirality's order
+    let cube_of = |key: u64| -> Option<Cube> {
+        let mut c = Cube::solved();
+        for v in 0..12 {
+            c.xa[ra[v]] = (key >> (2 * v) & 3) as u8;
+        }
+        for x in 0..4u64 {
+            let pos: Vec<usize> = (0..12).filter(|&v| key >> (24 + 2 * v) & 3 == x).collect();
+            if pos.len() != 3 {
+                return None;
+            }
+            let order = if key >> (48 + x) & 1 == 0 {
+                [0, 1, 2]
+            } else {
+                [0, 2, 1]
+            };
+            for (j, &v) in pos.iter().enumerate() {
+                c.ep[re[v]] = re[3 * x as usize + order[j]] as u8;
+            }
+        }
+        (crate::cube::perm_parity(&c.ep) == 0).then_some(c)
+    };
+    let listed: HashSet<(u32, u32, u8)> = states
+        .par_iter()
+        .filter_map(|(_, key, _)| {
+            cube_of(*key).map(|c| {
+                let x = Coords::of(&c);
+                (x.a, x.e, x.ebits)
+            })
+        })
+        .collect();
+    let out = Mutex::new(GeodesicCheck::default());
+    let outside: Mutex<HashSet<(u32, u32, u8)>> = Mutex::new(HashSet::new());
+    states.par_chunks(4096).for_each(|chunk| {
+        let mut r = GeodesicCheck::default();
+        let mut out_local = HashSet::new();
+        for (level, key, nb) in chunk {
+            r.states += 1;
+            let Some(c) = cube_of(*key) else {
+                r.mismatches.push(format!("key {key:x}: no valid position"));
+                continue;
+            };
+            let i = ix.index(&Coords::of(&c));
+            let got = dep.get(i);
+            r.table_mismatch += u64::from(tab.get(i) != got % 3);
+            if got == *level {
+                r.states_ok += 1;
+            } else if r.mismatches.len() < 100 {
+                r.mismatches
+                    .push(format!("key {key:x}: listed {level}, table {got}"));
+            }
+            for (k, (am, em)) in moves.iter().enumerate() {
+                let mut n = c;
+                for p in 0..12 {
+                    n.xa[am[p]] = c.xa[p];
+                    n.ep[em[p]] = c.ep[p];
+                }
+                let j = ix.index(&Coords::of(&n));
+                let g = dep.get(j);
+                r.neighbours += 1;
+                r.table_mismatch += u64::from(tab.get(j) != g % 3);
+                if g == nb[k] {
+                    r.neighbours_ok += 1;
+                } else if r.mismatches.len() < 100 {
+                    r.mismatches
+                        .push(format!("key {key:x} move {k}: listed {}, table {g}", nb[k]));
+                }
+                let x = Coords::of(&n);
+                let s = (x.a, x.e, x.ebits);
+                if !listed.contains(&s) {
+                    out_local.insert(s);
+                }
+            }
+        }
+        outside
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(out_local);
+        let mut t = out
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        t.states += r.states;
+        t.states_ok += r.states_ok;
+        t.neighbours += r.neighbours;
+        t.neighbours_ok += r.neighbours_ok;
+        t.table_mismatch += r.table_mismatch;
+        for m in r.mismatches {
+            if t.mismatches.len() < 100 {
+                t.mismatches.push(m);
+            }
+        }
+    });
+    let mut t = out
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    t.outside = outside
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .len() as u64;
+    Ok(t)
+}
