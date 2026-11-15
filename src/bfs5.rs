@@ -52,6 +52,12 @@ pub struct Bfs5Config<'a> {
     pub stop: &'a AtomicBool,
 }
 
+/// `2^log2` as a list capacity, or `usize::MAX` where that does not fit (32-bit targets, where
+/// the large tables are not built anyway; a literal `1 << 32` would not compile there).
+pub fn pow2_cap(log2: u32) -> usize {
+    1usize.checked_shl(log2).unwrap_or(usize::MAX)
+}
+
 impl<'a> Bfs5Config<'a> {
     /// Lists in memory, up to 2^32 entries; the 2-bit search's forward ratio.
     pub fn new(name: &'a str, verbose: bool, stop: &'a AtomicBool) -> Bfs5Config<'a> {
@@ -59,7 +65,7 @@ impl<'a> Bfs5Config<'a> {
             name,
             verbose,
             scratch: None,
-            list_cap: 1 << 32,
+            list_cap: pow2_cap(32),
             forward_ratio: FORWARD_RATIO,
             stop,
         }
@@ -845,7 +851,7 @@ mod tests {
                 (u64::MAX / 64, usize::MAX, false),
                 (0, usize::MAX, true),
                 (FORWARD_RATIO, 0, false),
-                (FORWARD_RATIO, 1 << 32, true),
+                (FORWARD_RATIO, pow2_cap(32), true),
                 (FORWARD_RATIO, 40, false),
             ] {
                 let cfg = Bfs5Config {

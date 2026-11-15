@@ -895,7 +895,7 @@ fn build_eafull_guarded(
     let cfg = crate::bfs5::Bfs5Config {
         scratch,
         // (in memory at most 2^28 entries per list, 2 GB; in files at most 2^33, 64 GB)
-        list_cap: if scratch.is_some() { 1 << 33 } else { 1 << 28 },
+        list_cap: if scratch.is_some() { crate::bfs5::pow2_cap(33) } else { 1 << 28 },
         ..crate::bfs5::Bfs5Config::new("opt-eafull", verbose, guard.flag())
     };
     crate::bfs5::bfs5(&EaGraph::new(ix), ix.size(), &ix.targets(), &cfg)?
