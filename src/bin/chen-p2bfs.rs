@@ -299,15 +299,25 @@ enum Cmd {
         /// Search directory
         #[arg(long)]
         dir: PathBuf,
-        /// Phase-2 table directory
+        /// Phase-2 table directory (to solve)
         #[arg(long)]
-        tables: PathBuf,
+        tables: Option<PathBuf>,
         /// Layer (default: the last)
         #[arg(long)]
         depth: Option<usize>,
-        /// At most this many positions (default: all)
+        /// At most this many positions, the first ones (default: all)
         #[arg(long)]
         limit: Option<usize>,
+        /// This many classes chosen uniformly at random (with --seed), in place of the first
+        #[arg(long)]
+        sample: Option<usize>,
+        /// Random seed of --sample
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// List the positions without solving them: class, x, p, depth and the pattern of the
+        /// position as held in the fixed frame (each checked to read back as its slot)
+        #[arg(long)]
+        no_solve: bool,
         /// Write the positions here (tab-separated: class, x, p, depth, pattern, solution,
         /// scramble)
         #[arg(long)]
@@ -659,64 +669,133 @@ fn main() -> Result<()> {
             tables,
             depth,
             limit,
+            sample,
+            seed,
+            no_solve,
             out,
-        } => {
-            let m = load(&dir)?;
-            let i = Instance::new(m.kind);
-            let d = depth.or(m.depth()).context("no layer")?;
-            let t = ChenTables::load(
-                &tables,
-                TableSet {
-                    sb: false,
-                    px: true,
-                },
-                false,
-            )
-            .context("loading the phase-2 tables")?;
-            let solver = Solver::new(&t);
-            let mut slots = vec![];
-            for_slots(&Layout::of(&dir, &m), &i, d, 0..i.n_class, |c, x, p| {
-                if canonical(&i, c, x, p) && limit.is_none_or(|l| slots.len() < l) {
-                    slots.push((c, x, p));
-                }
-            })?;
-            let mut lines = vec![];
-            for &(c, x, p) in &slots {
-                let Some(st) = PState::of_slot(&i, c, x, p) else {
-                    bail!("not the full instance");
-                };
-                let sol = solver
-                    .solve_par(&st, d + 2)
-                    .with_context(|| format!("no solution for slot ({c}, {x}, {p})"))?;
-                if sol.len() != d {
-                    bail!(
-                        "slot ({c}, {x}, {p}): solution of {} moves, layer {d}",
-                        sol.len()
-                    );
-                }
-                let w = write(&st, &sol);
-                if !w.consistent {
-                    bail!("slot ({c}, {x}, {p}): the scramble's pattern is not the position's");
-                }
-                let line = format!(
-                    "{c}\t{x}\t{p}\t{d}\t{}\t{}\t{}",
-                    w.pattern,
-                    format_moves(&w.solution),
-                    format_moves(&w.scramble)
-                );
-                println!("{line}");
-                lines.push(line);
-            }
-            if let Some(out) = out {
-                let text = format!(
-                    "# class\tx\tp\tdepth\tpattern\tsolution\tscramble\n{}\n",
-                    lines.join("\n")
-                );
-                std::fs::write(&out, text).with_context(|| out.display().to_string())?;
-            }
-            println!("{} positions at depth {d} (up to symmetry)", slots.len());
-        }
+        } => antipodes(
+            &dir,
+            tables.as_deref(),
+            depth,
+            limit,
+            sample,
+            seed,
+            no_solve,
+            out.as_deref(),
+        )?,
     }
+    Ok(())
+}
+
+/// `antipodes`: a layer's positions up to symmetry (all, the first, or a random sample), with
+/// shortest phase-2 solutions or just their patterns.
+#[allow(clippy::too_many_arguments)]
+fn antipodes(
+    dir: &Path,
+    tables: Option<&Path>,
+    depth: Option<usize>,
+    limit: Option<usize>,
+    sample: Option<usize>,
+    seed: u64,
+    no_solve: bool,
+    out: Option<&Path>,
+) -> Result<()> {
+    use omelettehedron::chen::p2bfs::engine::canonical_slot;
+    use omelettehedron::chen::p2bfs::joint::Phase2Slots;
+    let m = load(dir)?;
+    let i = Instance::new(m.kind);
+    let d = depth.or(m.depth()).context("no layer")?;
+    let mut slots = vec![];
+    for_slots(&Layout::of(dir, &m), &i, d, 0..i.n_class, |c, x, p| {
+        if canonical(&i, c, x, p) && (sample.is_some() || limit.is_none_or(|l| slots.len() < l)) {
+            slots.push((c, x, p));
+        }
+    })?;
+    let total = slots.len();
+    if let Some(k) = sample {
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(seed);
+        rand::seq::SliceRandom::shuffle(&mut slots[..], &mut rng);
+        slots.truncate(k);
+        slots.sort_unstable();
+    }
+    let mut lines = vec![];
+    if no_solve {
+        let layer = Phase2Slots::load(dir, d)?;
+        for &(c, x, p) in &slots {
+            let slot = (c as u32, x as u32, p as u32);
+            let cube = layer.cube(slot).context("slot without a position")?;
+            let pattern = omelettehedron::pattern::format(&omelettehedron::pattern::of_cube(&cube));
+            // the pattern read back: the same slot (up to the class's stabiliser)
+            let parsed =
+                omelettehedron::pattern::parse(&pattern).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let back =
+                omelettehedron::pattern::position(&parsed).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let p2 = omelettehedron::chen::tables::P2::of(&back)
+                .context("the pattern is no phase-2 position")?;
+            let (c2, x2, q2) = layer.slot_of(&p2);
+            let (x2, q2) = canonical_slot(&i, c2 as usize, x2 as usize, q2 as usize);
+            if (c2 as usize, x2, q2) != (c, x, p) || layer.contains(&back) != Some(true) {
+                bail!("slot ({c}, {x}, {p}): the pattern reads back as ({c2}, {x2}, {q2})");
+            }
+            let line = format!("{c}\t{x}\t{p}\t{d}\t{pattern}");
+            println!("{line}");
+            lines.push(line);
+        }
+        if let Some(out) = out {
+            let text = format!("# class\tx\tp\tdepth\tpattern\n{}\n", lines.join("\n"));
+            std::fs::write(out, text).with_context(|| out.display().to_string())?;
+        }
+        println!(
+            "{} of the {total} classes at depth {d}; every pattern reads back as its slot",
+            slots.len()
+        );
+        return Ok(());
+    }
+    let tables = tables.context("--tables is needed to solve (or --no-solve)")?;
+    let t = ChenTables::load(
+        tables,
+        TableSet {
+            sb: false,
+            px: true,
+        },
+        false,
+    )
+    .context("loading the phase-2 tables")?;
+    let solver = Solver::new(&t);
+    for &(c, x, p) in &slots {
+        let Some(st) = PState::of_slot(&i, c, x, p) else {
+            bail!("not the full instance");
+        };
+        let sol = solver
+            .solve_par(&st, d + 2)
+            .with_context(|| format!("no solution for slot ({c}, {x}, {p})"))?;
+        if sol.len() != d {
+            bail!(
+                "slot ({c}, {x}, {p}): solution of {} moves, layer {d}",
+                sol.len()
+            );
+        }
+        let w = write(&st, &sol);
+        if !w.consistent {
+            bail!("slot ({c}, {x}, {p}): the scramble's pattern is not the position's");
+        }
+        let line = format!(
+            "{c}\t{x}\t{p}\t{d}\t{}\t{}\t{}",
+            w.pattern,
+            format_moves(&w.solution),
+            format_moves(&w.scramble)
+        );
+        println!("{line}");
+        lines.push(line);
+    }
+    if let Some(out) = out {
+        let text = format!(
+            "# class\tx\tp\tdepth\tpattern\tsolution\tscramble\n{}\n",
+            lines.join("\n")
+        );
+        std::fs::write(out, text).with_context(|| out.display().to_string())?;
+    }
+    println!("{} positions at depth {d} (up to symmetry)", slots.len());
     Ok(())
 }
 

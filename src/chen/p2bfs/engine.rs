@@ -1283,6 +1283,21 @@ pub fn for_slots(
     Ok(())
 }
 
+/// The smallest of the images of slot `(c, x, p)` under its class's stabiliser: `(x, p)` of
+/// the canonical slot ([`canonical`]).
+pub fn canonical_slot(inst: &Instance, c: usize, x: usize, p: usize) -> (usize, usize) {
+    inst.stab[c]
+        .iter()
+        .map(|&k| {
+            let k = k as usize;
+            (
+                inst.xs[k * inst.n_x + x] as usize,
+                inst.ps[p * N_SYM + k] as usize,
+            )
+        })
+        .fold((x, p), std::cmp::min)
+}
+
 /// Whether slot `(c, x, p)` is the smallest of its images under its class's stabiliser (one
 /// slot per position up to symmetry).
 pub fn canonical(inst: &Instance, c: usize, x: usize, p: usize) -> bool {
