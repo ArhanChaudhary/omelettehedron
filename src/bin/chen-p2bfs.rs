@@ -347,6 +347,21 @@ enum Cmd {
         #[arg(long)]
         tables: PathBuf,
     },
+    /// Certificates for every position of a layer from its classes' solutions: each class
+    /// position's conjugates by the 24 symmetries that keep the face classes, with the
+    /// solution conjugated alike (each checked to solve its position); one line per distinct
+    /// position: pattern, solution
+    ConjugateSolutions {
+        /// The classes' patterns, one per line
+        #[arg(long)]
+        patterns: PathBuf,
+        /// Their solutions (face turns), one per line, in the same order
+        #[arg(long)]
+        solutions: PathBuf,
+        /// The certificates
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// The positions of a layer (the last by default) up to symmetry, with solutions
     Antipodes {
         /// Search directory
@@ -699,6 +714,11 @@ fn main() -> Result<()> {
         )?,
         Cmd::Paths { dir, tables } => paths(&dir, &tables)?,
         Cmd::Radius { tables, input } => radius(&tables, &input)?,
+        Cmd::ConjugateSolutions {
+            patterns,
+            solutions,
+            out,
+        } => conjugate_solutions(&patterns, &solutions, &out)?,
         Cmd::VerifyGeodesic { file, tables } => {
             use omelettehedron::chen::p2bfs::joint::{ae_depths, verify_geodesic};
             use omelettehedron::chen::relaxed::RelaxedAe;
@@ -1647,5 +1667,64 @@ fn radius_solve(
             writeln!(f, "{out_line}").context("writing the results")?;
         }
     }
+    Ok(())
+}
+
+/// `conjugate-solutions`: certificates for all positions from the classes' solutions.
+fn conjugate_solutions(patterns: &Path, solutions: &Path, out: &Path) -> Result<()> {
+    use omelettehedron::geometry::{det, face_of_normal, mat_mul, mat_vec, FACES};
+    use omelettehedron::notation::{parse_moves, PhysMove};
+    let s48 = omelettehedron::optimal::sym::sym48();
+    let pats = std::fs::read_to_string(patterns).with_context(|| patterns.display().to_string())?;
+    let sols =
+        std::fs::read_to_string(solutions).with_context(|| solutions.display().to_string())?;
+    let pats: Vec<&str> = pats.lines().filter(|l| !l.trim().is_empty()).collect();
+    let sols: Vec<&str> = sols.lines().collect();
+    if pats.len() != sols.len() {
+        bail!("{} patterns, {} solutions", pats.len(), sols.len());
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut lines = Vec::new();
+    let mut lengths = std::collections::BTreeMap::new();
+    for (pat, sol) in pats.iter().zip(&sols) {
+        let parsed = omelettehedron::pattern::parse(pat).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let cube =
+            omelettehedron::pattern::position(&parsed).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let moves = parse_moves(sol).map_err(|e| anyhow::anyhow!("{e}"))?;
+        for sy in 0..24 {
+            let (cc, r) = s48.conj_cube(&cube, sy).context("no conjugate")?;
+            if !seen.insert(cc) {
+                continue;
+            }
+            // a face turn is conjugated to the turn of the face the symmetry (then the hold)
+            // takes it to, the other way round for a reflection
+            let m = mat_mul(&s48.mats[r], &s48.mats[sy]);
+            let flip = det(&s48.mats[sy]) < 0;
+            let conj: Vec<PhysMove> = moves
+                .iter()
+                .map(|pm| PhysMove {
+                    face: face_of_normal(mat_vec(&m, FACES[pm.face])),
+                    cw: pm.cw != flip,
+                    ..*pm
+                })
+                .collect();
+            let p = omelettehedron::pattern::of_cube(&cc);
+            if !omelettehedron::pattern::solves(&p, &conj) {
+                bail!("a conjugated solution does not solve its position (symmetry {sy})");
+            }
+            *lengths.entry(conj.len()).or_insert(0u64) += 1;
+            lines.push(format!(
+                "{}\t{}",
+                omelettehedron::pattern::format(&p),
+                format_moves(&conj)
+            ));
+        }
+    }
+    std::fs::write(out, lines.join("\n") + "\n").with_context(|| out.display().to_string())?;
+    println!(
+        "{} distinct positions, each with its conjugated solution checked to solve it; lengths \
+         {lengths:?}",
+        lines.len()
+    );
     Ok(())
 }
