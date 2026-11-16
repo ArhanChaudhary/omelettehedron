@@ -5,7 +5,10 @@
 //!
 //! Usage: `cargo run --release --example chen_both_sides [samples [uniform]]` (positions per
 //! distance-11 state, default 1,000; uniformly random positions, default 4,000,000) with
-//! `FTO_TABLES` holding `ae-sym288-chiral-relaxed.prun`.
+//! `FTO_TABLES` holding `ae-sym288-chiral-relaxed.prun`. With `--patterns FILE` instead: every
+//! position with both sides at 11 (one per rotation class: the front corner in place), built
+//! here, against the patterns of FILE (one per line): the same positions, each with both sides
+//! 11 moves away by the table.
 //!
 //! The side-A distance depends only on the A-centres and the edges, and the side-B distance
 //! only on the B-centres and the edges. The four parts of a position (corners, A-centres,
@@ -26,7 +29,9 @@
 //!    away).
 
 use omelettehedron::chen::relaxed::relaxed_targets;
-use omelettehedron::coord::{edge_chirality, mset, triple_pieces, Coords, N_ECOSET, N_MSET};
+use omelettehedron::coord::{
+    corners, edge_chirality, mset, triple_pieces, Coords, N_ECOSET, N_MSET,
+};
 use omelettehedron::cube::{perm_parity, Cube, N_MOVES, SWAP_AB};
 use omelettehedron::fast::{fast, masks, Fc};
 use omelettehedron::geometry::transpose;
@@ -44,10 +49,15 @@ use std::time::Instant;
 type State = (u32, u32, u8);
 
 fn main() {
-    let samples: usize = std::env::args()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1000);
+    let args: Vec<String> = std::env::args().collect();
+    let patterns_file = args
+        .iter()
+        .position(|a| a == "--patterns")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+    let numbers: Vec<usize> = args[1..].iter().filter_map(|a| a.parse().ok()).collect();
+    let samples = numbers.first().copied().unwrap_or(1000);
+    let n_uniform = numbers.get(1).copied().unwrap_or(4_000_000);
     let t0 = Instant::now();
     let dir = table_dir(None);
     let ix = AeSym::new(true);
@@ -112,8 +122,71 @@ fn main() {
         tail[1].len(),
         t0.elapsed().as_secs_f64()
     );
-    let (n10, _) = per_coset(&ix, &tail[0]);
     let (n11, d11) = per_coset(&ix, &tail[1]);
+    if let Some(path) = patterns_file {
+        let tp = triple_pieces();
+        let ea: HashSet<[u8; 12]> = d11
+            .iter()
+            .flat_map(|&(_, e, bits)| coset(&tp, e, bits))
+            .collect();
+        let mut both: Vec<[u8; 12]> = ea
+            .iter()
+            .filter(|ep| ea.contains(&g(ep)))
+            .copied()
+            .collect();
+        both.sort_unstable();
+        // every position with both sides at 11: the A-colourings of the distance-11 states of
+        // the edges' coset, the B-colourings whose conjugates are those of the states of the
+        // conjugate's coset, any corners (the front corner in place)
+        let id = |s: &State| s.1 as usize * 8 + usize::from(s.2 & 7);
+        let mut mine: HashSet<Cube> = HashSet::new();
+        for ep in &both {
+            let (ca, cb) = (coset_id(ep), coset_id(&g(ep)));
+            for sa in d11.iter().filter(|s| id(s) == ca) {
+                for sb in d11.iter().filter(|s| id(s) == cb) {
+                    let xb = unconj(&Cube {
+                        xa: ms.unrank(sb.0),
+                        ..Cube::solved()
+                    })
+                    .xb;
+                    for &(cp, co) in &corners().id_to_state {
+                        mine.insert(Cube {
+                            cp,
+                            co,
+                            ep: *ep,
+                            xa: ms.unrank(sa.0),
+                            xb,
+                        });
+                    }
+                }
+            }
+        }
+        let text = std::fs::read_to_string(&path).expect("the patterns file");
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        let theirs: Vec<Cube> = lines
+            .par_iter()
+            .map(|l| {
+                let c = pattern::parse(l)
+                    .and_then(|p| pattern::position(&p))
+                    .expect("a valid pattern");
+                assert_eq!((dist(&c), dist(&conj(&c))), (11, 11), "{l}");
+                c
+            })
+            .collect();
+        let theirs_set: HashSet<Cube> = theirs.iter().copied().collect();
+        println!(
+            "positions with both sides at 11 built here: {}; patterns in {path}: {} ({} distinct), \
+             every one both sides 11 moves away by the table; the same set: {}",
+            mine.len(),
+            lines.len(),
+            theirs_set.len(),
+            theirs_set == mine
+        );
+        assert_eq!(mine.len(), 138_240);
+        assert_eq!(theirs_set, mine);
+        return;
+    }
+    let (n10, _) = per_coset(&ix, &tail[0]);
     let sum = |n: &[u32]| n.iter().map(|&v| u64::from(v)).sum::<u64>();
     // the states per distance from the exact distribution (chen_phase1_dist)
     assert_eq!(sum(&n10), 6_617_546_556 + 96);
@@ -271,10 +344,6 @@ fn main() {
          edge arrangement of the coset): {hist_b:?}",
         96 * samples
     );
-    let n_uniform: usize = std::env::args()
-        .nth(2)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(4_000_000);
     let hist_ab: BTreeMap<(usize, usize), usize> = (0..n_uniform)
         .into_par_iter()
         .fold(BTreeMap::new, |mut h, i| {
