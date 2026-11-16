@@ -362,6 +362,30 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// The class-B side of a list of last-layer positions with solutions: each position
+    /// conjugated by the inverse of `SWAP_AB` (so that its `SWAP_AB` conjugate, which the
+    /// solver's side B solves, is the listed position: checked, with the relaxed phase-1
+    /// distance 0 and membership of the layer), its solution conjugated alike and checked
+    VerifySideB {
+        /// The run directory of the phase-2 search (its last layer)
+        #[arg(long)]
+        dir: PathBuf,
+        /// The directory of the relaxed phase-1 table
+        #[arg(long)]
+        tables: PathBuf,
+        /// The positions' patterns, one per line
+        #[arg(long)]
+        patterns: PathBuf,
+        /// Their solutions (face turns), one per line, in the same order
+        #[arg(long)]
+        solutions: PathBuf,
+        /// The class-B positions' patterns, line for line
+        #[arg(long)]
+        out_patterns: PathBuf,
+        /// Their solutions, line for line
+        #[arg(long)]
+        out_solutions: PathBuf,
+    },
     /// The positions of a layer (the last by default) up to symmetry, with solutions
     Antipodes {
         /// Search directory
@@ -714,6 +738,19 @@ fn main() -> Result<()> {
         )?,
         Cmd::Paths { dir, tables } => paths(&dir, &tables)?,
         Cmd::Radius { tables, input } => radius(&tables, &input)?,
+        Cmd::VerifySideB {
+            dir,
+            tables,
+            patterns,
+            solutions,
+            out_patterns,
+            out_solutions,
+        } => verify_side_b(
+            &dir,
+            &tables,
+            [&patterns, &solutions],
+            [&out_patterns, &out_solutions],
+        )?,
         Cmd::ConjugateSolutions {
             patterns,
             solutions,
@@ -1725,6 +1762,86 @@ fn conjugate_solutions(patterns: &Path, solutions: &Path, out: &Path) -> Result<
         "{} distinct positions, each with its conjugated solution checked to solve it; lengths \
          {lengths:?}",
         lines.len()
+    );
+    Ok(())
+}
+
+/// `verify-side-b`: the class-B side of last-layer positions and their solutions.
+fn verify_side_b(dir: &Path, tables: &Path, input: [&Path; 2], output: [&Path; 2]) -> Result<()> {
+    use omelettehedron::chen::p2bfs::joint::Phase2Slots;
+    use omelettehedron::chen::relaxed::RelaxedAe;
+    use omelettehedron::cube::SWAP_AB;
+    use omelettehedron::fast::fast;
+    use omelettehedron::geometry::{det, face_of_normal, mat_vec, transpose, FACES};
+    use omelettehedron::notation::{parse_moves, PhysMove};
+    use omelettehedron::pattern::{format, of_cube, parse, position, solves};
+    use omelettehedron::tables::AeSym;
+    let m = load(dir)?;
+    let d = m.depth().context("no layer")?;
+    let layer = Phase2Slots::load(dir, d)?;
+    let ix = AeSym::new(true);
+    let relaxed = RelaxedAe::load(tables, &ix, false).context("relaxed table")?;
+    let inv = transpose(&SWAP_AB);
+    if det(&inv) != 1 {
+        bail!("SWAP_AB is no rotation");
+    }
+    let [patterns, solutions] = input;
+    let pats = std::fs::read_to_string(patterns).with_context(|| patterns.display().to_string())?;
+    let sols =
+        std::fs::read_to_string(solutions).with_context(|| solutions.display().to_string())?;
+    let pats: Vec<&str> = pats.lines().filter(|l| !l.trim().is_empty()).collect();
+    let sols: Vec<&str> = sols.lines().collect();
+    if pats.len() != sols.len() {
+        bail!("{} patterns, {} solutions", pats.len(), sols.len());
+    }
+    let mut seen = std::collections::HashSet::new();
+    let (mut out_p, mut out_s) = (Vec::new(), Vec::new());
+    let mut lengths = std::collections::BTreeMap::new();
+    for (n, (pat, sol)) in pats.iter().zip(&sols).enumerate() {
+        let line = n + 1;
+        let parsed = parse(pat).map_err(|e| anyhow::anyhow!("line {line}: {e}"))?;
+        let a = position(&parsed).map_err(|e| anyhow::anyhow!("line {line}: {e}"))?;
+        let b = a.conjugate(&inv).context("no conjugate")?;
+        // what the solver's side B works on: the SWAP_AB conjugate, which must be the listed
+        // position (the same pattern), in the phase-2 space by the relaxed table, in the layer
+        let back = b.conjugate(&SWAP_AB).context("no conjugate")?;
+        if format(&of_cube(&back)) != pat.trim() {
+            bail!("line {line}: the SWAP_AB conjugate is not the listed position");
+        }
+        if relaxed.exact(&ix, &fast().of(&back)) != Some(0) {
+            bail!("line {line}: the SWAP_AB conjugate is not at relaxed phase-1 distance 0");
+        }
+        if layer.contains(&back) != Some(true) {
+            bail!("line {line}: the SWAP_AB conjugate is not in layer {d}");
+        }
+        if !seen.insert(b) {
+            bail!("line {line}: a repeated position");
+        }
+        let moves = parse_moves(sol).map_err(|e| anyhow::anyhow!("line {line}: {e}"))?;
+        let conj: Vec<PhysMove> = moves
+            .iter()
+            .map(|pm| PhysMove {
+                face: face_of_normal(mat_vec(&inv, FACES[pm.face])),
+                ..*pm
+            })
+            .collect();
+        let pb = of_cube(&b);
+        if !solves(&pb, &conj) {
+            bail!("line {line}: the conjugated solution does not solve the class-B position");
+        }
+        *lengths.entry(conj.len()).or_insert(0u64) += 1;
+        out_p.push(format(&pb));
+        out_s.push(format_moves(&conj));
+    }
+    let [op, os] = output;
+    std::fs::write(op, out_p.join("\n") + "\n").with_context(|| op.display().to_string())?;
+    std::fs::write(os, out_s.join("\n") + "\n").with_context(|| os.display().to_string())?;
+    let want = m.levels.get(d).map_or(0, |l| l.positions);
+    println!(
+        "{} class-B positions, distinct, each with its SWAP_AB conjugate the listed position \
+         (relaxed phase-1 distance 0, in layer {d} of {want} positions), each conjugated \
+         solution checked; lengths {lengths:?}",
+        seen.len()
     );
     Ok(())
 }
