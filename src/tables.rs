@@ -1022,6 +1022,30 @@ pub fn ae_farthest<I: AeIndex>(ix: &I, targets: &[usize]) -> (u8, Vec<usize>) {
     (depth, rest)
 }
 
+/// The entries at least `k` (at least 1) moves from `targets` in the AE index's graph (face
+/// turns), then those at least `k + 1` moves away, and so on: the breadth-first search of
+/// [`build_ae_with`], listing the unvisited entries before each level from level `k` on. The
+/// last list holds the farthest entries.
+pub fn ae_tail<I: AeIndex>(ix: &I, targets: &[usize], k: u8) -> Vec<Vec<usize>> {
+    let g = AeGraph::<I, N_MOVES>::new(ix);
+    let mut b = crate::prune::Bfs::new(&g, ix.size(), targets, 0, "tail", false);
+    let (mut cur, mut depth) = (0u8, 0u8);
+    let mut out = vec![];
+    while b.unvisited() > 0 {
+        // (the unvisited entries are those at least depth + 1 moves away)
+        if depth + 1 >= k {
+            out.push(b.indices_with_code(3));
+        }
+        let next = (cur + 1) % 3;
+        if b.level(cur, next) == 0 {
+            break;
+        }
+        depth += 1;
+        cur = next;
+    }
+    out
+}
+
 /// All tables needed by the solver, for one AE index type and move set.
 pub struct Tables<I: AeIndex> {
     /// the move set: the phase-1 tables hold distances in its metric, and the search uses it
