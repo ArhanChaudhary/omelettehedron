@@ -371,6 +371,11 @@ enum Cmd {
         /// position as held in the fixed frame (each checked to read back as its slot)
         #[arg(long)]
         no_solve: bool,
+        /// With --no-solve: also every position of the listed classes (the 24 conjugates of
+        /// each class's position, without repeats, each checked to be in the layer; for all
+        /// classes, checked to be all the layer's positions), one pattern per line, here
+        #[arg(long)]
+        expand: Option<PathBuf>,
         /// Write the positions here (tab-separated: class, x, p, depth, pattern, solution,
         /// scramble)
         #[arg(long)]
@@ -797,6 +802,7 @@ fn main() -> Result<()> {
             sample,
             seed,
             no_solve,
+            expand,
             out,
         } => antipodes(
             &dir,
@@ -806,6 +812,7 @@ fn main() -> Result<()> {
             sample,
             seed,
             no_solve,
+            expand.as_deref(),
             out.as_deref(),
         )?,
     }
@@ -823,6 +830,7 @@ fn antipodes(
     sample: Option<usize>,
     seed: u64,
     no_solve: bool,
+    expand: Option<&Path>,
     out: Option<&Path>,
 ) -> Result<()> {
     use omelettehedron::chen::p2bfs::engine::canonical_slot;
@@ -874,6 +882,39 @@ fn antipodes(
             "{} of the {total} classes at depth {d}; every pattern reads back as its slot",
             slots.len()
         );
+        if let Some(path) = expand {
+            // every position: the class positions' conjugates by the 24 symmetries that keep
+            // the face classes (held in the fixed frame), without repeats
+            let s48 = omelettehedron::optimal::sym::sym48();
+            let mut seen = std::collections::HashSet::new();
+            let mut pats = Vec::new();
+            for &(c, x, p) in &slots {
+                let cube = layer
+                    .cube((c as u32, x as u32, p as u32))
+                    .context("slot without a position")?;
+                for sy in 0..24 {
+                    let (cc, _) = s48.conj_cube(&cube, sy).context("no conjugate")?;
+                    if layer.contains(&cc) != Some(true) {
+                        bail!("a conjugate of class ({c}, {x}, {p}) is not in the layer");
+                    }
+                    if seen.insert(cc) {
+                        pats.push(omelettehedron::pattern::format(
+                            &omelettehedron::pattern::of_cube(&cc),
+                        ));
+                    }
+                }
+            }
+            let want = m.levels.get(d).map_or(0, |l| l.positions);
+            println!(
+                "{} positions in these classes (the layer has {want})",
+                pats.len()
+            );
+            if slots.len() == total && pats.len() as u64 != want {
+                bail!("MISMATCH: {} positions, the layer has {want}", pats.len());
+            }
+            std::fs::write(path, pats.join("\n") + "\n")
+                .with_context(|| path.display().to_string())?;
+        }
         return Ok(());
     }
     let tables = tables.context("--tables is needed to solve (or --no-solve)")?;
