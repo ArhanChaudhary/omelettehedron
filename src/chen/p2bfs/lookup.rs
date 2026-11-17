@@ -3,13 +3,14 @@
 //! for checks against sampled positions while a search runs and its layers come and go.
 
 use super::codec::{ClassReader, CHUNK};
-use super::engine::{BfsError, Layout};
+use super::engine::{canonical_slot, BfsError, Layout};
 use super::instance::{CornerView, Instance, N_SYM};
 use crate::chen::radius1::radius1;
 use crate::chen::space::space;
 use crate::coord::{corners, mset, N_CORNER};
 use crate::cube::Cube;
 use crate::fast::shuffle;
+use crate::pattern;
 
 /// The slot maps of an instance.
 pub struct Lookup<'a> {
@@ -64,7 +65,42 @@ impl<'a> Lookup<'a> {
         Some((u32::from(cls), x, u32::from(p)))
     }
 
-    /// Whether layer `d` holds slot `(c, x, p)`: reads the chunk of its block.
+    /// The pattern of slot `(c, x, p)`: the position (the class's representative
+    /// configuration, the corners and B-centres as the slot has them) as held in the pattern
+    /// view; `None` for a slot outside the instance.
+    pub fn pattern_of(&self, (c, x, p): (u32, u32, u32)) -> Option<String> {
+        let s = space();
+        let inst = self.inst;
+        let q = *inst.rep.get(c as usize)? as usize;
+        let (xa, ep) = if inst.kind.radius == 0 {
+            *s.cfgs.get(*s.pat.cfg.get(q)? as usize)?
+        } else {
+            let r1 = radius1().ok()?;
+            *r1.cfgs.get(*r1.pat.cfg.get(q)? as usize)?
+        };
+        let (cp, co) = *s
+            .corners
+            .states
+            .get(*inst.p_to_pc.get(p as usize)? as usize)?;
+        if x as usize >= inst.n_x {
+            return None;
+        }
+        let xb = mset().unrank(x);
+        let cube = Cube { cp, co, ep, xa, xb };
+        Some(pattern::format(&pattern::of_cube(&cube)))
+    }
+
+    /// The canonical slot of a pattern's position: the smallest image under the class's
+    /// stabiliser (`None` if the pattern does not parse or is outside the instance).
+    pub fn canonical_slot_of(&self, pat: &str) -> Option<(u32, u32, u32)> {
+        let cube = pattern::position(&pattern::parse(pat).ok()?).ok()?;
+        let (c, x, p) = self.slot_of(&cube)?;
+        let (x, p) = canonical_slot(self.inst, c as usize, x as usize, p as usize);
+        Some((c, x as u32, p as u32))
+    }
+
+    /// Whether layer `d` holds slot `(c, x, p)`: reads the chunk of its block (a missing class
+    /// file, of a layer being made or removed, holds nothing).
     ///
     /// # Errors
     ///
@@ -81,7 +117,11 @@ impl<'a> Lookup<'a> {
             path: path.display().to_string(),
             source,
         };
-        let rd = ClassReader::open(&path, inst.n_x, inst.n_p).map_err(err)?;
+        let rd = match ClassReader::open(&path, inst.n_x, inst.n_p) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(err(e)),
+        };
         let mut buf = vec![];
         let mut bits: Vec<u16> = vec![];
         let mut found = false;

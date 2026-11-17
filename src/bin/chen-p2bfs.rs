@@ -414,6 +414,20 @@ enum Cmd {
         #[arg(long)]
         depth: Option<usize>,
     },
+    /// The positions of a layer (the last by default) up to symmetry, as patterns (each
+    /// checked to read back as its slot), for either configuration set
+    LayerPositions {
+        /// Search directory
+        #[arg(long)]
+        dir: PathBuf,
+        /// The layer (the last by default)
+        #[arg(long)]
+        depth: Option<usize>,
+        /// Output (tab-separated: class, x, p, depth, the configuration's relaxed phase-1
+        /// distance, pattern)
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// The positions of a layer (the last by default) up to symmetry, with solutions
     Antipodes {
         /// Search directory
@@ -833,6 +847,7 @@ fn main() -> Result<()> {
         )?,
         Cmd::Paths { dir, tables } => paths(&dir, &tables)?,
         Cmd::Radius { tables, input } => radius(&tables, &input)?,
+        Cmd::LayerPositions { dir, depth, out } => layer_positions(&dir, depth, &out)?,
         Cmd::Lookup {
             dir,
             patterns,
@@ -2024,5 +2039,50 @@ fn lookup(dir: &Path, patterns: &Path, column: usize, depth: Option<usize>) -> R
         n += 1;
     }
     println!("{n} positions looked up");
+    Ok(())
+}
+
+/// `layer-positions`: the positions of a layer up to symmetry (one canonical slot per orbit),
+/// as patterns, each checked to read back as its slot; for either configuration set.
+fn layer_positions(dir: &Path, depth: Option<usize>, out: &Path) -> Result<()> {
+    use omelettehedron::chen::p2bfs::engine::canonical;
+    use omelettehedron::chen::p2bfs::lookup::Lookup;
+    use std::fmt::Write as _;
+    let m = load(dir)?;
+    let i = Instance::new(m.kind)?;
+    let lay = Layout::of(dir, &m);
+    let lk = Lookup::new(&i).context("the instance keeps only part of the corners")?;
+    let d = depth.or(m.depth()).context("no layer")?;
+    let want = m.levels.get(d).map_or(0, |l| l.orbits);
+    let mut lines = vec![];
+    for_slots(&lay, &i, d, 0..i.n_class, |c, x, p| {
+        if canonical(&i, c, x, p) {
+            lines.push((c as u32, x as u32, p as u32));
+        }
+    })?;
+    if lines.len() as u64 != want {
+        bail!(
+            "{} canonical slots, the level has {want} orbits",
+            lines.len()
+        );
+    }
+    let mut text = String::from("# class\tx\tp\tdepth\tdistance\tpattern\n");
+    for &slot in &lines {
+        let pat = lk.pattern_of(slot).context("slot without a position")?;
+        if lk.canonical_slot_of(&pat) != Some(slot) {
+            bail!(
+                "slot {slot:?}: its pattern reads back as {:?}",
+                lk.canonical_slot_of(&pat)
+            );
+        }
+        let d1 = i.d1.get(slot.0 as usize).copied().unwrap_or(0);
+        let _ = writeln!(text, "{}\t{}\t{}\t{d}\t{d1}\t{pat}", slot.0, slot.1, slot.2);
+    }
+    std::fs::write(out, text).with_context(|| out.display().to_string())?;
+    println!(
+        "{} positions up to symmetry in layer {d}, every pattern reads back as its slot; {}",
+        lines.len(),
+        out.display()
+    );
     Ok(())
 }
