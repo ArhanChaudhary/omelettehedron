@@ -1006,7 +1006,6 @@ fn antipodes(
     expand: Option<&Path>,
     out: Option<&Path>,
 ) -> Result<()> {
-    use omelettehedron::chen::p2bfs::engine::canonical_slot;
     use omelettehedron::chen::p2bfs::joint::Phase2Slots;
     let m = load(dir)?;
     let i = Instance::new(m.kind)?;
@@ -1027,6 +1026,8 @@ fn antipodes(
     let mut lines = vec![];
     if no_solve {
         let layer = Phase2Slots::load(dir, d)?;
+        let lk = omelettehedron::chen::p2bfs::lookup::Lookup::new(&i)
+            .context("the instance keeps only part of the corners")?;
         for &(c, x, p) in &slots {
             let slot = (c as u32, x as u32, p as u32);
             let cube = layer.cube(slot).context("slot without a position")?;
@@ -1036,12 +1037,11 @@ fn antipodes(
                 omelettehedron::pattern::parse(&pattern).map_err(|e| anyhow::anyhow!("{e}"))?;
             let back =
                 omelettehedron::pattern::position(&parsed).map_err(|e| anyhow::anyhow!("{e}"))?;
-            let p2 = omelettehedron::chen::tables::P2::of(&back)
-                .context("the pattern is no phase-2 position")?;
-            let (c2, x2, q2) = layer.slot_of(&p2);
-            let (x2, q2) = canonical_slot(&i, c2 as usize, x2 as usize, q2 as usize);
-            if (c2 as usize, x2, q2) != (c, x, p) || layer.contains(&back) != Some(true) {
-                bail!("slot ({c}, {x}, {p}): the pattern reads back as ({c2}, {x2}, {q2})");
+            let read = lk
+                .canonical_slot_of(&pattern)
+                .context("the pattern is no position of the space")?;
+            if read != (c as u32, x as u32, p as u32) || layer.contains(&back) != Some(true) {
+                bail!("slot ({c}, {x}, {p}): the pattern reads back as {read:?}");
             }
             let line = format!("{c}\t{x}\t{p}\t{d}\t{pattern}");
             println!("{line}");

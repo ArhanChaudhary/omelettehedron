@@ -21,7 +21,8 @@
 //!   candidates and their resolution are conjugate too).
 
 use super::engine::{for_slots, BfsError, Layout, Manifest};
-use super::instance::{Instance, Kind, N_SYM};
+use super::instance::{Instance, N_SYM};
+use super::lookup::Lookup;
 use super::solve::{PState, Views};
 use crate::chen::relaxed::RelaxedAe;
 use crate::chen::space::space;
@@ -210,7 +211,8 @@ pub fn geodesic(ix: &AeSym, dep: &AeDepths) -> Geodesic {
     Geodesic { per_level, ..geo }
 }
 
-/// Membership of fixed-frame positions in a layer of the phase-2 search.
+/// Membership of fixed-frame positions in a layer of the phase-2 search (of either
+/// configuration set: the manifest's).
 pub struct Phase2Slots {
     /// the full instance
     pub inst: Instance,
@@ -234,7 +236,7 @@ impl Phase2Slots {
             path: dir.display().to_string(),
             what: "no search here".into(),
         })?;
-        let inst = Instance::new(Kind::FULL).map_err(|e| BfsError::Manifest {
+        let inst = Instance::new(m.kind).map_err(|e| BfsError::Manifest {
             path: dir.display().to_string(),
             what: e.to_string(),
         })?;
@@ -290,14 +292,24 @@ impl Phase2Slots {
         (u32::from(cls), x, u32::from(p))
     }
 
-    /// Whether a fixed-frame position is in the layer (`None` if it is no phase-2 position).
+    /// Whether a fixed-frame position is in the layer (`None` if its configuration is not in
+    /// the instance's set).
     pub fn contains(&self, cube: &Cube) -> Option<bool> {
-        let p2 = P2::of(cube)?;
-        Some(self.slots.contains(&self.slot_of(&p2)))
+        let slot = if self.inst.kind.radius == 0 {
+            self.slot_of(&P2::of(cube)?)
+        } else {
+            Lookup::new(&self.inst)?.slot_of(cube)?
+        };
+        Some(self.slots.contains(&slot))
     }
 
     /// The fixed-frame position of slot `(c, x, p)` (the class's representative configuration).
     pub fn cube(&self, (c, x, p): (u32, u32, u32)) -> Option<Cube> {
+        if self.inst.kind.radius != 0 {
+            // the pattern-view position re-held with the fixed corner at home
+            let pat = Lookup::new(&self.inst)?.pattern_of((c, x, p))?;
+            return crate::pattern::position(&crate::pattern::parse(&pat).ok()?).ok();
+        }
         let st = PState::of_slot(&self.inst, c as usize, x as usize, p as usize)?;
         let p2 = self.views.to_p2(&st);
         let (xa, ep) = *space().cfgs.get(p2.cfg as usize)?;
