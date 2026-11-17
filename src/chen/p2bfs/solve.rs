@@ -22,7 +22,7 @@ use crate::prune::decode;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PState {
     /// pattern-view configuration
-    pub q: u16,
+    pub q: u32,
     /// pattern-view corner state
     pub pc: u16,
     /// B-centre colouring (labels in lanes 0..12)
@@ -152,7 +152,7 @@ impl Views {
     pub fn apply(&self, st: &PState, m: usize) -> Option<PState> {
         let s = space();
         let q = s.pat.next[st.q as usize][m];
-        if q == u16::MAX {
+        if q == super::super::space::NONE {
             return None;
         }
         let mut xb = shuffle(&st.xb, &self.gathers[m]);

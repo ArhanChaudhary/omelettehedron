@@ -113,20 +113,20 @@ pub struct Space {
 /// keep the face classes (`T_d`; conjugation, so solved and the move rule stay the same).
 pub struct Patterns {
     /// pattern-view configuration of each configuration (seen through its frame)
-    pub of_cfg: Vec<u16>,
+    pub of_cfg: Vec<u32>,
     /// the configuration id (frame 0) of each pattern-view configuration
     pub cfg: Vec<u32>,
     /// pattern-view configuration after each internal move (the move made in frame 0 and seen
     /// through the frame it leads to: the 16 internal moves give the 16 face turns), or
-    /// `u16::MAX` where the move is not allowed
-    pub next: Vec<[u16; N_MOVES]>,
+    /// [`NONE`] where the move is not allowed
+    pub next: Vec<[u32; N_MOVES]>,
     /// the B-centre gathers (`new[p] = old[src[p]]`) of the same moves
     pub xb_src: [[u8; 12]; N_MOVES],
     /// symmetry class of each pattern-view configuration, and the symmetry (index into
     /// [`Patterns::sym_xb`]) that maps it to its class representative
     pub class: Vec<(u16, u8)>,
     /// the representative of each class
-    pub rep: Vec<u16>,
+    pub rep: Vec<u32>,
     /// per class: the symmetries other than the identity that fix the representative
     pub stab: Vec<Vec<u8>>,
     /// per symmetry: the `(relabel, gather)` shuffles of a B-centre colouring
@@ -147,7 +147,7 @@ impl Patterns {
 /// The places and colours of a whole-puzzle symmetry `m` that keeps the face classes: where
 /// each A-centre, edge and B-centre place goes, and which colour (A, B) or edge piece each
 /// becomes when the colours are mapped too.
-struct SymMaps {
+pub(crate) struct SymMaps {
     a: [usize; 12],
     e: [usize; 12],
     b: [usize; 12],
@@ -156,7 +156,7 @@ struct SymMaps {
     piece: [u8; 12],
 }
 
-fn sym_maps(m: &Mat) -> SymMaps {
+pub(crate) fn sym_maps(m: &Mat) -> SymMaps {
     let d = defs();
     let sm = &d.sm;
     let to = |s: usize| sm.index_of(mat_vec(m, sm.st[s].p));
@@ -179,7 +179,12 @@ fn sym_maps(m: &Mat) -> SymMaps {
 impl SymMaps {
     /// A configuration with the whole puzzle turned (`recolour` false: the stickers keep their
     /// colours) or conjugated (`recolour` true: the colours and pieces are mapped too).
-    fn apply(&self, xa: &[u8; 12], ep: &[u8; 12], recolour: bool) -> ([u8; 12], [u8; 12]) {
+    pub(crate) fn apply(
+        &self,
+        xa: &[u8; 12],
+        ep: &[u8; 12],
+        recolour: bool,
+    ) -> ([u8; 12], [u8; 12]) {
         let mut a = [0u8; 12];
         let mut e = [0u8; 12];
         for p in 0..12 {
@@ -209,8 +214,11 @@ impl SymMaps {
     }
 }
 
-/// The pattern-view configurations of a space (see [`Patterns`]).
-fn patterns(
+/// The pattern-view configurations of a space (see [`Patterns`]): the configurations of frame 0
+/// (`rot` 0), their moves seen through the frames, and their classes under the 24 symmetries.
+/// Every configuration turned by its frame's rotation must be one of frame 0, and frame 0 must
+/// be closed under the symmetries (the caller checks).
+pub(crate) fn patterns(
     cfgs: &[([u8; 12], [u8; 12])],
     ids: &QuickMap<u128, u32>,
     next: &[[u32; N_MOVES]],
@@ -224,12 +232,12 @@ fn patterns(
     let cfg: Vec<u32> = (0..cfgs.len() as u32)
         .filter(|&c| rot[c as usize] == 0)
         .collect();
-    let mut dense = vec![u16::MAX; cfgs.len()];
+    let mut dense = vec![NONE; cfgs.len()];
     for (i, &c) in cfg.iter().enumerate() {
-        dense[c as usize] = i as u16;
+        dense[c as usize] = i as u32;
     }
     let turn: Vec<SymMaps> = rots.iter().map(sym_maps).collect();
-    let of_cfg: Vec<u16> = cfgs
+    let of_cfg: Vec<u32> = cfgs
         .iter()
         .zip(rot)
         .map(|(&(xa, ep), &r)| {
@@ -237,13 +245,13 @@ fn patterns(
             dense[id(t.apply(&xa, &ep, false)) as usize]
         })
         .collect();
-    let pnext: Vec<[u16; N_MOVES]> = cfg
+    let pnext: Vec<[u32; N_MOVES]> = cfg
         .iter()
         .map(|&c| {
             std::array::from_fn(|m| {
                 let n = next[c as usize][m];
                 if n == NONE {
-                    u16::MAX
+                    NONE
                 } else {
                     of_cfg[n as usize]
                 }
@@ -261,7 +269,7 @@ fn patterns(
         .iter()
         .map(sym_maps)
         .collect();
-    let image = |p: usize, k: usize| -> u16 {
+    let image = |p: usize, k: usize| -> u32 {
         let (xa, ep) = cfgs[cfg[p] as usize];
         dense[id(syms[k].apply(&xa, &ep, true)) as usize]
     };
@@ -274,7 +282,7 @@ fn patterns(
         }
         // p is the smallest of its class: the representative
         let c = rep.len() as u16;
-        rep.push(p as u16);
+        rep.push(p as u32);
         let mut st = vec![];
         for k in 0..syms.len() {
             let q = image(p, k) as usize;

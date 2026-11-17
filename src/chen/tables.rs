@@ -107,7 +107,7 @@ impl Graph for AcGraph<'_> {
     #[inline]
     fn step(&self, &(i, p, pc): &(usize, usize, usize), m: usize) -> usize {
         let q = self.pat.next[p][m];
-        if q == u16::MAX {
+        if q == super::space::NONE {
             return i;
         }
         self.index(q as usize, self.pc.next[pc][m] as usize)
@@ -182,7 +182,7 @@ impl Graph for PxGraph<'_> {
     #[inline]
     fn step(&self, &(i, p, xb): &(usize, usize, [u8; 16]), m: usize) -> usize {
         let q = self.pat.next[p][m];
-        if q == u16::MAX {
+        if q == super::space::NONE {
             return i;
         }
         self.index(q as usize, &shuffle(&xb, &self.xb_src[m]))

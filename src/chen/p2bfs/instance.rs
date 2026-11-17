@@ -18,7 +18,8 @@
 //! sets all of them, so that the set of each class is closed under its stabiliser; a class
 //! then holds `24 / (1 + stab.len())` configurations, each with the class's set of slots.
 
-use super::super::space::{space, Space, N_PMOVES};
+use super::super::radius1::{radius1, Radius1Error};
+use super::super::space::{space, Patterns, Space, NONE, N_PMOVES};
 use crate::coord::{mset, N_MSET};
 use crate::cube::{Cube, N_MOVES};
 use crate::fast::shuffle;
@@ -28,6 +29,9 @@ use std::collections::HashMap;
 pub const N_SYM: usize = 24;
 /// No move: a move that is not allowed.
 pub const NO_EDGE: u16 = u16::MAX;
+/// Classes of a part of a dense layer of the full radius-1 instance with 43 GB for the part
+/// (369,600 blocks of 1,444 bytes per class): the cluster size of its class order.
+pub const PART_CLASSES: usize = 80;
 
 /// What the search keeps of the corners.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -60,6 +64,11 @@ pub struct Kind {
     pub corners: CornerView,
     /// B-centres kept
     pub b: BView,
+    /// the configurations: 0 for the block split's phase-2 space ([`super::super::space`]), 1
+    /// for the radius-1 space ([`super::super::radius1`]: relaxed phase-1 distance at most 1,
+    /// every move that stays in it)
+    #[serde(default)]
+    pub radius: u8,
 }
 
 impl Kind {
@@ -67,7 +76,25 @@ impl Kind {
     pub const FULL: Kind = Kind {
         corners: CornerView::Full,
         b: BView::Full,
+        radius: 0,
     };
+    /// The full radius-1 space.
+    pub const RADIUS1: Kind = Kind {
+        corners: CornerView::Full,
+        b: BView::Full,
+        radius: 1,
+    };
+}
+
+/// The instance cannot be built.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum InstanceError {
+    /// The radius-1 configuration set failed a check.
+    #[error(transparent)]
+    Radius1(#[from] Radius1Error),
+    /// A radius other than 0 or 1.
+    #[error("radius {0}: only 0 and 1 are known")]
+    Radius(u8),
 }
 
 /// The instance's tables.
@@ -98,8 +125,11 @@ pub struct Instance {
     pub stab: Vec<Vec<u8>>,
     /// per class: whether its configurations are in `H'` (every hexagon one colour)
     pub hprime: Vec<bool>,
+    /// per class: the relaxed phase-1 distance of its configurations (0 in the block split's
+    /// space; 0 or 1 in the radius-1 space)
+    pub d1: Vec<u8>,
     /// per class: its representative (pattern-view configuration)
-    pub rep: Vec<u16>,
+    pub rep: Vec<u32>,
     /// the solved slot (class, x, p)
     pub solved: (u32, u32, u32),
     /// pattern-view configurations, for the totals (37,260)
@@ -118,16 +148,37 @@ pub struct Instance {
 
 impl Instance {
     /// Build the tables of an instance (a second or two, on all threads).
-    pub fn new(kind: Kind) -> Instance {
+    ///
+    /// # Errors
+    ///
+    /// [`InstanceError`] for an unknown radius, or if the radius-1 set fails a check.
+    pub fn new(kind: Kind) -> Result<Instance, InstanceError> {
         let s = space();
-        let pat = &s.pat;
+        // the configurations: the pattern-view set, and per pattern-view configuration whether
+        // it is in H' and its relaxed phase-1 distance
+        let (pat, in_hprime, d1_of): (&Patterns, Vec<bool>, Vec<u8>) = match kind.radius {
+            0 => (
+                &s.pat,
+                s.pat
+                    .cfg
+                    .iter()
+                    .map(|&c| s.pshape[c as usize] == 0)
+                    .collect(),
+                vec![0; s.pat.cfg.len()],
+            ),
+            1 => {
+                let r = radius1()?;
+                (&r.pat, r.hprime.clone(), r.d1.clone())
+            }
+            other => return Err(InstanceError::Radius(other)),
+        };
         let n_class = pat.rep.len();
         let edges: Vec<[(u16, u8); N_MOVES]> = (0..n_class)
             .map(|c| {
                 let q = pat.rep[c] as usize;
                 std::array::from_fn(|m| {
                     let n = pat.next[q][m];
-                    if n == u16::MAX {
+                    if n == NONE {
                         (NO_EDGE, 0)
                     } else {
                         let (c2, k) = pat.class[n as usize];
@@ -150,15 +201,25 @@ impl Instance {
         }
         let word = (kind.corners == CornerView::Full).then(|| WordPerm::new(&pperm, n_p));
         let (c0, _) = pat.class[0];
-        let order = a_move_order(&edges, &pat.pmove);
+        // the order of the parts: by components of the always-allowed moves, or (radius 1,
+        // where no move is always allowed) clusters grown on the class graph, of about the
+        // classes of a part at the search's peak with the usual memory budget
+        let order = if kind.radius == 0 {
+            super::order::a_move_order(&edges, &pat.pmove)
+        } else {
+            super::order::grown_order(&super::order::adjacency(&edges), PART_CLASSES)
+        };
         let mut pos = vec![0u32; n_class];
         for (i, &c) in order.iter().enumerate() {
             pos[c as usize] = i as u32;
         }
         let hprime = (0..n_class)
-            .map(|c| s.pshape[pat.cfg[pat.rep[c] as usize] as usize] == 0)
+            .map(|c| in_hprime.get(pat.rep[c] as usize).copied().unwrap_or(false))
             .collect();
-        Instance {
+        let d1 = (0..n_class)
+            .map(|c| d1_of.get(pat.rep[c] as usize).copied().unwrap_or(0))
+            .collect();
+        Ok(Instance {
             kind,
             n_class,
             n_x,
@@ -171,6 +232,7 @@ impl Instance {
             ps,
             stab: pat.stab.clone(),
             hprime,
+            d1,
             rep: pat.rep.clone(),
             solved: (u32::from(c0), x_of_solved, p_of_solved),
             n_config: pat.cfg.len(),
@@ -178,7 +240,7 @@ impl Instance {
             pos,
             p_to_pc,
             word,
-        }
+        })
     }
 
     /// The fiber permutation of move `m` followed by symmetry `k`.
@@ -358,33 +420,6 @@ impl WordPerm {
             out[th / 2] |= u64::from(v) << (32 * (th % 2));
         }
     }
-}
-
-/// The classes ordered by their components under the always-allowed moves (U, F, BR, BL):
-/// the components in the order of their smallest class, each in class order.
-fn a_move_order(edges: &[[(u16, u8); N_MOVES]], pmove: &[u8; N_MOVES]) -> Vec<u32> {
-    fn find(root: &mut [usize], mut i: usize) -> usize {
-        while root[i] != i {
-            root[i] = root[root[i]];
-            i = root[i];
-        }
-        i
-    }
-    let n = edges.len();
-    let mut root: Vec<usize> = (0..n).collect();
-    for c in 0..n {
-        for m in 0..N_MOVES {
-            let (c2, _) = edges[c][m];
-            let face = usize::from(pmove[m] / 2);
-            if c2 != NO_EDGE && crate::geometry::A_FACES.contains(&face) {
-                let (a, b) = (find(&mut root, c), find(&mut root, c2 as usize));
-                root[a.max(b)] = a.min(b);
-            }
-        }
-    }
-    let mut order: Vec<(usize, u32)> = (0..n).map(|c| (find(&mut root, c), c as u32)).collect();
-    order.sort_unstable();
-    order.into_iter().map(|(_, c)| c).collect()
 }
 
 /// B-centre tables of a view: states, moves (`[x][m]`), symmetries (`[k * n + x]`), and the
@@ -579,9 +614,11 @@ mod tests {
         let i = Instance::new(Kind {
             corners: CornerView::Perm,
             b: BView::Unlabelled,
-        });
+            radius: 0,
+        })
+        .unwrap();
         assert_eq!((i.n_x, i.n_p, i.n_class), (15_400, 360, 1611));
-        let f = Instance::new(Kind::FULL);
+        let f = Instance::new(Kind::FULL).unwrap();
         assert_eq!((f.n_x, f.n_p, f.words), (N_MSET, 11_520, 180));
         assert_eq!(f.n_positions(), 37_260 * 369_600 * 11_520);
     }
@@ -591,7 +628,7 @@ mod tests {
     #[test]
     fn word_permutation_is_the_bit_permutation() {
         use rand::{Rng, SeedableRng};
-        let f = Instance::new(Kind::FULL);
+        let f = Instance::new(Kind::FULL).unwrap();
         let mut seen = vec![false; f.n_p];
         for &pc in &f.p_to_pc {
             assert!(!seen[pc as usize]);

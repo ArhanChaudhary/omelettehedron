@@ -234,7 +234,10 @@ impl Phase2Slots {
             path: dir.display().to_string(),
             what: "no search here".into(),
         })?;
-        let inst = Instance::new(Kind::FULL);
+        let inst = Instance::new(Kind::FULL).map_err(|e| BfsError::Manifest {
+            path: dir.display().to_string(),
+            what: e.to_string(),
+        })?;
         let lay = Layout::of(dir, &m);
         let mut slots = HashSet::new();
         let mut reps = Vec::new();

@@ -31,10 +31,12 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use omelettehedron::chen::p2bfs::engine::{
-    bench_push, canonical, dense_plan, for_slots, Bfs, Config, Layout, Manifest, Outcome,
+    bench_push, canonical, dense_plan, for_slots, positions_by_d1, Bfs, Config, Layout, Manifest,
+    Outcome,
 };
 use omelettehedron::chen::p2bfs::instance::{BView, CornerView, Instance, Kind, NO_EDGE};
-use omelettehedron::chen::p2bfs::reference::{position_bfs, slot_bfs};
+use omelettehedron::chen::p2bfs::order::{a_move_order, adjacency, grown_order, reads as reads_of};
+use omelettehedron::chen::p2bfs::reference::{cube_bfs, position_bfs, slot_bfs};
 use omelettehedron::chen::p2bfs::solve::{write, PState, Solver};
 use omelettehedron::chen::tables::{ChenTables, TableSet};
 use omelettehedron::notation::format_moves;
@@ -73,6 +75,10 @@ struct InstanceArgs {
     /// B-centres kept (full: 369,600 colourings; unlabelled: 15,400; none)
     #[arg(long, value_enum, default_value = "full")]
     b: Bs,
+    /// The configurations: 0 for the block split's phase-2 space (37,260), 1 for the radius-1
+    /// space (relaxed phase-1 distance at most 1: 315,900, every move that stays in it)
+    #[arg(long, default_value_t = 0)]
+    radius: u8,
 }
 
 impl InstanceArgs {
@@ -88,6 +94,7 @@ impl InstanceArgs {
                 Bs::Unlabelled => BView::Unlabelled,
                 Bs::None => BView::None,
             },
+            radius: self.radius,
         }
     }
 }
@@ -151,6 +158,11 @@ enum Cmd {
         /// Compare with this search directory (of the full instance)
         #[arg(long)]
         compare: Option<PathBuf>,
+        /// The radius-1 space instead of the block split's (whole cube states, every move
+        /// that stays in the configuration set; the counts split by the configuration's
+        /// relaxed phase-1 distance)
+        #[arg(long)]
+        radius1: bool,
     },
     /// The phase-2 tables' histograms (AC: corners only; PX: B-centres only)
     Tables {
@@ -386,6 +398,22 @@ enum Cmd {
         #[arg(long)]
         out_solutions: PathBuf,
     },
+    /// Look positions up in the layers on disk: per pattern, the depths of the layers that
+    /// hold it (the layers present in the store, or one depth)
+    Lookup {
+        /// Search directory
+        #[arg(long)]
+        dir: PathBuf,
+        /// The patterns, one per line (comment lines start with #)
+        #[arg(long)]
+        patterns: PathBuf,
+        /// The tab-separated column holding the pattern (0: the whole line)
+        #[arg(long, default_value_t = 0)]
+        column: usize,
+        /// Only this layer
+        #[arg(long)]
+        depth: Option<usize>,
+    },
     /// The positions of a layer (the last by default) up to symmetry, with solutions
     Antipodes {
         /// Search directory
@@ -444,7 +472,7 @@ fn main() -> Result<()> {
             readers,
             quiet,
         } => {
-            let i = Instance::new(inst.kind());
+            let i = Instance::new(inst.kind())?;
             let cfg = Config {
                 dir: dir.clone(),
                 ram: (ram_gb * 1e9) as usize,
@@ -470,11 +498,11 @@ fn main() -> Result<()> {
         }
         Cmd::Status { dir } => {
             let m = load(&dir)?;
-            let i = Instance::new(m.kind);
+            let i = Instance::new(m.kind)?;
             status(&dir, &i, &m);
         }
         Cmd::Reference { inst, compare } => {
-            let i = Instance::new(inst.kind());
+            let i = Instance::new(inst.kind())?;
             let t = slot_bfs(&i, true);
             println!("slots per depth: {:?}", t.hist);
             if let Some(dir) = compare {
@@ -490,8 +518,26 @@ fn main() -> Result<()> {
                 )?;
             }
         }
-        Cmd::Positions { depth, compare } => {
-            let counts = position_bfs(depth);
+        Cmd::Positions {
+            depth,
+            compare,
+            radius1,
+        } => {
+            let counts = if radius1 {
+                let r = omelettehedron::chen::radius1::radius1()?;
+                let split = cube_bfs(depth, |c| r.id(c).map(|id| r.cfg_d1(id)));
+                for (d, s) in split.iter().enumerate() {
+                    println!(
+                        "depth {d}: {} positions (distance 0: {}, distance 1: {})",
+                        s[0] + s[1],
+                        s[0],
+                        s[1]
+                    );
+                }
+                split.iter().map(|s| s[0] + s[1]).collect()
+            } else {
+                position_bfs(depth)
+            };
             println!("positions per depth: {counts:?}");
             if let Some(dir) = compare {
                 let m = load(&dir)?;
@@ -527,7 +573,7 @@ fn main() -> Result<()> {
         }
         Cmd::Orbits { dir, depth } => {
             let m = load(&dir)?;
-            let i = Instance::new(m.kind);
+            let i = Instance::new(m.kind)?;
             let depths: Vec<usize> = if depth.is_empty() {
                 (0..m.levels.len())
                     .filter(|&d| Layout::of(&dir, &m).has(d))
@@ -559,7 +605,7 @@ fn main() -> Result<()> {
             seed,
         } => {
             let m = load(&dir)?;
-            let i = Instance::new(m.kind);
+            let i = Instance::new(m.kind)?;
             let t = ChenTables::load(
                 &tables,
                 TableSet {
@@ -617,7 +663,7 @@ fn main() -> Result<()> {
             lo,
             hi,
         } => {
-            let i = Instance::new(inst.kind());
+            let i = Instance::new(inst.kind())?;
             let (moved, touched, secs) =
                 bench_push(&i, classes, blocks, density, (lo, hi.min(i.n_class)));
             println!(
@@ -652,7 +698,7 @@ fn main() -> Result<()> {
                     let mut xb = [0u8; 16];
                     xb[..12].copy_from_slice(&l);
                     PState {
-                        q: rng.gen_range(0..s.pat.cfg.len()) as u16,
+                        q: rng.gen_range(0..s.pat.cfg.len()) as u32,
                         pc: rng.gen_range(0..s.corners.next.len()) as u16,
                         xb,
                     }
@@ -691,7 +737,7 @@ fn main() -> Result<()> {
             );
         }
         Cmd::Plan { inst, ram_gb } => {
-            let i = Instance::new(inst.kind());
+            let i = Instance::new(inst.kind())?;
             let (parts, reads) = dense_plan(&i, (ram_gb * 1e9) as usize);
             // allowed moves per configuration, on average
             let moves: f64 = (0..i.n_class)
@@ -716,6 +762,55 @@ fn main() -> Result<()> {
                 reads as f64 / i.n_class as f64,
                 i.n_class
             );
+            // the configurations and classes per relaxed phase-1 distance
+            for d in 0..=1u8 {
+                let classes = (0..i.n_class).filter(|&c| i.d1[c] == d).count();
+                let configs: u64 = (0..i.n_class)
+                    .filter(|&c| i.d1[c] == d)
+                    .map(|c| i.class_size(c))
+                    .sum();
+                println!(
+                    "relaxed phase-1 distance {d}: {configs} configurations, {classes} classes"
+                );
+            }
+            // other orders of the classes, for comparison
+            let adj = adjacency(&i.edges);
+            let part = parts
+                .iter()
+                .map(|p| (p.1 - p.0) as usize)
+                .max()
+                .unwrap_or(1);
+            let degree: f64 = adj.iter().map(Vec::len).sum::<usize>() as f64 / i.n_class as f64;
+            println!("class graph: {degree:.2} neighbours per class on average; parts of {part}");
+            let plain: Vec<u32> = (0..i.n_class as u32).collect();
+            let s = omelettehedron::chen::space::space();
+            let candidates: Vec<(String, Vec<u32>)> = vec![
+                ("class order".into(), plain),
+                (
+                    "A-move components".into(),
+                    a_move_order(&i.edges, &s.pat.pmove),
+                ),
+                ("the instance's order".into(), i.order.clone()),
+                (
+                    format!("grown, clusters of {part}"),
+                    grown_order(&adj, part),
+                ),
+                (
+                    format!("grown, clusters of {}", part / 2),
+                    grown_order(&adj, part / 2),
+                ),
+                (
+                    format!("grown, clusters of {}", part * 2),
+                    grown_order(&adj, part * 2),
+                ),
+            ];
+            for (name, order) in &candidates {
+                let r = reads_of(&adj, order, part);
+                println!(
+                    "  {name}: {r} files per step = {:.2} x the classes",
+                    r as f64 / i.n_class as f64
+                );
+            }
         }
         Cmd::Joint {
             dir,
@@ -738,6 +833,12 @@ fn main() -> Result<()> {
         )?,
         Cmd::Paths { dir, tables } => paths(&dir, &tables)?,
         Cmd::Radius { tables, input } => radius(&tables, &input)?,
+        Cmd::Lookup {
+            dir,
+            patterns,
+            column,
+            depth,
+        } => lookup(&dir, &patterns, column, depth)?,
         Cmd::VerifySideB {
             dir,
             tables,
@@ -893,7 +994,7 @@ fn antipodes(
     use omelettehedron::chen::p2bfs::engine::canonical_slot;
     use omelettehedron::chen::p2bfs::joint::Phase2Slots;
     let m = load(dir)?;
-    let i = Instance::new(m.kind);
+    let i = Instance::new(m.kind)?;
     let d = depth.or(m.depth()).context("no layer")?;
     let mut slots = vec![];
     for_slots(&Layout::of(dir, &m), &i, d, 0..i.n_class, |c, x, p| {
@@ -1049,18 +1150,28 @@ fn compare_counts(what: &str, want: &[u64], got: &[u64], complete: bool) -> Resu
 
 fn status(dir: &Path, i: &Instance, m: &Manifest) {
     println!("search {} ({:?})", dir.display(), m.kind);
-    println!("depth\tslots\tpositions\tup to symmetry\tGB\tseconds\tGB read");
+    let two = i.d1.iter().any(|&d| d != 0);
+    println!(
+        "depth\tslots\tpositions\tup to symmetry\tGB\tseconds\tGB read{}",
+        if two { "\tdistance 0\tdistance 1" } else { "" }
+    );
     let (mut slots, mut pos, mut orb) = (0u64, 0u128, 0u64);
     for l in &m.levels {
+        let by = positions_by_d1(i, l);
         println!(
-            "{}\t{}\t{}\t{}\t{:.3}\t{:.1}\t{:.3}",
+            "{}\t{}\t{}\t{}\t{:.3}\t{:.1}\t{:.3}{}",
             l.depth,
             l.slots,
             l.positions,
             l.orbits,
             l.bytes as f64 / 1e9,
             l.seconds,
-            l.read as f64 / 1e9
+            l.read as f64 / 1e9,
+            if two {
+                format!("\t{}\t{}", by[0], by[1])
+            } else {
+                String::new()
+            }
         );
         slots += l.slots;
         pos += u128::from(l.positions);
@@ -1094,6 +1205,26 @@ fn status(dir: &Path, i: &Instance, m: &Manifest) {
             m.levels.last().map_or(0, |l| l.depth),
             hp_max.map_or("-".into(), |d| d.to_string())
         );
+        if two {
+            // the deepest layer with a position of each distance
+            for d in 0..=1u8 {
+                let deepest = m
+                    .levels
+                    .iter()
+                    .rev()
+                    .find(|l| {
+                        l.per_class
+                            .iter()
+                            .enumerate()
+                            .any(|(c, &n)| n > 0 && i.d1.get(c).copied().unwrap_or(0) == d)
+                    })
+                    .map(|l| l.depth);
+                println!(
+                    "deepest layer with a configuration at relaxed phase-1 distance {d}: {}",
+                    deepest.map_or("-".into(), |d| d.to_string())
+                );
+            }
+        }
     }
     // the deepest layer of each class of H'
     let deepest = |c: usize| {
@@ -1237,7 +1368,7 @@ fn joint(
         let mut xb = [0u8; 16];
         xb[..12].copy_from_slice(&l);
         let st = PState {
-            q: rng.gen_range(0..s.pat.cfg.len()) as u16,
+            q: rng.gen_range(0..s.pat.cfg.len()) as u32,
             pc: rng.gen_range(0..s.corners.next.len()) as u16,
             xb,
         };
@@ -1409,7 +1540,7 @@ fn paths(dir: &Path, tables: &Path) -> Result<()> {
     let t0 = Instant::now();
     let m = load(dir)?;
     let last = m.depth().context("no layer")?;
-    let i = Instance::new(Kind::FULL);
+    let i = Instance::new(Kind::FULL)?;
     let ix = AeSym::new(true);
     let relaxed = RelaxedAe::load(tables, &ix, false).context("loading the relaxed table")?;
     let dep = ae_depths(&ix, &relaxed.targets, false);
@@ -1843,5 +1974,55 @@ fn verify_side_b(dir: &Path, tables: &Path, input: [&Path; 2], output: [&Path; 2
          solution checked; lengths {lengths:?}",
         seen.len()
     );
+    Ok(())
+}
+
+/// `lookup`: the layers on disk holding each pattern's position.
+fn lookup(dir: &Path, patterns: &Path, column: usize, depth: Option<usize>) -> Result<()> {
+    use omelettehedron::chen::p2bfs::lookup::Lookup;
+    let m = load(dir)?;
+    let i = Instance::new(m.kind)?;
+    let lay = Layout::of(dir, &m);
+    let lk = Lookup::new(&i).context("the instance keeps only part of the corners")?;
+    let last = m
+        .progress
+        .as_ref()
+        .map_or(m.depth().unwrap_or(0), |p| p.depth);
+    let depths: Vec<usize> = match depth {
+        Some(d) => vec![d],
+        None => (0..=last).filter(|&d| lay.has(d)).collect(),
+    };
+    println!("layers on disk: {depths:?}");
+    let text = std::fs::read_to_string(patterns).with_context(|| patterns.display().to_string())?;
+    let mut n = 0;
+    for (line, l) in text.lines().enumerate() {
+        if l.starts_with('#') || l.trim().is_empty() {
+            continue;
+        }
+        let pat = l.split('\t').nth(column).unwrap_or("").trim();
+        let parsed = omelettehedron::pattern::parse(pat)
+            .map_err(|e| anyhow::anyhow!("line {}: {e}", line + 1))?;
+        let cube = omelettehedron::pattern::position(&parsed)
+            .map_err(|e| anyhow::anyhow!("line {}: {e}", line + 1))?;
+        let Some(slot) = lk.slot_of(&cube) else {
+            println!("line {}: not in the space", line + 1);
+            continue;
+        };
+        let mut found = vec![];
+        for &d in &depths {
+            if lk.layer_has(&lay, d, slot)? {
+                found.push(d);
+            }
+        }
+        println!(
+            "line {}: slot ({}, {}, {}) in layers {found:?}",
+            line + 1,
+            slot.0,
+            slot.1,
+            slot.2
+        );
+        n += 1;
+    }
+    println!("{n} positions looked up");
     Ok(())
 }

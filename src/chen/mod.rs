@@ -12,10 +12,12 @@
 //! * [`corners`]: corner states in the pattern view (for the corner table under symmetry);
 //! * [`tables`]: the phase-2 pruning tables;
 //! * [`relaxed`]: the relaxed phase-1 target (any configuration of the phase-2 space);
+//! * [`radius1`]: the radius-1 phase-2 space (relaxed phase-1 distance at most 1);
 //! * [`search`]: the two-phase loop.
 
 pub mod corners;
 pub mod p2bfs;
+pub mod radius1;
 pub mod relaxed;
 pub mod search;
 pub mod space;

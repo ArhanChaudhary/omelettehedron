@@ -55,7 +55,7 @@ fn run_resuming(
 /// the slots per depth equal the in-memory table's, for a run in one part and for a run in
 /// many small parts that stops after each part and resumes.
 fn check_instance(kind: Kind, name: &str) {
-    let inst = Instance::new(kind);
+    let inst = Instance::new(kind).unwrap();
     let reference = slot_bfs(&inst, false);
     let dir = tmp_dir(name);
     let m = run_resuming(&inst, &dir, 1 << 34, None, 0);
@@ -98,6 +98,7 @@ fn corner_permutation_instance() {
         Kind {
             corners: CornerView::Perm,
             b: BView::None,
+            radius: 0,
         },
         "perm",
     );
@@ -109,6 +110,7 @@ fn unlabelled_b_instance() {
         Kind {
             corners: CornerView::None,
             b: BView::Unlabelled,
+            radius: 0,
         },
         "unlabelled",
     );
@@ -118,7 +120,7 @@ fn unlabelled_b_instance() {
 /// gives them, and Chen Shuang's twsearch counts (1, 16, 160, 1344, 10464, 78152).
 #[test]
 fn full_instance_first_depths() {
-    let inst = Instance::new(Kind::FULL);
+    let inst = Instance::new(Kind::FULL).unwrap();
     let dir = tmp_dir("full");
     let mut cfg = config(&dir, 1 << 33);
     cfg.max_depth = Some(5);
@@ -145,6 +147,41 @@ fn full_instance_first_depths() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// The radius-1 instance's first depths: positions per depth, split by the configuration's
+/// relaxed phase-1 distance, as a plain search over cube states gives them and as an
+/// independent search on the sticker model gave them (1, 16, 208, 2,112, 18,144; at distance
+/// 1: 0, 0, 48, 768, 7,680).
+#[test]
+fn radius1_instance_first_depths() {
+    use omelettehedron::chen::p2bfs::engine::positions_by_d1;
+    use omelettehedron::chen::p2bfs::reference::cube_bfs;
+    use omelettehedron::chen::radius1::radius1;
+    let inst = Instance::new(Kind::RADIUS1).unwrap();
+    assert_eq!(inst.n_config, 315_900);
+    assert_eq!(
+        inst.d1.iter().map(|&d| usize::from(d == 0)).sum::<usize>(),
+        1611
+    );
+    let dir = tmp_dir("radius1");
+    let mut cfg = config(&dir, 1 << 33);
+    cfg.max_depth = Some(4);
+    let mut b = Bfs::open(&inst, cfg).unwrap();
+    assert_eq!(b.run().unwrap(), Outcome::Stopped);
+    let split: Vec<[u64; 2]> = b
+        .manifest()
+        .levels
+        .iter()
+        .map(|l| positions_by_d1(&inst, l))
+        .collect();
+    assert_eq!(
+        split,
+        [[1, 0], [16, 0], [160, 48], [1344, 768], [10464, 7680]]
+    );
+    let r = radius1().unwrap();
+    assert_eq!(cube_bfs(4, |c| r.id(c).map(|id| r.cfg_d1(id))), split);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Membership in a layer (`joint::Phase2Slots`): every position of layer 5 of the full
 /// instance tests in it, with its conjugates by the 24 symmetries that keep the face classes;
 /// every position of layer 4, and positions a few allowed moves from solved, test out; and
@@ -156,7 +193,7 @@ fn layer_membership() {
     use omelettehedron::chen::tables::P2;
     use omelettehedron::cube::{Cube, N_MOVES};
     use rand::{Rng, SeedableRng};
-    let inst = Instance::new(Kind::FULL);
+    let inst = Instance::new(Kind::FULL).unwrap();
     let dir = tmp_dir("member");
     let mut cfg = config(&dir, 1 << 33);
     cfg.max_depth = Some(5);

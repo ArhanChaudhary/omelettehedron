@@ -1033,13 +1033,14 @@ impl<'a> Bfs<'a> {
             }
         }
         self.log(&format!(
-            "depth {}: {} slots, {} positions, {} up to symmetry, {:.2} GB, {:.1} s",
+            "depth {}: {} slots, {} positions, {} up to symmetry, {:.2} GB, {:.1} s{}",
             lv.depth,
             lv.slots,
             lv.positions,
             lv.orbits,
             lv.bytes as f64 / 1e9,
-            lv.seconds
+            lv.seconds,
+            split_note(inst, &lv)
         ));
         let last = lv.slots == 0;
         if last {
@@ -1239,6 +1240,25 @@ fn start(inst: &Instance, cfg: &Config) -> Result<Manifest, BfsError> {
     };
     m.save(&cfg.dir)?;
     Ok(m)
+}
+
+/// The positions of a level per relaxed phase-1 distance of the configuration (0 and 1).
+pub fn positions_by_d1(inst: &Instance, lv: &Level) -> [u64; 2] {
+    let mut by = [0u64; 2];
+    for (c, &slots) in lv.per_class.iter().enumerate() {
+        let d = usize::from(inst.d1.get(c).copied().unwrap_or(0) != 0);
+        by[d] += inst.class_size(c) * slots;
+    }
+    by
+}
+
+/// A note on the split of a level's positions by distance, for instances with both distances.
+fn split_note(inst: &Instance, lv: &Level) -> String {
+    if inst.d1.iter().all(|&d| d == 0) {
+        return String::new();
+    }
+    let by = positions_by_d1(inst, lv);
+    format!(" (distance 0: {}, distance 1: {})", by[0], by[1])
 }
 
 /// The time of day (UTC) for progress lines.

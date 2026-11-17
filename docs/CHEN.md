@@ -124,6 +124,43 @@ count of one canonical slot per orbit; sampled slots of layers 3 to 8 have that 
 solutions of layer-8 positions replay to solved, with allowed moves only, on the independent
 sticker model, and `omelettehedron show` gives the stated pattern for each scramble.
 
+## The radius-1 phase-2 space (`chen-p2bfs --radius 1`)
+
+The block split's phase-2 space is small because the move rule is strict: a shortest solution of
+a depth-25 position with any moves takes 18-21 moves (100 sampled classes). The *radius-1 space*
+relaxes the rule as little as possible for an exact search: every position whose relaxed phase-1
+distance is at most 1, with every move that stays among them. The distance depends on the
+A-centres and edges alone and is the same in every frame, so the space is a set of pattern-view
+configurations with every corner state and B-centre colouring: 315,900 configurations (the
+37,260 at distance 0 and 278,640 one face turn away), 13,245 symmetry classes (1,611 and
+11,634), 1,345,036,492,800,000 positions, 56,043,189,900,216 up to symmetry, 8.5 times the block
+split's space. Only 5.51 moves per configuration stay in the set on average. Phase 1 then has to
+reach distance 1 only (10 moves at most), so the bound is 10 + the deepest layer; for positions
+whose configuration is at distance 0 (the block split's phase-2 positions) the deepest layer
+containing one is the gain over Chen's 25.
+
+`src/chen/radius1.rs` builds the set in the fixed frame from the 447,120 configurations and
+their neighbours under the 16 moves (3,790,800), each configuration's frame following its
+parent's by the move's frame change (one rotation per frame and move, read off the block split's
+space), and checks the construction: 12 frames of 315,900, one frame per configuration however
+it is reached, every configuration turned by its frame's rotation in frame 0, frame 0 closed
+under the 24 symmetries, every move undone by its inverse, the block split's move table agreed
+with. The search is the same engine with these configurations in place of the 37,260
+(`Kind::radius`), and a class order of greedily grown clusters (`src/chen/p2bfs/order.rs`: no
+move is always allowed here, so the A-component order does not apply): a dense step reads 2.48
+times the class files (2.0 in the block split's search).
+
+**Checks.** Positions per depth 0-7 (1, 16, 208, 2,112, 18,144, 142,568, 1,063,524, 7,564,483;
+at distance 1: 0, 0, 48, 768, 7,680, 64,320, 501,696, 3,732,344) agree between the search, a
+plain search over whole cube states in the fixed frame (`positions --radius1`) and an independent
+search on the Python sticker model; depth 5 already holds 78,248 distance-0 positions against
+the block split's 78,152 (shortcuts through distance 1). The 100 sampled depth-25 classes' radius-1
+distances (`radius-solve`, section above) are looked up in the layers as the search makes them.
+
+**Run.** A dense layer is 7.05 TB (a bit per slot); two layers at the peak, 14.1 TB of a 17 TB
+disk; 42 GB for a part (78 classes, about 170 parts per dense level, 44 GB in all); a dense level
+moves about 39 TB, 5-6 hours at the disk's 2-2.6 GB/s. Started 2026-11-17 05:34 UTC.
+
 ## Tables
 
 | Table | File | Entries | Size | Max | Mean |
