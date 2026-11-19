@@ -151,6 +151,17 @@ enum Cmd {
         #[arg(long, default_value_t = 4)]
         radius: u8,
     },
+    /// For every state of the oriented table's last level: a solution of that many moves whose
+    /// last move is a class-A turn (a shortest path to T1 read off the T1 table, then the A-turn
+    /// to the oriented target), written to `<dir>/solutions<L>-a.tsv` for an independent replay
+    AEnd {
+        /// The oriented search directory
+        #[arg(long)]
+        dir: PathBuf,
+        /// The T1 search directory (with `D.nib`)
+        #[arg(long)]
+        t1: PathBuf,
+    },
     /// The exact strict table alone (two-phase index and moves): entries and states per
     /// distance
     Strict,
@@ -254,6 +265,7 @@ fn main() -> Result<()> {
             depth,
         } => {
             let l = resolve_level(&sp, &dir, level)?;
+            check_listable(&sp, &dir, l)?;
             let states = p1check::expand(&sp, &p1check::level_slots(&sp, &dir, l)?);
             let mut reps: BTreeMap<u64, State> = BTreeMap::new();
             for s in &states {
@@ -330,6 +342,66 @@ fn main() -> Result<()> {
             );
             if sum.1 + sum.3 > 0 {
                 bail!("the ball and the table disagree");
+            }
+        }
+        Cmd::AEnd { dir, t1 } => {
+            use omelettehedron::cube::{is_a_move, N_MOVES};
+            let l = resolve_level(&sp, &dir, None)?;
+            check_listable(&sp, &dir, l)?;
+            let states = p1check::expand(&sp, &p1check::level_slots(&sp, &dir, l)?);
+            let tab = Nibbles::open(&t1, sp.rows(), false)?;
+            let o: std::collections::HashSet<State> =
+                sp.target_states(Target::Oriented).into_iter().collect();
+            let sols: Vec<Option<Vec<usize>>> = states
+                .par_iter()
+                .map(|s| -> Result<Option<Vec<usize>>> {
+                    let Some(mut sol) = p1check::descend(&sp, &tab, s, (l - 1) as u8)? else {
+                        return Ok(None);
+                    };
+                    let c = Cube {
+                        ep: s.1,
+                        xa: s.0,
+                        ..Cube::solved()
+                    }
+                    .apply_seq(&sol);
+                    let last = (0..N_MOVES).filter(|&m| is_a_move(m)).find(|&m| {
+                        let n = c.apply(m);
+                        o.contains(&(n.xa, n.ep))
+                    });
+                    Ok(last.map(|m| {
+                        sol.push(m);
+                        sol
+                    }))
+                })
+                .collect::<Result<_>>()?;
+            let path = dir.join(format!("solutions{l}-a.tsv"));
+            let mut f = std::io::BufWriter::new(std::fs::File::create(&path)?);
+            writeln!(
+                f,
+                "# stickers\tsolution (face turns, the last a class-A turn)\tinternal moves"
+            )?;
+            let mut bad = 0;
+            for (s, sol) in states.iter().zip(&sols) {
+                match sol {
+                    Some(sol) if sol.len() == l => {
+                        let phys =
+                            format_moves(&solution_to_physical(Frame::identity(), sol, false));
+                        writeln!(f, "{}\t{phys}\t{sol:?}", stickers(s))?;
+                    }
+                    _ => bad += 1,
+                }
+            }
+            f.flush()?;
+            println!(
+                "level {l}: {} of {} states have a {l}-move solution ending in a class-A move \
+                 (a {}-move path to T1 from the T1 table); written to {}",
+                states.len() - bad,
+                states.len(),
+                l - 1,
+                path.display()
+            );
+            if bad > 0 {
+                bail!("{bad} states without one");
             }
         }
         Cmd::Strict => {
@@ -436,6 +508,17 @@ fn stickers(s: &State) -> String {
         .collect()
 }
 
+/// Levels are listed in memory (16 bytes a slot, 24 a state): refuse one too large to list.
+fn check_listable(sp: &P1Space, dir: &std::path::Path, l: usize) -> Result<()> {
+    const MAX_STATES: u128 = 50_000_000;
+    let lv = p1disk::levels(sp, dir)?;
+    let states = lv.get(l).map_or(0, |x| x.states);
+    if states > MAX_STATES {
+        bail!("level {l} has {states} states: too many to list (at most {MAX_STATES})");
+    }
+    Ok(())
+}
+
 fn level_cmd(
     sp: &P1Space,
     dir: &std::path::Path,
@@ -444,6 +527,7 @@ fn level_cmd(
     solve: bool,
 ) -> Result<()> {
     let l = resolve_level(sp, dir, level)?;
+    check_listable(sp, dir, l)?;
     let slots = p1check::level_slots(sp, dir, l)?;
     let states = p1check::expand(sp, &slots);
     let keys: Vec<u64> = states
