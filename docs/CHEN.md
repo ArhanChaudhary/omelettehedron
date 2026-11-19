@@ -161,6 +161,30 @@ distances (`radius-solve`, section above) are looked up in the layers as the sea
 disk; 42 GB for a part (78 classes, about 170 parts per dense level, 44 GB in all); a dense level
 moves about 39 TB, 5-6 hours at the disk's 2-2.6 GB/s. Started 2026-11-17 05:34 UTC.
 
+**Result** (complete, 2026-11-19 01:12 UTC): every one of the 1.345 x 10^15 positions is
+reached; the deepest layer is 26 (24 positions, one class, at distance 1). Block positions
+(distance 0) per depth at the end: 23: 307,366,026,849, 24: 91,479,353, 25: 3, none deeper.
+
+**Certificates for 33** (phase 1 to a block configuration in at most 10 moves on the better
+side, then the radius-1 distance: 10 + 23 once every block position at depth 24 or 25 has a
+solution of at most 23 moves, any moves, on both face classes):
+
+* `layer-positions --distance 0 --expand`: depth 24's block classes only (1,611 of the 13,245
+  classes read): 3,815,395 positions up to symmetry, 4,197,343 slots (each class's count equal
+  to the level's), every pattern read back as its slot; their orbits give 91,479,353 positions,
+  all distinct, each in the layer.
+* Depth 25 (its layer deleted by the search): `neighbours --distance 0` of the 24 depth-26
+  positions gives exactly 3 positions, one orbit (class 1578), in none of layers 0, 24 and 26.
+  A depth-26 position's block neighbours are at depth 25, and no block position is deeper than
+  25, so these are the 3. Optimal distance 22 (`solve optimal --tier huge`: no solution of 21
+  moves), e.g. `B U F' BR' U' BR BL F' L BL' L R BR R' B' BL B U' BR F U BR`.
+* Each class is solved by the two-phase solver (`-l 23`, large tier; about 3.5 CPU-seconds a
+  class). `conjugate-solutions` and `verify-side-b --depth 24` then give the certificates of
+  both face classes. Each conjugated solution is checked and replayed on the Python sticker
+  model's tables. The positions of the B side are checked to have their `SWAP_AB` conjugate in
+  layer 24, at relaxed distance 0. Both tools now stream their files a chunk at a time and
+  check that the positions are distinct at the end, so 91 million lines fit in memory.
+
 ## Tables
 
 | Table | File | Entries | Size | Max | Mean |

@@ -316,6 +316,24 @@ enum Cmd {
         #[arg(long)]
         input: PathBuf,
     },
+    /// The 16 face-turn neighbours of positions with their relaxed phase-1 distances (e.g. the
+    /// block neighbours of a layer whose neighbour layer is gone): the distinct neighbours, or
+    /// those at one distance, as patterns held in the fixed frame (tab-separated: the
+    /// position's line, the move, the distance, the pattern)
+    Neighbours {
+        /// Directory of the relaxed phase-1 table
+        #[arg(long)]
+        tables: PathBuf,
+        /// The positions' patterns, one per line (comment lines start with #)
+        #[arg(long)]
+        patterns: PathBuf,
+        /// Only the neighbours at this relaxed phase-1 distance
+        #[arg(long)]
+        distance: Option<u8>,
+        /// Output
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Radius-N phase-2 distances (every position along the solution within relaxed
     /// phase-1 distance N) of the positions of a file (pattern in column 5; a known lower bound,
     /// e.g. the distance with every move allowed, in column 7), by IDA* with the optimal
@@ -379,9 +397,16 @@ enum Cmd {
     /// solver's side B solves, is the listed position: checked, with the relaxed phase-1
     /// distance 0 and membership of the layer), its solution conjugated alike and checked
     VerifySideB {
-        /// The run directory of the phase-2 search (its last layer)
+        /// The run directory of the phase-2 search
         #[arg(long)]
         dir: PathBuf,
+        /// The layer the positions are in (the last by default)
+        #[arg(long)]
+        depth: Option<usize>,
+        /// Do not check membership of the layer (for positions of a layer no longer on disk,
+        /// checked otherwise)
+        #[arg(long)]
+        no_layer: bool,
         /// The directory of the relaxed phase-1 table
         #[arg(long)]
         tables: PathBuf,
@@ -423,10 +448,20 @@ enum Cmd {
         /// The layer (the last by default)
         #[arg(long)]
         depth: Option<usize>,
+        /// Only the classes whose configurations are at this relaxed phase-1 distance (the
+        /// radius-1 space: 0 for the block configurations, 1 for the others)
+        #[arg(long)]
+        distance: Option<u8>,
         /// Output (tab-separated: class, x, p, depth, the configuration's relaxed phase-1
         /// distance, pattern)
         #[arg(long)]
         out: PathBuf,
+        /// Also every position of the listed classes, one pattern per line, here: the 24
+        /// conjugates of each class's position without repeats (as `conjugate-solutions` lists
+        /// them, line for line), each checked to be in the layer, all distinct, as many as the
+        /// level holds in these classes
+        #[arg(long)]
+        expand: Option<PathBuf>,
     },
     /// The positions of a layer (the last by default) up to symmetry, with solutions
     Antipodes {
@@ -847,7 +882,19 @@ fn main() -> Result<()> {
         )?,
         Cmd::Paths { dir, tables } => paths(&dir, &tables)?,
         Cmd::Radius { tables, input } => radius(&tables, &input)?,
-        Cmd::LayerPositions { dir, depth, out } => layer_positions(&dir, depth, &out)?,
+        Cmd::Neighbours {
+            tables,
+            patterns,
+            distance,
+            out,
+        } => neighbours(&tables, &patterns, distance, &out)?,
+        Cmd::LayerPositions {
+            dir,
+            depth,
+            distance,
+            out,
+            expand,
+        } => layer_positions(&dir, depth, distance, &out, expand.as_deref())?,
         Cmd::Lookup {
             dir,
             patterns,
@@ -856,6 +903,8 @@ fn main() -> Result<()> {
         } => lookup(&dir, &patterns, column, depth)?,
         Cmd::VerifySideB {
             dir,
+            depth,
+            no_layer,
             tables,
             patterns,
             solutions,
@@ -863,6 +912,7 @@ fn main() -> Result<()> {
             out_solutions,
         } => verify_side_b(
             &dir,
+            (depth, !no_layer),
             &tables,
             [&patterns, &solutions],
             [&out_patterns, &out_solutions],
@@ -1711,6 +1761,58 @@ fn radius(tables: &Path, input: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `neighbours`: the distinct face-turn neighbours of positions (the first move giving each),
+/// with their relaxed phase-1 distances, all or those at one distance.
+fn neighbours(tables: &Path, patterns: &Path, distance: Option<u8>, out: &Path) -> Result<()> {
+    use omelettehedron::chen::relaxed::RelaxedAe;
+    use omelettehedron::notation::PhysMove;
+    use omelettehedron::pattern::{after, format, of_cube, parse, position};
+    use omelettehedron::tables::AeSym;
+    use std::fmt::Write as _;
+    let ix = AeSym::new(true);
+    let relaxed = RelaxedAe::load(tables, &ix, false).context("loading the relaxed table")?;
+    let f = omelettehedron::fast::fast();
+    let text = std::fs::read_to_string(patterns).with_context(|| patterns.display().to_string())?;
+    let mut seen = std::collections::HashSet::new();
+    let mut hist = std::collections::BTreeMap::new();
+    let mut lines = String::from("# line\tmove\tdistance\tpattern\n");
+    let mut n = 0;
+    for (line, l) in text.lines().enumerate() {
+        if l.starts_with('#') || l.trim().is_empty() {
+            continue;
+        }
+        let line = line + 1;
+        let p = parse(l.trim()).map_err(|e| anyhow::anyhow!("line {line}: {e}"))?;
+        n += 1;
+        for face in 0..8 {
+            for cw in [true, false] {
+                let pm = PhysMove::face(face, cw);
+                let q = after(&p, &[pm]);
+                let cube = position(&q).map_err(|e| anyhow::anyhow!("line {line}: {e}"))?;
+                if !seen.insert(cube) {
+                    continue;
+                }
+                let d1 = relaxed
+                    .exact(&ix, &f.of(&cube))
+                    .context("no relaxed distance")?;
+                *hist.entry(d1).or_insert(0u64) += 1;
+                if distance.is_none_or(|w| w == d1) {
+                    // held in the fixed frame, as the layers' patterns are
+                    let mv = format_moves(&[pm]);
+                    let _ = writeln!(lines, "{line}\t{mv}\t{d1}\t{}", format(&of_cube(&cube)));
+                }
+            }
+        }
+    }
+    std::fs::write(out, lines).with_context(|| out.display().to_string())?;
+    println!(
+        "{n} positions, {} distinct neighbours by relaxed phase-1 distance {hist:?}; {}",
+        seen.len(),
+        out.display()
+    );
+    Ok(())
+}
+
 /// Memory available (GB), from `/proc/meminfo` (`None` where there is none).
 fn available_gb() -> Option<f64> {
     let text = std::fs::read_to_string("/proc/meminfo").ok()?;
@@ -1853,10 +1955,14 @@ fn radius_solve(
     Ok(())
 }
 
-/// `conjugate-solutions`: certificates for all positions from the classes' solutions.
+/// `conjugate-solutions`: certificates for all positions from the classes' solutions, written
+/// as they are made (the classes in parallel, a chunk at a time), checked distinct at the end.
 fn conjugate_solutions(patterns: &Path, solutions: &Path, out: &Path) -> Result<()> {
     use omelettehedron::geometry::{det, face_of_normal, mat_mul, mat_vec, FACES};
     use omelettehedron::notation::{parse_moves, PhysMove};
+    use omelettehedron::pattern::{format, of_cube, parse, position, solves};
+    use rayon::prelude::*;
+    use std::io::Write as _;
     let s48 = omelettehedron::optimal::sym::sym48();
     let pats = std::fs::read_to_string(patterns).with_context(|| patterns.display().to_string())?;
     let sols =
@@ -1866,55 +1972,76 @@ fn conjugate_solutions(patterns: &Path, solutions: &Path, out: &Path) -> Result<
     if pats.len() != sols.len() {
         bail!("{} patterns, {} solutions", pats.len(), sols.len());
     }
-    let mut seen = std::collections::HashSet::new();
-    let mut lines = Vec::new();
+    let pairs: Vec<(&str, &str)> = pats.into_iter().zip(sols).collect();
+    let err = |e: std::io::Error| anyhow::anyhow!("{}: {e}", out.display());
+    let mut w = std::io::BufWriter::new(std::fs::File::create(out).map_err(err)?);
+    let mut keys = Vec::new();
     let mut lengths = std::collections::BTreeMap::new();
-    for (pat, sol) in pats.iter().zip(&sols) {
-        let parsed = omelettehedron::pattern::parse(pat).map_err(|e| anyhow::anyhow!("{e}"))?;
-        let cube =
-            omelettehedron::pattern::position(&parsed).map_err(|e| anyhow::anyhow!("{e}"))?;
-        let moves = parse_moves(sol).map_err(|e| anyhow::anyhow!("{e}"))?;
-        for sy in 0..24 {
-            let (cc, r) = s48.conj_cube(&cube, sy).context("no conjugate")?;
-            if !seen.insert(cc) {
-                continue;
-            }
-            // a face turn is conjugated to the turn of the face the symmetry (then the hold)
-            // takes it to, the other way round for a reflection
-            let m = mat_mul(&s48.mats[r], &s48.mats[sy]);
-            let flip = det(&s48.mats[sy]) < 0;
-            let conj: Vec<PhysMove> = moves
-                .iter()
-                .map(|pm| PhysMove {
-                    face: face_of_normal(mat_vec(&m, FACES[pm.face])),
-                    cw: pm.cw != flip,
-                    ..*pm
-                })
-                .collect();
-            let p = omelettehedron::pattern::of_cube(&cc);
-            if !omelettehedron::pattern::solves(&p, &conj) {
-                bail!("a conjugated solution does not solve its position (symmetry {sy})");
-            }
-            *lengths.entry(conj.len()).or_insert(0u64) += 1;
-            lines.push(format!(
-                "{}\t{}",
-                omelettehedron::pattern::format(&p),
-                format_moves(&conj)
-            ));
+    for chunk in pairs.chunks(1 << 16) {
+        let done: Vec<Vec<(String, u128, usize)>> = chunk
+            .par_iter()
+            .map(|&(pat, sol)| {
+                let parsed = parse(pat).map_err(|e| anyhow::anyhow!("{e}"))?;
+                let cube = position(&parsed).map_err(|e| anyhow::anyhow!("{e}"))?;
+                let moves = parse_moves(sol).map_err(|e| anyhow::anyhow!("{e}"))?;
+                orbit(&cube)?
+                    .into_iter()
+                    .map(|(cc, sy, r)| {
+                        // a face turn is conjugated to the turn of the face the symmetry (then
+                        // the hold) takes it to, the other way round for a reflection
+                        let m = mat_mul(&s48.mats[r], &s48.mats[sy]);
+                        let flip = det(&s48.mats[sy]) < 0;
+                        let conj: Vec<PhysMove> = moves
+                            .iter()
+                            .map(|pm| PhysMove {
+                                face: face_of_normal(mat_vec(&m, FACES[pm.face])),
+                                cw: pm.cw != flip,
+                                ..*pm
+                            })
+                            .collect();
+                        let p = of_cube(&cc);
+                        if !solves(&p, &conj) {
+                            bail!(
+                                "a conjugated solution does not solve its position (symmetry {sy})"
+                            );
+                        }
+                        let line = format!("{}\t{}", format(&p), format_moves(&conj));
+                        Ok((line, packed(&cc).context("no position")?, conj.len()))
+                    })
+                    .collect()
+            })
+            .collect::<Result<_>>()?;
+        for (line, key, len) in done.into_iter().flatten() {
+            writeln!(w, "{line}").map_err(err)?;
+            keys.push(key);
+            *lengths.entry(len).or_insert(0u64) += 1;
         }
     }
-    std::fs::write(out, lines.join("\n") + "\n").with_context(|| out.display().to_string())?;
+    w.flush().map_err(err)?;
+    let n = keys.len();
+    if !all_distinct(&mut keys) {
+        bail!("a position twice: two of the patterns are one position up to symmetry");
+    }
     println!(
-        "{} distinct positions, each with its conjugated solution checked to solve it; lengths \
-         {lengths:?}",
-        lines.len()
+        "{n} distinct positions, each with its conjugated solution checked to solve it; lengths \
+         {lengths:?}"
     );
     Ok(())
 }
 
-/// `verify-side-b`: the class-B side of last-layer positions and their solutions.
-fn verify_side_b(dir: &Path, tables: &Path, input: [&Path; 2], output: [&Path; 2]) -> Result<()> {
-    use omelettehedron::chen::p2bfs::joint::Phase2Slots;
+/// `verify-side-b`: the class-B side of a layer's positions and their solutions (`layer`: the
+/// layer to check them in, the last by default, and whether to check at all), read and written
+/// a chunk at a time, the class-B positions checked distinct at the end.
+fn verify_side_b(
+    dir: &Path,
+    layer: (Option<usize>, bool),
+    tables: &Path,
+    input: [&Path; 2],
+    output: [&Path; 2],
+) -> Result<()> {
+    // per line: the class-B pattern and solution, the position packed, the length, the slot
+    type Done = (String, String, u128, usize, Option<(u32, u32, u32)>);
+    use omelettehedron::chen::p2bfs::lookup::Lookup;
     use omelettehedron::chen::relaxed::RelaxedAe;
     use omelettehedron::cube::SWAP_AB;
     use omelettehedron::fast::fast;
@@ -1922,9 +2049,20 @@ fn verify_side_b(dir: &Path, tables: &Path, input: [&Path; 2], output: [&Path; 2
     use omelettehedron::notation::{parse_moves, PhysMove};
     use omelettehedron::pattern::{format, of_cube, parse, position, solves};
     use omelettehedron::tables::AeSym;
+    use rayon::prelude::*;
+    use std::io::{BufRead as _, Write as _};
     let m = load(dir)?;
-    let d = m.depth().context("no layer")?;
-    let layer = Phase2Slots::load(dir, d)?;
+    let i = Instance::new(m.kind)?;
+    let lk = Lookup::new(&i).context("the instance keeps only part of the corners")?;
+    // the layer's slots, read a class at a time as the positions need them (only the files of
+    // the classes holding listed positions are read)
+    let d = match layer {
+        (d, true) => Some(d.or(m.depth()).context("no layer")?),
+        (_, false) => None,
+    };
+    let lay = Layout::of(dir, &m);
+    let mut slots = std::collections::HashSet::new();
+    let mut read = std::collections::HashSet::new();
     let ix = AeSym::new(true);
     let relaxed = RelaxedAe::load(tables, &ix, false).context("relaxed table")?;
     let inv = transpose(&SWAP_AB);
@@ -1932,62 +2070,114 @@ fn verify_side_b(dir: &Path, tables: &Path, input: [&Path; 2], output: [&Path; 2
         bail!("SWAP_AB is no rotation");
     }
     let [patterns, solutions] = input;
-    let pats = std::fs::read_to_string(patterns).with_context(|| patterns.display().to_string())?;
-    let sols =
-        std::fs::read_to_string(solutions).with_context(|| solutions.display().to_string())?;
-    let pats: Vec<&str> = pats.lines().filter(|l| !l.trim().is_empty()).collect();
-    let sols: Vec<&str> = sols.lines().collect();
-    if pats.len() != sols.len() {
-        bail!("{} patterns, {} solutions", pats.len(), sols.len());
-    }
-    let mut seen = std::collections::HashSet::new();
-    let (mut out_p, mut out_s) = (Vec::new(), Vec::new());
-    let mut lengths = std::collections::BTreeMap::new();
-    for (n, (pat, sol)) in pats.iter().zip(&sols).enumerate() {
-        let line = n + 1;
-        let parsed = parse(pat).map_err(|e| anyhow::anyhow!("line {line}: {e}"))?;
-        let a = position(&parsed).map_err(|e| anyhow::anyhow!("line {line}: {e}"))?;
-        let b = a.conjugate(&inv).context("no conjugate")?;
-        // what the solver's side B works on: the SWAP_AB conjugate, which must be the listed
-        // position (the same pattern), in the phase-2 space by the relaxed table, in the layer
-        let back = b.conjugate(&SWAP_AB).context("no conjugate")?;
-        if format(&of_cube(&back)) != pat.trim() {
-            bail!("line {line}: the SWAP_AB conjugate is not the listed position");
-        }
-        if relaxed.exact(&ix, &fast().of(&back)) != Some(0) {
-            bail!("line {line}: the SWAP_AB conjugate is not at relaxed phase-1 distance 0");
-        }
-        if layer.contains(&back) != Some(true) {
-            bail!("line {line}: the SWAP_AB conjugate is not in layer {d}");
-        }
-        if !seen.insert(b) {
-            bail!("line {line}: a repeated position");
-        }
-        let moves = parse_moves(sol).map_err(|e| anyhow::anyhow!("line {line}: {e}"))?;
-        let conj: Vec<PhysMove> = moves
-            .iter()
-            .map(|pm| PhysMove {
-                face: face_of_normal(mat_vec(&inv, FACES[pm.face])),
-                ..*pm
-            })
-            .collect();
-        let pb = of_cube(&b);
-        if !solves(&pb, &conj) {
-            bail!("line {line}: the conjugated solution does not solve the class-B position");
-        }
-        *lengths.entry(conj.len()).or_insert(0u64) += 1;
-        out_p.push(format(&pb));
-        out_s.push(format_moves(&conj));
-    }
+    let open = |p: &Path| {
+        std::fs::File::open(p)
+            .map(std::io::BufReader::new)
+            .with_context(|| p.display().to_string())
+    };
+    let mut pats = open(patterns)?
+        .lines()
+        .filter(|l| l.as_ref().map_or(true, |l| !l.trim().is_empty()));
+    let mut sols = open(solutions)?.lines();
     let [op, os] = output;
-    std::fs::write(op, out_p.join("\n") + "\n").with_context(|| op.display().to_string())?;
-    std::fs::write(os, out_s.join("\n") + "\n").with_context(|| os.display().to_string())?;
-    let want = m.levels.get(d).map_or(0, |l| l.positions);
+    let create = |p: &Path| {
+        std::fs::File::create(p)
+            .map(std::io::BufWriter::new)
+            .with_context(|| p.display().to_string())
+    };
+    let (mut wp, mut ws) = (create(op)?, create(os)?);
+    let mut keys = Vec::new();
+    let mut lengths = std::collections::BTreeMap::new();
+    let mut first = 1;
+    loop {
+        // the next chunk of lines (pattern, solution)
+        let mut chunk = Vec::new();
+        for pat in pats.by_ref().take(1 << 16) {
+            let pat = pat.context("reading the patterns")?;
+            let sol = sols.next().context("fewer solutions than patterns")?;
+            chunk.push((pat, sol.context("reading the solutions")?));
+        }
+        if chunk.is_empty() {
+            break;
+        }
+        let done: Vec<Done> = chunk
+            .par_iter()
+            .enumerate()
+            .map(|(n, (pat, sol))| {
+                let line = first + n;
+                let parsed = parse(pat).map_err(|e| anyhow::anyhow!("line {line}: {e}"))?;
+                let a = position(&parsed).map_err(|e| anyhow::anyhow!("line {line}: {e}"))?;
+                let b = a.conjugate(&inv).context("no conjugate")?;
+                // what the solver's side B works on: the SWAP_AB conjugate, which must be the
+                // listed position (the same pattern), in the phase-2 space by the relaxed table,
+                // in the layer
+                let back = b.conjugate(&SWAP_AB).context("no conjugate")?;
+                if format(&of_cube(&back)) != pat.trim() {
+                    bail!("line {line}: the SWAP_AB conjugate is not the listed position");
+                }
+                if relaxed.exact(&ix, &fast().of(&back)) != Some(0) {
+                    bail!(
+                        "line {line}: the SWAP_AB conjugate is not at relaxed phase-1 distance 0"
+                    );
+                }
+                let slot = lk.slot_of(&back);
+                let moves = parse_moves(sol).map_err(|e| anyhow::anyhow!("line {line}: {e}"))?;
+                let conj: Vec<PhysMove> = moves
+                    .iter()
+                    .map(|pm| PhysMove {
+                        face: face_of_normal(mat_vec(&inv, FACES[pm.face])),
+                        ..*pm
+                    })
+                    .collect();
+                let pb = of_cube(&b);
+                if !solves(&pb, &conj) {
+                    bail!(
+                        "line {line}: the conjugated solution does not solve the class-B position"
+                    );
+                }
+                let key = packed(&b).context("no position")?;
+                Ok((format(&pb), format_moves(&conj), key, conj.len(), slot))
+            })
+            .collect::<Result<_>>()?;
+        if let Some(d) = d {
+            for (n, &(.., slot)) in done.iter().enumerate() {
+                let line = first + n;
+                let (c, x, p) = slot.with_context(|| format!("line {line}: outside the space"))?;
+                if read.insert(c) {
+                    for_slots(&lay, &i, d, [c as usize], |c, x, p| {
+                        slots.insert((c as u32, x as u32, p as u32));
+                    })?;
+                }
+                if !slots.contains(&(c, x, p)) {
+                    bail!("line {line}: the SWAP_AB conjugate is not in layer {d}");
+                }
+            }
+        }
+        first += chunk.len();
+        for (p, s, key, len, _) in done {
+            writeln!(wp, "{p}").with_context(|| op.display().to_string())?;
+            writeln!(ws, "{s}").with_context(|| os.display().to_string())?;
+            keys.push(key);
+            *lengths.entry(len).or_insert(0u64) += 1;
+        }
+    }
+    if sols.next().is_some() {
+        bail!("more solutions than patterns");
+    }
+    wp.flush().with_context(|| op.display().to_string())?;
+    ws.flush().with_context(|| os.display().to_string())?;
+    let n = keys.len();
+    if !all_distinct(&mut keys) {
+        bail!("a repeated position");
+    }
+    let note = d.map_or("not checked against a layer".into(), |d| {
+        let want = m.levels.get(d).map_or(0, |l| l.positions);
+        format!("in layer {d} of {want} positions")
+    });
     println!(
-        "{} class-B positions, distinct, each with its SWAP_AB conjugate the listed position \
-         (relaxed phase-1 distance 0, in layer {d} of {want} positions), each conjugated \
-         solution checked; lengths {lengths:?}",
-        seen.len()
+        "{n} class-B positions, distinct, each with its SWAP_AB conjugate the listed position \
+         (relaxed phase-1 distance 0, {note}), each conjugated solution checked; lengths \
+         {lengths:?}"
     );
     Ok(())
 }
@@ -2043,46 +2233,175 @@ fn lookup(dir: &Path, patterns: &Path, column: usize, depth: Option<usize>) -> R
 }
 
 /// `layer-positions`: the positions of a layer up to symmetry (one canonical slot per orbit),
-/// as patterns, each checked to read back as its slot; for either configuration set.
-fn layer_positions(dir: &Path, depth: Option<usize>, out: &Path) -> Result<()> {
+/// as patterns, each checked to read back as its slot; for either configuration set, all its
+/// classes or those at one relaxed phase-1 distance; with `expand`, every position as well.
+fn layer_positions(
+    dir: &Path,
+    depth: Option<usize>,
+    distance: Option<u8>,
+    out: &Path,
+    expand: Option<&Path>,
+) -> Result<()> {
     use omelettehedron::chen::p2bfs::engine::canonical;
     use omelettehedron::chen::p2bfs::lookup::Lookup;
+    use omelettehedron::pattern::{format, of_cube, parse, position};
+    use rayon::prelude::*;
     use std::fmt::Write as _;
+    use std::io::Write as _;
     let m = load(dir)?;
     let i = Instance::new(m.kind)?;
     let lay = Layout::of(dir, &m);
     let lk = Lookup::new(&i).context("the instance keeps only part of the corners")?;
     let d = depth.or(m.depth()).context("no layer")?;
-    let want = m.levels.get(d).map_or(0, |l| l.orbits);
+    let lv = m.levels.get(d).context("no such layer in the manifest")?;
+    let classes: Vec<usize> = (0..i.n_class)
+        .filter(|&c| distance.is_none_or(|w| i.d1.get(c) == Some(&w)))
+        .collect();
+    // the canonical slots; every slot too when expanding (the conjugates' membership), and the
+    // slots per class against the level's counts (each class file read whole)
     let mut lines = vec![];
-    for_slots(&lay, &i, d, 0..i.n_class, |c, x, p| {
+    let mut all = std::collections::HashSet::new();
+    let mut per_class = vec![0u64; i.n_class];
+    for_slots(&lay, &i, d, classes.iter().copied(), |c, x, p| {
+        if let Some(n) = per_class.get_mut(c) {
+            *n += 1;
+        }
+        let slot = (c as u32, x as u32, p as u32);
+        if expand.is_some() {
+            all.insert(slot);
+        }
         if canonical(&i, c, x, p) {
-            lines.push((c as u32, x as u32, p as u32));
+            lines.push(slot);
         }
     })?;
-    if lines.len() as u64 != want {
+    let level_slots = |c: usize| lv.per_class.get(c).copied().unwrap_or(0);
+    let read = |c: usize| per_class.get(c).copied().unwrap_or(0);
+    if let Some(&c) = classes.iter().find(|&&c| read(c) != level_slots(c)) {
         bail!(
-            "{} canonical slots, the level has {want} orbits",
-            lines.len()
+            "class {c}: {} slots read, the level has {}",
+            read(c),
+            level_slots(c)
         );
     }
+    if distance.is_none() && lines.len() as u64 != lv.orbits {
+        bail!(
+            "{} canonical slots, the level has {} orbits",
+            lines.len(),
+            lv.orbits
+        );
+    }
+    let want: u64 = classes
+        .iter()
+        .map(|&c| i.class_size(c) * level_slots(c))
+        .sum();
+    let pats: Vec<String> = lines
+        .par_iter()
+        .map(|&slot| {
+            let pat = lk.pattern_of(slot).context("slot without a position")?;
+            let read = lk.canonical_slot_of(&pat);
+            if read != Some(slot) {
+                bail!("slot {slot:?}: its pattern reads back as {read:?}");
+            }
+            Ok(pat)
+        })
+        .collect::<Result<_>>()?;
     let mut text = String::from("# class\tx\tp\tdepth\tdistance\tpattern\n");
-    for &slot in &lines {
-        let pat = lk.pattern_of(slot).context("slot without a position")?;
-        if lk.canonical_slot_of(&pat) != Some(slot) {
-            bail!(
-                "slot {slot:?}: its pattern reads back as {:?}",
-                lk.canonical_slot_of(&pat)
-            );
-        }
-        let d1 = i.d1.get(slot.0 as usize).copied().unwrap_or(0);
-        let _ = writeln!(text, "{}\t{}\t{}\t{d}\t{d1}\t{pat}", slot.0, slot.1, slot.2);
+    for (&(c, x, p), pat) in lines.iter().zip(&pats) {
+        let d1 = i.d1.get(c as usize).copied().unwrap_or(0);
+        let _ = writeln!(text, "{c}\t{x}\t{p}\t{d}\t{d1}\t{pat}");
     }
     std::fs::write(out, text).with_context(|| out.display().to_string())?;
     println!(
-        "{} positions up to symmetry in layer {d}, every pattern reads back as its slot; {}",
+        "{} positions up to symmetry in layer {d} ({} of its {} classes, {} slots, {want} \
+         positions), every pattern reads back as its slot; {}",
         lines.len(),
+        classes.len(),
+        i.n_class,
+        per_class.iter().sum::<u64>(),
         out.display()
     );
+    let Some(path) = expand else {
+        return Ok(());
+    };
+    // every position: each class position's orbit, in the order `conjugate-solutions` uses
+    let err = |e: std::io::Error| anyhow::anyhow!("{}: {e}", path.display());
+    let mut w = std::io::BufWriter::new(std::fs::File::create(path).map_err(err)?);
+    let mut keys = Vec::new();
+    for chunk in pats.chunks(1 << 16) {
+        let orbits: Vec<Vec<(String, u128)>> = chunk
+            .par_iter()
+            .map(|pat| {
+                let parsed = parse(pat).map_err(|e| anyhow::anyhow!("{e}"))?;
+                let cube = position(&parsed).map_err(|e| anyhow::anyhow!("{e}"))?;
+                orbit(&cube)?
+                    .into_iter()
+                    .map(|(cc, _, _)| {
+                        let slot = lk.slot_of(&cc).context("a conjugate outside the space")?;
+                        if !all.contains(&slot) {
+                            bail!("a conjugate of {pat} is not in layer {d}");
+                        }
+                        Ok((format(&of_cube(&cc)), packed(&cc).context("no position")?))
+                    })
+                    .collect()
+            })
+            .collect::<Result<_>>()?;
+        for (pat, key) in orbits.into_iter().flatten() {
+            writeln!(w, "{pat}").map_err(err)?;
+            keys.push(key);
+        }
+    }
+    w.flush().map_err(err)?;
+    let n = keys.len() as u64;
+    if !all_distinct(&mut keys) {
+        bail!("MISMATCH: a position listed twice");
+    }
+    if n != want {
+        bail!("MISMATCH: {n} positions, the layer has {want} in these classes");
+    }
+    println!(
+        "{n} positions, distinct, each in the layer: all the layer's positions in these classes; \
+         {}",
+        path.display()
+    );
     Ok(())
+}
+
+/// A position's conjugates by the 24 symmetries that keep the face classes, held in the fixed
+/// frame, without repeats (each with the first symmetry giving it, and the hold `conj_cube`
+/// returns): the positions of its orbit, in the order the certificates list them.
+fn orbit(
+    cube: &omelettehedron::cube::Cube,
+) -> Result<Vec<(omelettehedron::cube::Cube, usize, usize)>> {
+    let s48 = omelettehedron::optimal::sym::sym48();
+    let mut out: Vec<(omelettehedron::cube::Cube, usize, usize)> = Vec::with_capacity(24);
+    for sy in 0..24 {
+        let (cc, r) = s48.conj_cube(cube, sy).context("no conjugate")?;
+        if out.iter().all(|(c, _, _)| *c != cc) {
+            out.push((cc, sy, r));
+        }
+    }
+    Ok(out)
+}
+
+/// A position in 120 bits (corners 3 + 1 bits each, edges 4, centres 2), to check that many
+/// positions are distinct in little memory; `None` if a value does not fit its field.
+fn packed(c: &omelettehedron::cube::Cube) -> Option<u128> {
+    let fields: [(&[u8], u32); 5] = [(&c.cp, 3), (&c.co, 1), (&c.ep, 4), (&c.xa, 2), (&c.xb, 2)];
+    let mut v = 0u128;
+    for (values, bits) in fields {
+        for &x in values {
+            if u32::from(x) >= 1 << bits {
+                return None;
+            }
+            v = v << bits | u128::from(x);
+        }
+    }
+    Some(v)
+}
+
+/// Whether packed positions are all distinct (sorts them).
+fn all_distinct(keys: &mut [u128]) -> bool {
+    use rayon::slice::ParallelSliceMut;
+    keys.par_sort_unstable();
+    keys.windows(2).all(|w| w[0] != w[1])
 }
