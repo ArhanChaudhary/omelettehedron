@@ -185,6 +185,123 @@ solution of at most 23 moves, any moves, on both face classes):
   layer 24, at relaxed distance 0. Both tools now stream their files a chunk at a time and
   check that the positions are distinct at the end, so 91 million lines fit in memory.
 
+## Oriented phase 1 (`chen-oriented`)
+
+`src/chen/oriented.rs`, `p1disk.rs`, `p1check.rs` and `src/bin/chen-oriented.rs`: exact phase-1
+distances to targets finer than `H'`, every class-A hexagon one colour *and unturned*:
+
+* **oriented**: the solved configuration (A-centres and edges) in each of the 12 frames;
+* **T1**: those and the 8 configurations one class-A turn (U, U', F, F', BR, BR', BL, BL') from
+  each, 9 per frame (108).
+
+Neither is closed under turning a hexagon in place, so a state is the whole edge permutation:
+369,600 A-centre colourings x 239,500,800 even edge permutations = 8.85 x 10^13 states, each
+with 960 x 369,600 positions (corners up to a whole turn, B-centres). Both targets are closed
+under the two-phase table's 288 pairs (`src/sym.rs`; a pair is a rotation times a conjugation
+that fixes solved and maps class-A turns to class-A turns), so the index has one row per
+A-colouring class (1,396) of 239,500,800 slots: 3.34 x 10^11 slots, 41.8 GB a bit plane (the
+optimal solver's giant-tier table has the same rows and holds the oriented distance mod 3). A
+column is (edge coset of the two-phase table, turn of each A-triple in `Z_3^4`): a move or a pair
+maps a coset's 81 slots by an affine map of `Z_3^4`, so they move as one 81-bit block.
+
+**Search.** A level at a time on disk: a slot is new at level d if it is unvisited and a
+neighbour is at level d - 1 (pull). A destination row reads at most 16 source rows of the
+previous level's plane, whole (29.9 MB) into a least-recently-used cache of 6-8 GB; the rows go
+in a greedy order that keeps the sources cached. Bit planes `V.bits` and `L<d>.bits` with
+direct I/O, then `D.nib` (4 bits a slot, 167 GB). A dense level took 6-8 minutes with both
+searches running on a loaded machine; each search about an hour.
+
+**Result** (2026-11-19; states in the fixed frame, 960 x 369,600 positions each; divide by 12
+for states with one edge held):
+
+| depth | oriented: states | slots | T1: states | slots |
+|---:|---:|---:|---:|---:|
+| 0 | 12 | 1 | 108 | 9 |
+| 1 | 192 | 9 | 1,152 | 33 |
+| 2 | 2,208 | 36 | 13,056 | 92 |
+| 3 | 24,576 | 138 | 144,960 | 594 |
+| 4 | 272,448 | 1,072 | 1,602,816 | 6,090 |
+| 5 | 3,005,376 | 11,472 | 17,636,064 | 67,351 |
+| 6 | 32,993,280 | 125,821 | 193,129,704 | 736,130 |
+| 7 | 360,490,332 | 1,369,696 | 2,104,985,484 | 7,982,882 |
+| 8 | 3,920,792,028 | 14,850,724 | 22,823,672,916 | 86,363,283 |
+| 9 | 42,424,555,428 | 160,482,714 | 245,348,265,276 | 927,788,548 |
+| 10 | 452,961,167,244 | 1,712,577,206 | 2,543,499,292,020 | 9,614,511,442 |
+| 11 | 4,558,966,848,552 | 17,229,723,946 | 21,391,629,875,244 | 80,821,227,795 |
+| 12 | 32,844,356,972,184 | 124,069,059,872 | 58,294,300,125,552 | 220,143,305,683 |
+| 13 | 49,515,312,979,248 | 186,991,529,581 | 6,019,575,659,448 | 22,741,121,307 |
+| 14 | 1,101,155,571,960 | 4,163,384,427 | 1,276,200 | 5,561 |
+| 15 | 4,932 | 85 | 0 | 0 |
+| all | 88,519,495,680,000 | 334,343,116,800 | 88,519,495,680,000 | 334,343,116,800 |
+
+* **Oriented**: at most **15** moves; 4,932 states at 15 (**411** with one edge held, 85 slots,
+  1.75 x 10^12 positions); mean 12.520877 over positions. Every count over 12 equals the
+  held-edge phase-1 distribution published with the 36-move upper bound (411 at 15), and the
+  slot counts equal the giant tier's table's histogram.
+* **T1**: at most **14** moves; 1,276,200 states at 14 (106,350 with one edge held, 5,561
+  slots, 4.53 x 10^14 positions); mean 11.759395. So phase 1 to the ball of radius 4 around T1
+  takes at most 10 moves.
+* The strict target (`H'`) for comparison: at most 14, mean 10.938721.
+
+**Checks** (logs and lists in `/data3/oriented4/stageA/`):
+
+* Local consistency of every one of the 3.34 x 10^11 slots of each `D.nib` (`check`): the slots
+  at 0 are exactly the target slots, and every other slot's smallest neighbour value is its
+  value less one (the neighbours found slot by slot with the digit map, not the search's block
+  permutation). Both tables pass, so each holds the exact distance given the move model.
+* The move model: the index's steps equal cube moves (tests over random slots and every 997th
+  coset), and the 288 pairs map each state's neighbours to its image's neighbours up to a
+  rotation and fix both target sets (tests).
+* Table-free searches from the targets over whole A-centre/edge states (`plain`, a hash set):
+  oriented depths 0-6 and T1 depths 0-6 equal the tables'; the Python sticker model
+  (`p1py.py bfs`): oriented 0-5, T1 0-4.
+* The oriented distribution over 12 equals the published held-edge distribution (every depth),
+  and its slot counts the giant tier's table's histogram (every depth).
+* Every state at the maximum has a solution read off its table: 4,932 of 15 moves (oriented) and
+  1,276,200 of 14 (T1), each replayed on the Python sticker model to the target. With the T1
+  table, every oriented state at 15 also has a 15-move solution ending in a class-A turn (a
+  14-move path to T1, then the turn), replayed the same way.
+* Lower bounds without a table (`mitm`): the classes within 8 moves of the targets by
+  breadth-first search over classes (cube moves, the 288 pairs as class keys), and every move
+  sequence from one state of each class at the maximum: none of the oriented 29 classes is
+  within 14 moves (8 + 6) of the target, and none of T1's 4,670 classes at 14 is within 13
+  (8 + 5).
+* Slot by slot over all 3.34 x 10^11 slots (`cross`), against an exact strict table made with
+  the two-phase index and moves (its states per distance equal the earlier strict
+  distribution): oriented - strict is 0 to 4 everywhere (slots 1.71e10, 1.31e11, 1.62e11,
+  2.35e10, 8.02e8), oriented - T1 is 0 or 1 everywhere (7.97e10, 2.55e11), T1 is never below
+  strict, and the smallest oriented value and the smallest T1 value over a coset's 81 turns both
+  equal the strict value on every coset. The oriented table mod 3 equals the giant tier's table on
+  every slot.
+
+## The radius-4 space around T1 (`chen-p2bfs --t1 --radius 4`)
+
+Phase 1 to within 4 moves of T1 takes at most 14 - 4 = 10 moves; phase 2 is then an exact
+search of every position whose configuration is within 4 moves of T1 (any frame), with every
+move that stays in that set, so the bound is 10 + its deepest layer. `t1_ball` in
+`src/chen/radius1.rs` builds the set like the radius-1 set: from the 108 fixed-frame T1
+configurations (in the block split's space, with their frames) by breadth-first search with the
+16 moves, each configuration's frame following its parent's. Checks: 146,841 configurations in
+each of the 12 frames (the Python sticker model's ball: 9, 105, 1,193, 13,273, 146,841 within 0
+to 4), one frame per configuration however it is reached, every configuration turned by its
+frame in frame 0 at the same distance, frame 0 closed under the 24 symmetries, every move undone
+by its inverse, no move changing the distance by 2. With the T1 table (`chen-oriented
+ball-check`): every one of the 1,762,092 configurations' distance is its table value and every
+one of the 21,635,712 moves out of the set reaches a value of 5.
+
+The space: 146,841 configurations (6,134 classes) x 11,520 corner states x 369,600 B-centre
+colourings = 6.25 x 10^14 positions, 2.61 x 10^13 slots (3.3 TB a dense layer); 3.72 moves per
+configuration stay in the set on average. Positions per depth 0-7 (1, 16, 208, 2,688, 34,752,
+278,456, 845,016, 6,406,223), split by distance to T1, agree between the search, a plain search
+over whole cube states (`positions --t1-radius 4`) and an independent search on the Python
+sticker model.
+
+**Run** (started 2026-11-19 07:28 UTC with 36 GB for a part, resumed at depth 15 with 30 GB to
+leave the machine 15 GB): `chen-p2bfs -j 48 run --t1 --radius 4 --ram-gb 30`,
+layers in `/data4/oriented4/store`; a watcher (`keep-layers.py`) hard-links each completed layer
+of at most 1.5 TB into `keep/` and keeps the 4 deepest, since the search deletes layer d - 2
+while it makes layer d.
+
 ## Tables
 
 | Table | File | Entries | Size | Max | Mean |
