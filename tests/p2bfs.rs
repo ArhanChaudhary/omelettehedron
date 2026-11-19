@@ -99,6 +99,7 @@ fn corner_permutation_instance() {
             corners: CornerView::Perm,
             b: BView::None,
             radius: 0,
+            t1: false,
         },
         "perm",
     );
@@ -111,6 +112,7 @@ fn unlabelled_b_instance() {
             corners: CornerView::None,
             b: BView::Unlabelled,
             radius: 0,
+            t1: false,
         },
         "unlabelled",
     );
@@ -167,7 +169,7 @@ fn radius1_instance_first_depths() {
     cfg.max_depth = Some(4);
     let mut b = Bfs::open(&inst, cfg).unwrap();
     assert_eq!(b.run().unwrap(), Outcome::Stopped);
-    let split: Vec<[u64; 2]> = b
+    let split: Vec<Vec<u64>> = b
         .manifest()
         .levels
         .iter()

@@ -128,26 +128,35 @@ pub fn position_bfs(max_depth: usize) -> Vec<u64> {
 /// `label(cube) == Some(_)`, by a plain search over cube states in the fixed-corner frame with
 /// every move (no symmetry), a hash set per layer: per depth, the positions with label 0 and
 /// with label 1 (others counted as 1).
-pub fn cube_bfs(max_depth: usize, label: impl Fn(&Cube) -> Option<u8>) -> Vec<[u64; 2]> {
+pub fn cube_bfs(max_depth: usize, label: impl Fn(&Cube) -> Option<u8>) -> Vec<Vec<u64>> {
     let start = Cube::solved();
     let mut prev: HashSet<Cube> = HashSet::new();
     let mut cur: HashSet<Cube> = HashSet::from([start]);
-    let mut counts = vec![[1u64, 0]];
+    let mut counts = vec![vec![1u64]];
     for _ in 0..max_depth {
         let mut next: HashSet<Cube> = HashSet::new();
-        let mut split = [0u64; 2];
+        let mut split = vec![0u64; 1];
         for c in &cur {
             for m in 0..N_MOVES {
                 let n = c.apply(m);
                 let Some(l) = label(&n) else { continue };
                 if !cur.contains(&n) && !prev.contains(&n) && next.insert(n) {
-                    split[usize::from(l != 0)] += 1;
+                    let l = l as usize;
+                    if split.len() <= l {
+                        split.resize(l + 1, 0);
+                    }
+                    split[l] += 1;
                 }
             }
         }
         counts.push(split);
         prev = cur;
         cur = next;
+    }
+    // the same length for every depth (at least two: distance 0 and 1)
+    let width = counts.iter().map(Vec::len).max().unwrap_or(1).max(2);
+    for c in &mut counts {
+        c.resize(width, 0);
     }
     counts
 }

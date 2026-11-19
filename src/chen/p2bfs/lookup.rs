@@ -5,7 +5,6 @@
 use super::codec::{ClassReader, CHUNK};
 use super::engine::{canonical_slot, BfsError, Layout};
 use super::instance::{CornerView, Instance, N_SYM};
-use crate::chen::radius1::radius1;
 use crate::chen::space::space;
 use crate::coord::{corners, mset, N_CORNER};
 use crate::cube::Cube;
@@ -40,16 +39,15 @@ impl<'a> Lookup<'a> {
         let s = space();
         let inst = self.inst;
         // the configuration's frame, and its pattern-view configuration's class and symmetry
-        let (r, (cls, k)) = if inst.kind.radius == 0 {
-            let cfg = s.id(cube)? as usize;
-            (s.rot[cfg] as usize, s.pat.class[s.pat.of_cfg[cfg] as usize])
-        } else {
-            let r1 = radius1().ok()?;
+        let (r, (cls, k)) = if let Some(r1) = inst.kind.set().ok()? {
             let cfg = r1.id(cube)? as usize;
             (
                 r1.rot[cfg] as usize,
                 r1.pat.class[r1.pat.of_cfg[cfg] as usize],
             )
+        } else {
+            let cfg = s.id(cube)? as usize;
+            (s.rot[cfg] as usize, s.pat.class[s.pat.of_cfg[cfg] as usize])
         };
         let k = k as usize;
         let pc = *s
@@ -72,11 +70,10 @@ impl<'a> Lookup<'a> {
         let s = space();
         let inst = self.inst;
         let q = *inst.rep.get(c as usize)? as usize;
-        let (xa, ep) = if inst.kind.radius == 0 {
-            *s.cfgs.get(*s.pat.cfg.get(q)? as usize)?
-        } else {
-            let r1 = radius1().ok()?;
+        let (xa, ep) = if let Some(r1) = inst.kind.set().ok()? {
             *r1.cfgs.get(*r1.pat.cfg.get(q)? as usize)?
+        } else {
+            *s.cfgs.get(*s.pat.cfg.get(q)? as usize)?
         };
         let (cp, co) = *s
             .corners

@@ -50,6 +50,9 @@ pub struct Radius1 {
     pub d1: Vec<u8>,
     /// per pattern-view configuration: whether it is in `H'` (every hexagon one colour)
     pub hprime: Vec<bool>,
+    /// per configuration (fixed frame): its distance to the set's targets (the relaxed
+    /// phase-1 distance for the radius-1 set, the distance to `T1` for a ball around it)
+    pub dist: Vec<u8>,
 }
 
 impl Radius1 {
@@ -58,10 +61,11 @@ impl Radius1 {
         self.ids.get(&key(&cube.xa, &cube.ep)).copied()
     }
 
-    /// The relaxed phase-1 distance of a fixed-frame configuration: 0 for the block split's.
+    /// The distance of a fixed-frame configuration to the set's targets: for the radius-1 set
+    /// its relaxed phase-1 distance (0 for the block split's), for a ball its distance to `T1`.
     #[inline]
     pub fn cfg_d1(&self, cfg: u32) -> u8 {
-        u8::from(cfg as usize >= space().cfgs.len())
+        self.dist.get(cfg as usize).copied().unwrap_or(u8::MAX)
     }
 }
 
@@ -262,6 +266,7 @@ fn build() -> Result<Radius1, Radius1Error> {
         .iter()
         .map(|&c| (c as usize) < n0 && s.pshape[c as usize] == 0)
         .collect();
+    let dist = (0..cfgs.len()).map(|c| u8::from(c >= n0)).collect();
     Ok(Radius1 {
         cfgs,
         ids,
@@ -270,7 +275,268 @@ fn build() -> Result<Radius1, Radius1Error> {
         pat,
         d1,
         hprime,
+        dist,
     })
+}
+
+/// Pattern-view configurations within each radius of `T1` (the solved configuration and the 8
+/// one class-A turn from it; cumulative), counted on the Python sticker model.
+pub const T1_BALL: [usize; 6] = [9, 105, 1_193, 13_273, 146_841, 1_616_513];
+
+/// Whether every class-A hexagon of a configuration is one colour (`H'`, turned any way).
+pub fn hexagons_solid(xa: &[u8; 12], ep: &[u8; 12]) -> bool {
+    let d = crate::cube::defs();
+    (0..4).all(|i| {
+        let c = xa[3 * i];
+        xa[3 * i..3 * i + 3].iter().all(|&x| x == c)
+            && (0..12)
+                .filter(|&e| d.sm.st[d.edge_slots[e][0]].face == crate::geometry::A_FACES[i])
+                .all(|e| d.edge_atri[ep[e] as usize] == c)
+    })
+}
+
+/// The ball of radius `radius` around `T1` (see [`t1_ball`]).
+fn build_ball(radius: u8) -> Result<Radius1, Radius1Error> {
+    let err = |what: String| Radius1Error(what);
+    let s = space();
+    let s0 = Cube::solved();
+    let n0 = s.cfgs.len();
+    // the frame change of each move from each frame, from the block split's space
+    let mut after = [[u8::MAX; N_MOVES]; N_FRAMES];
+    for c in 0..n0 {
+        let r = s.rot[c] as usize;
+        for m in 0..N_MOVES {
+            let n = s.next[c][m];
+            if n == NONE {
+                continue;
+            }
+            let e = after
+                .get_mut(r)
+                .and_then(|row| row.get_mut(m))
+                .ok_or_else(|| err(format!("frame {r} out of range")))?;
+            let r2 = s.rot[n as usize];
+            if *e == u8::MAX {
+                *e = r2;
+            } else if *e != r2 {
+                return Err(err(format!("move {m} from frame {r} leads to two frames")));
+            }
+        }
+    }
+    // the targets: the pattern-view solved configuration and its class-A turns, in every
+    // frame; the block split's configurations (they are in its space), solved first
+    let solved_p = 0u32;
+    if s.pat.cfg.first().map(|&c| s.cfgs[c as usize]) != Some((s0.xa, s0.ep)) {
+        return Err(err("pattern-view configuration 0 is not solved".into()));
+    }
+    let mut tp = vec![solved_p];
+    for m in (0..N_MOVES).filter(|&m| crate::cube::is_a_move(m)) {
+        let q = s.pat.next[0][m];
+        if q == NONE || tp.contains(&q) {
+            return Err(err(format!("class-A move {m} from solved")));
+        }
+        tp.push(q);
+    }
+    let seeds: Vec<u32> = (0..n0 as u32)
+        .filter(|&c| tp.contains(&s.pat.of_cfg[c as usize]))
+        .collect();
+    if seeds.len() != tp.len() * N_FRAMES || seeds.first() != Some(&0) {
+        return Err(err(format!("{} target configurations", seeds.len())));
+    }
+    let mut cfgs: Vec<([u8; 12], [u8; 12])> = vec![];
+    let mut ids: QuickMap<u128, u32> = QuickMap::default();
+    let mut rot = vec![];
+    let mut dist = vec![];
+    for &c in &seeds {
+        let (xa, ep) = s.cfgs[c as usize];
+        ids.insert(key(&xa, &ep), cfgs.len() as u32);
+        cfgs.push((xa, ep));
+        rot.push(s.rot[c as usize]);
+        dist.push(0u8);
+    }
+    // breadth-first search in the fixed frame, each configuration's frame following its
+    // parent's
+    let mut front: Vec<u32> = (0..cfgs.len() as u32).collect();
+    for d in 1..=radius {
+        let mut nxt = vec![];
+        for &c in &front {
+            let (xa, ep) = cfgs[c as usize];
+            let cube = Cube { ep, xa, ..s0 };
+            for m in 0..N_MOVES {
+                let n = cube.apply(m);
+                let k = key(&n.xa, &n.ep);
+                let want = after[rot[c as usize] as usize % N_FRAMES][m];
+                let id = if let Some(&id) = ids.get(&k) {
+                    id
+                } else {
+                    let id = cfgs.len() as u32;
+                    ids.insert(k, id);
+                    cfgs.push((n.xa, n.ep));
+                    rot.push(want);
+                    dist.push(d);
+                    nxt.push(id);
+                    id
+                };
+                if rot[id as usize] != want {
+                    return Err(err(format!(
+                        "configuration {id} is in frame {} and in frame {want}",
+                        rot[id as usize]
+                    )));
+                }
+            }
+        }
+        front = nxt;
+    }
+    // the moves that stay in the set
+    let mut next: Vec<[u32; N_MOVES]> = Vec::with_capacity(cfgs.len());
+    for c in 0..cfgs.len() {
+        let (xa, ep) = cfgs[c];
+        let cube = Cube { ep, xa, ..s0 };
+        let mut row = [NONE; N_MOVES];
+        for m in 0..N_MOVES {
+            let n = cube.apply(m);
+            if let Some(&id) = ids.get(&key(&n.xa, &n.ep)) {
+                let want = after[rot[c] as usize % N_FRAMES][m];
+                if rot[id as usize] != want {
+                    return Err(err(format!(
+                        "configuration {id} is in frame {} and in frame {want}",
+                        rot[id as usize]
+                    )));
+                }
+                if dist[id as usize].abs_diff(dist[c]) > 1 {
+                    return Err(err(format!("move {m} of {c} changes the distance by 2")));
+                }
+                row[m] = id;
+            }
+        }
+        next.push(row);
+    }
+    let want_pat = T1_BALL
+        .get(radius as usize)
+        .copied()
+        .ok_or_else(|| err(format!("radius {radius}: no expected count")))?;
+    let mut per = [0usize; N_FRAMES];
+    for &r in &rot {
+        per[r as usize % N_FRAMES] += 1;
+    }
+    if per.iter().any(|&n| n != want_pat) {
+        return Err(err(format!(
+            "configurations per frame {per:?}, not {want_pat} each"
+        )));
+    }
+    for (c, row) in next.iter().enumerate() {
+        for (m, &n) in row.iter().enumerate() {
+            if n != NONE && next[n as usize][inverse_move(m)] != c as u32 {
+                return Err(err(format!(
+                    "move {m} of configuration {c} cannot be undone"
+                )));
+            }
+        }
+    }
+    let rots: Vec<Mat> = rotation_group().iter().map(transpose).collect();
+    if rots.len() != N_FRAMES {
+        return Err(err(format!("{} rotations, not {N_FRAMES}", rots.len())));
+    }
+    let pat = patterns(&cfgs, &ids, &next, &rot, &rots, &s.rot_xb);
+    if pat.cfg.len() != want_pat {
+        return Err(err(format!(
+            "{} pattern-view configurations, not {want_pat}",
+            pat.cfg.len()
+        )));
+    }
+    // every configuration turned by its frame's rotation is the frame-0 configuration recorded
+    // for it, at the same distance
+    let turn: Vec<SymMaps> = rots.iter().map(sym_maps).collect();
+    for (c, &(xa, ep)) in cfgs.iter().enumerate() {
+        let img = turn[rot[c] as usize % N_FRAMES].apply(&xa, &ep, false);
+        let q = pat.cfg.get(pat.of_cfg[c] as usize).copied();
+        if q.map(|q| cfgs[q as usize]) != Some(img) || q.map(|q| dist[q as usize]) != Some(dist[c])
+        {
+            return Err(err(format!(
+                "configuration {c} (frame {}) turned is not its frame-0 configuration",
+                rot[c]
+            )));
+        }
+    }
+    // frame 0 is closed under the 24 symmetries (which keep the distance), and the classes map
+    // onto their representatives
+    let syms: Vec<SymMaps> = class_preserving_group().iter().map(sym_maps).collect();
+    let frame0_id = |img: ([u8; 12], [u8; 12])| -> Option<u32> {
+        ids.get(&key(&img.0, &img.1))
+            .copied()
+            .filter(|&id| rot[id as usize] == 0)
+    };
+    for (p, &c) in pat.cfg.iter().enumerate() {
+        let (xa, ep) = cfgs[c as usize];
+        for sym in &syms {
+            match frame0_id(sym.apply(&xa, &ep, true)) {
+                Some(id) if dist[id as usize] == dist[c as usize] => {}
+                _ => {
+                    return Err(err(format!(
+                        "frame 0 is not closed under the symmetries (configuration {c})"
+                    )))
+                }
+            }
+        }
+        let (cl, k) = pat.class[p];
+        let r = pat.rep.get(cl as usize).copied().unwrap_or(u32::MAX) as usize;
+        let img = syms
+            .get(k as usize)
+            .map(|sym| sym.apply(&xa, &ep, true))
+            .and_then(frame0_id);
+        if img != pat.cfg.get(r).copied() {
+            return Err(err(format!(
+                "pattern-view configuration {p} is not mapped onto its representative"
+            )));
+        }
+    }
+    let d1: Vec<u8> = pat.cfg.iter().map(|&c| dist[c as usize]).collect();
+    let hprime = pat
+        .cfg
+        .iter()
+        .map(|&c| {
+            let (xa, ep) = cfgs[c as usize];
+            hexagons_solid(&xa, &ep)
+        })
+        .collect();
+    Ok(Radius1 {
+        cfgs,
+        ids,
+        next,
+        rot,
+        pat,
+        d1,
+        hprime,
+        dist,
+    })
+}
+
+/// The ball of radius `radius` (1 to 5) around `T1`: every configuration whose distance (the
+/// 16 face turns, in any frame) to the solved configuration or one of the 8 one class-A turn
+/// from it is at most `radius`, with every move that stays in it; [`T1_BALL`] configurations
+/// per frame. Built once per radius; the same checks as [`radius1`], and the frames' balls are
+/// disjoint (every configuration gets one frame however it is reached).
+///
+/// # Errors
+///
+/// [`Radius1Error`] if a check of the construction fails.
+pub fn t1_ball(radius: u8) -> Result<&'static Radius1, Radius1Error> {
+    static S: [OnceLock<Result<Radius1, Radius1Error>>; 6] = [
+        OnceLock::new(),
+        OnceLock::new(),
+        OnceLock::new(),
+        OnceLock::new(),
+        OnceLock::new(),
+        OnceLock::new(),
+    ];
+    if radius == 0 {
+        // (no move stays in the set: the pattern view takes its frame changes from solved)
+        return Err(Radius1Error("radius 0: no move stays in the set".into()));
+    }
+    S.get(radius as usize)
+        .ok_or_else(|| Radius1Error(format!("radius {radius}: at most 5")))?
+        .get_or_init(|| build_ball(radius))
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 /// The radius-1 configuration set, built once (a few seconds).
@@ -286,6 +552,21 @@ pub fn radius1() -> Result<&'static Radius1, Radius1Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn t1_balls_build() {
+        assert!(t1_ball(0).is_err());
+        for r in 1..=3u8 {
+            let b = t1_ball(r).unwrap();
+            assert_eq!(b.pat.cfg.len(), T1_BALL[r as usize]);
+            assert_eq!(b.cfgs.len(), 12 * T1_BALL[r as usize]);
+            assert_eq!(b.d1[0], 0);
+            for d in 0..=r {
+                let n = b.d1.iter().filter(|&&x| x <= d).count();
+                assert_eq!(n, T1_BALL[d as usize], "radius {r}, within {d}");
+            }
+        }
+    }
     use crate::chen::relaxed::RelaxedAe;
     use crate::fast::fast;
     use crate::tables::AeSym;

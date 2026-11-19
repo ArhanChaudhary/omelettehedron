@@ -41,6 +41,7 @@ use omelettehedron::chen::p2bfs::solve::{write, PState, Solver};
 use omelettehedron::chen::tables::{ChenTables, TableSet};
 use omelettehedron::notation::format_moves;
 use rand::{Rng, SeedableRng};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -79,6 +80,10 @@ struct InstanceArgs {
     /// space (relaxed phase-1 distance at most 1: 315,900, every move that stays in it)
     #[arg(long, default_value_t = 0)]
     radius: u8,
+    /// The configurations are the ball of radius `--radius` (1 to 5) around T1 (the solved
+    /// configuration and the 8 one class-A turn from it), every move that stays in it
+    #[arg(long)]
+    t1: bool,
 }
 
 impl InstanceArgs {
@@ -95,6 +100,7 @@ impl InstanceArgs {
                 Bs::None => BView::None,
             },
             radius: self.radius,
+            t1: self.t1,
         }
     }
 }
@@ -163,6 +169,9 @@ enum Cmd {
         /// relaxed phase-1 distance)
         #[arg(long)]
         radius1: bool,
+        /// The ball of this radius around T1 instead (split by the distance to T1)
+        #[arg(long)]
+        t1_radius: Option<u8>,
     },
     /// The phase-2 tables' histograms (AC: corners only; PX: B-centres only)
     Tables {
@@ -571,19 +580,28 @@ fn main() -> Result<()> {
             depth,
             compare,
             radius1,
+            t1_radius,
         } => {
-            let counts = if radius1 {
-                let r = omelettehedron::chen::radius1::radius1()?;
+            let set = match (radius1, t1_radius) {
+                (_, Some(r)) => Some(omelettehedron::chen::radius1::t1_ball(r)?),
+                (true, None) => Some(omelettehedron::chen::radius1::radius1()?),
+                (false, None) => None,
+            };
+            let counts = if let Some(r) = set {
                 let split = cube_bfs(depth, |c| r.id(c).map(|id| r.cfg_d1(id)));
                 for (d, s) in split.iter().enumerate() {
+                    let parts: Vec<String> = s
+                        .iter()
+                        .enumerate()
+                        .map(|(k, n)| format!("distance {k}: {n}"))
+                        .collect();
                     println!(
-                        "depth {d}: {} positions (distance 0: {}, distance 1: {})",
-                        s[0] + s[1],
-                        s[0],
-                        s[1]
+                        "depth {d}: {} positions ({})",
+                        s.iter().sum::<u64>(),
+                        parts.join(", ")
                     );
                 }
-                split.iter().map(|s| s[0] + s[1]).collect()
+                split.iter().map(|s| s.iter().sum()).collect()
             } else {
                 position_bfs(depth)
             };
@@ -811,16 +829,20 @@ fn main() -> Result<()> {
                 reads as f64 / i.n_class as f64,
                 i.n_class
             );
-            // the configurations and classes per relaxed phase-1 distance
-            for d in 0..=1u8 {
+            // the configurations and classes per distance to the set's targets (the relaxed
+            // phase-1 distance, or the distance to T1)
+            let what = if i.kind.t1 {
+                "distance to T1"
+            } else {
+                "relaxed phase-1 distance"
+            };
+            for d in 0..=i.d1.iter().copied().max().unwrap_or(0).max(1) {
                 let classes = (0..i.n_class).filter(|&c| i.d1[c] == d).count();
                 let configs: u64 = (0..i.n_class)
                     .filter(|&c| i.d1[c] == d)
                     .map(|c| i.class_size(c))
                     .sum();
-                println!(
-                    "relaxed phase-1 distance {d}: {configs} configurations, {classes} classes"
-                );
+                println!("{what} {d}: {configs} configurations, {classes} classes");
             }
             // other orders of the classes, for comparison
             let adj = adjacency(&i.edges);
@@ -1216,9 +1238,17 @@ fn compare_counts(what: &str, want: &[u64], got: &[u64], complete: bool) -> Resu
 fn status(dir: &Path, i: &Instance, m: &Manifest) {
     println!("search {} ({:?})", dir.display(), m.kind);
     let two = i.d1.iter().any(|&d| d != 0);
+    let top = i.d1.iter().copied().max().unwrap_or(0);
     println!(
         "depth\tslots\tpositions\tup to symmetry\tGB\tseconds\tGB read{}",
-        if two { "\tdistance 0\tdistance 1" } else { "" }
+        if two {
+            (0..=top).fold(String::new(), |mut a, d| {
+                let _ = write!(a, "\tdistance {d}");
+                a
+            })
+        } else {
+            String::new()
+        }
     );
     let (mut slots, mut pos, mut orb) = (0u64, 0u128, 0u64);
     for l in &m.levels {
@@ -1233,7 +1263,10 @@ fn status(dir: &Path, i: &Instance, m: &Manifest) {
             l.seconds,
             l.read as f64 / 1e9,
             if two {
-                format!("\t{}\t{}", by[0], by[1])
+                by.iter().fold(String::new(), |mut a, n| {
+                    let _ = write!(a, "\t{n}");
+                    a
+                })
             } else {
                 String::new()
             }
@@ -1272,7 +1305,7 @@ fn status(dir: &Path, i: &Instance, m: &Manifest) {
         );
         if two {
             // the deepest layer with a position of each distance
-            for d in 0..=1u8 {
+            for d in 0..=top {
                 let deepest = m
                     .levels
                     .iter()
@@ -1285,7 +1318,7 @@ fn status(dir: &Path, i: &Instance, m: &Manifest) {
                     })
                     .map(|l| l.depth);
                 println!(
-                    "deepest layer with a configuration at relaxed phase-1 distance {d}: {}",
+                    "deepest layer with a configuration at distance {d}: {}",
                     deepest.map_or("-".into(), |d| d.to_string())
                 );
             }

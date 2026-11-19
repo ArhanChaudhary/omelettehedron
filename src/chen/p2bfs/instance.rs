@@ -18,7 +18,7 @@
 //! sets all of them, so that the set of each class is closed under its stabiliser; a class
 //! then holds `24 / (1 + stab.len())` configurations, each with the class's set of slots.
 
-use super::super::radius1::{radius1, Radius1Error};
+use super::super::radius1::{radius1, t1_ball, Radius1, Radius1Error};
 use super::super::space::{space, Patterns, Space, NONE, N_PMOVES};
 use crate::coord::{mset, N_MSET};
 use crate::cube::{Cube, N_MOVES};
@@ -66,9 +66,14 @@ pub struct Kind {
     pub b: BView,
     /// the configurations: 0 for the block split's phase-2 space ([`super::super::space`]), 1
     /// for the radius-1 space ([`super::super::radius1`]: relaxed phase-1 distance at most 1,
-    /// every move that stays in it)
+    /// every move that stays in it); with [`Kind::t1`], the radius of the ball around `T1`
     #[serde(default)]
     pub radius: u8,
+    /// the configurations are the ball of radius [`Kind::radius`] around `T1`
+    /// ([`super::super::radius1::t1_ball`]: the solved configuration and the 8 one class-A turn
+    /// from it), not the block split's set
+    #[serde(default)]
+    pub t1: bool,
 }
 
 impl Kind {
@@ -77,13 +82,30 @@ impl Kind {
         corners: CornerView::Full,
         b: BView::Full,
         radius: 0,
+        t1: false,
     };
     /// The full radius-1 space.
     pub const RADIUS1: Kind = Kind {
         corners: CornerView::Full,
         b: BView::Full,
         radius: 1,
+        t1: false,
     };
+
+    /// The configuration set of an instance other than the block split's: the radius-1 set or
+    /// a ball around `T1`; `None` for the block split's (radius 0).
+    ///
+    /// # Errors
+    ///
+    /// [`InstanceError`] for an unknown radius, or if the set fails a check.
+    pub fn set(self) -> Result<Option<&'static Radius1>, InstanceError> {
+        match (self.t1, self.radius) {
+            (false, 0) => Ok(None),
+            (false, 1) => Ok(Some(radius1()?)),
+            (true, r) => Ok(Some(t1_ball(r)?)),
+            (false, other) => Err(InstanceError::Radius(other)),
+        }
+    }
 }
 
 /// The instance cannot be built.
@@ -93,7 +115,7 @@ pub enum InstanceError {
     #[error(transparent)]
     Radius1(#[from] Radius1Error),
     /// A radius other than 0 or 1.
-    #[error("radius {0}: only 0 and 1 are known")]
+    #[error("radius {0}: only 0 and 1 are known around the block split's set")]
     Radius(u8),
 }
 
@@ -156,8 +178,8 @@ impl Instance {
         let s = space();
         // the configurations: the pattern-view set, and per pattern-view configuration whether
         // it is in H' and its relaxed phase-1 distance
-        let (pat, in_hprime, d1_of): (&Patterns, Vec<bool>, Vec<u8>) = match kind.radius {
-            0 => (
+        let (pat, in_hprime, d1_of): (&Patterns, Vec<bool>, Vec<u8>) = match kind.set()? {
+            None => (
                 &s.pat,
                 s.pat
                     .cfg
@@ -166,11 +188,7 @@ impl Instance {
                     .collect(),
                 vec![0; s.pat.cfg.len()],
             ),
-            1 => {
-                let r = radius1()?;
-                (&r.pat, r.hprime.clone(), r.d1.clone())
-            }
-            other => return Err(InstanceError::Radius(other)),
+            Some(r) => (&r.pat, r.hprime.clone(), r.d1.clone()),
         };
         let n_class = pat.rep.len();
         let edges: Vec<[(u16, u8); N_MOVES]> = (0..n_class)
@@ -204,7 +222,7 @@ impl Instance {
         // the order of the parts: by components of the always-allowed moves, or (radius 1,
         // where no move is always allowed) clusters grown on the class graph, of about the
         // classes of a part at the search's peak with the usual memory budget
-        let order = if kind.radius == 0 {
+        let order = if kind.radius == 0 && !kind.t1 {
             super::order::a_move_order(&edges, &pat.pmove)
         } else {
             super::order::grown_order(&super::order::adjacency(&edges), PART_CLASSES)
@@ -615,6 +633,7 @@ mod tests {
             corners: CornerView::Perm,
             b: BView::Unlabelled,
             radius: 0,
+            t1: false,
         })
         .unwrap();
         assert_eq!((i.n_x, i.n_p, i.n_class), (15_400, 360, 1611));

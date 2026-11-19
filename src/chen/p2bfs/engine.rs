@@ -1242,12 +1242,16 @@ fn start(inst: &Instance, cfg: &Config) -> Result<Manifest, BfsError> {
     Ok(m)
 }
 
-/// The positions of a level per relaxed phase-1 distance of the configuration (0 and 1).
-pub fn positions_by_d1(inst: &Instance, lv: &Level) -> [u64; 2] {
-    let mut by = [0u64; 2];
+/// The positions of a level per distance of the configuration to the set's targets (the
+/// relaxed phase-1 distance, or the distance to `T1`): one entry per distance 0 to the largest.
+pub fn positions_by_d1(inst: &Instance, lv: &Level) -> Vec<u64> {
+    let top = inst.d1.iter().copied().max().unwrap_or(0) as usize;
+    let mut by = vec![0u64; top.max(1) + 1];
     for (c, &slots) in lv.per_class.iter().enumerate() {
-        let d = usize::from(inst.d1.get(c).copied().unwrap_or(0) != 0);
-        by[d] += inst.class_size(c) * slots;
+        let d = inst.d1.get(c).copied().unwrap_or(0) as usize;
+        if let Some(b) = by.get_mut(d) {
+            *b += inst.class_size(c) * slots;
+        }
     }
     by
 }
@@ -1258,7 +1262,12 @@ fn split_note(inst: &Instance, lv: &Level) -> String {
         return String::new();
     }
     let by = positions_by_d1(inst, lv);
-    format!(" (distance 0: {}, distance 1: {})", by[0], by[1])
+    let parts: Vec<String> = by
+        .iter()
+        .enumerate()
+        .map(|(d, n)| format!("distance {d}: {n}"))
+        .collect();
+    format!(" ({})", parts.join(", "))
 }
 
 /// The time of day (UTC) for progress lines.
