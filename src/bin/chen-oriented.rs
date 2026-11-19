@@ -178,6 +178,18 @@ enum Cmd {
         #[arg(long, default_value_t = 20_000)]
         samples: usize,
     },
+    /// Every position with both sides at the last level (each listed triple with each of the
+    /// 960 corner states), up to the 24 class-preserving symmetries as `chen-p2bfs
+    /// conjugate-solutions` takes orbits: one pattern per class to `--out`, and the orbit sizes,
+    /// whose sum is checked against the count
+    BothClasses {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        level: Option<usize>,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// The exact strict table alone (two-phase index and moves): entries and states per
     /// distance
     Strict,
@@ -425,6 +437,7 @@ fn main() -> Result<()> {
             level,
             samples,
         } => both_sides(&sp, &dir, level, samples)?,
+        Cmd::BothClasses { dir, level, out } => both_classes(&sp, &dir, level, &out)?,
         Cmd::Strict => {
             let t0 = std::time::Instant::now();
             let (_, strict, hist) = p1check::strict_exact();
@@ -782,6 +795,127 @@ fn both_list(
     );
     if bad > 0 {
         bail!("{bad} triples are not at {l} on both sides");
+    }
+    Ok(())
+}
+
+/// A position in 120 bits (as `chen-p2bfs`'s), for ordering and distinctness.
+fn packed(c: &Cube) -> u128 {
+    let fields: [(&[u8], u32); 5] = [(&c.cp, 3), (&c.co, 1), (&c.ep, 4), (&c.xa, 2), (&c.xb, 2)];
+    let mut v = 0u128;
+    for (values, bits) in fields {
+        for &x in values {
+            v = v << bits | u128::from(x);
+        }
+    }
+    v
+}
+
+fn both_classes(
+    sp: &P1Space,
+    dir: &std::path::Path,
+    level: Option<usize>,
+    out: &std::path::Path,
+) -> Result<()> {
+    use omelettehedron::cube::SWAP_AB;
+    use omelettehedron::geometry::transpose;
+    use std::collections::HashMap;
+    let l = resolve_level(sp, dir, level)?;
+    check_listable(sp, dir, l)?;
+    let states = level_states(sp, dir, l)?;
+    let mut by_ep: HashMap<[u8; 12], Vec<[u8; 12]>> = HashMap::new();
+    for (xa, ep) in &states {
+        by_ep.entry(*ep).or_default().push(*xa);
+    }
+    let g = |ep: &[u8; 12]| -> Result<[u8; 12]> {
+        Ok(Cube {
+            ep: *ep,
+            ..Cube::solved()
+        }
+        .conjugate(&SWAP_AB)
+        .context("SWAP_AB")?
+        .ep)
+    };
+    let mut triples: Vec<Cube> = vec![];
+    let mut eps: Vec<&[u8; 12]> = by_ep.keys().collect();
+    eps.sort_unstable();
+    for ep in eps {
+        let gb = g(ep)?;
+        let Some(bs) = by_ep.get(&gb) else { continue };
+        for xa in by_ep.get(ep).map_or(&[][..], |v| &v[..]) {
+            for xa2 in bs {
+                let xb = Cube {
+                    xa: *xa2,
+                    ..Cube::solved()
+                }
+                .conjugate(&transpose(&SWAP_AB))
+                .context("SWAP_AB^-1")?
+                .xb;
+                triples.push(Cube {
+                    ep: *ep,
+                    xa: *xa,
+                    xb,
+                    ..Cube::solved()
+                });
+            }
+        }
+    }
+    let corner_states = &omelettehedron::coord::corners().id_to_state;
+    let s48 = omelettehedron::optimal::sym::sym48();
+    let err = |e: std::io::Error| anyhow::anyhow!("{}: {e}", out.display());
+    let mut w = std::io::BufWriter::new(std::fs::File::create(out).map_err(err)?);
+    let (mut positions, mut classes) = (0u64, 0u64);
+    let mut sizes: BTreeMap<usize, u64> = BTreeMap::new();
+    for chunk in triples.chunks(256) {
+        let found: Vec<Vec<(String, usize)>> = chunk
+            .par_iter()
+            .map(|t| -> Result<Vec<(String, usize)>> {
+                let mut reps = vec![];
+                for &(cp, co) in corner_states {
+                    let c = Cube { cp, co, ..*t };
+                    let k = packed(&c);
+                    let mut images: Vec<u128> = Vec::with_capacity(24);
+                    let mut rep = true;
+                    for sy in 0..24 {
+                        let (cc, _) = s48.conj_cube(&c, sy).context("no conjugate")?;
+                        let kk = packed(&cc);
+                        if kk < k {
+                            rep = false;
+                            break;
+                        }
+                        if !images.contains(&kk) {
+                            images.push(kk);
+                        }
+                    }
+                    if rep {
+                        reps.push((
+                            omelettehedron::pattern::format(&omelettehedron::pattern::of_cube(&c)),
+                            images.len(),
+                        ));
+                    }
+                }
+                Ok(reps)
+            })
+            .collect::<Result<_>>()?;
+        for (pat, n) in found.into_iter().flatten() {
+            writeln!(w, "{pat}").map_err(err)?;
+            positions += n as u64;
+            classes += 1;
+            *sizes.entry(n).or_default() += 1;
+        }
+    }
+    w.flush().map_err(err)?;
+    let want = triples.len() as u64 * corner_states.len() as u64;
+    println!(
+        "level {l}: {} triples x {} corner states = {want} positions with both sides at {l}; {classes} \
+         classes under the 24 symmetries (orbit sizes: classes {sizes:?}) holding {positions} \
+         positions; listed in {}",
+        triples.len(),
+        corner_states.len(),
+        out.display()
+    );
+    if positions != want {
+        bail!("the orbits hold {positions} positions, not {want}");
     }
     Ok(())
 }
