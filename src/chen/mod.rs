@@ -13,9 +13,17 @@
 //! * [`tables`]: the phase-2 pruning tables;
 //! * [`relaxed`]: the relaxed phase-1 target (any configuration of the phase-2 space);
 //! * [`radius1`]: the radius-1 phase-2 space (relaxed phase-1 distance at most 1);
+//! * [`oriented`]: the oriented phase-1 targets (hexagons solid and unturned) and their index;
+//! * [`p1disk`]: their exact distances, by a breadth-first search on disk;
+//! * [`p1check`]: checks of those tables that do not trust them;
 //! * [`search`]: the two-phase loop.
 
 pub mod corners;
+pub mod oriented;
+#[cfg(unix)]
+pub mod p1check;
+#[cfg(unix)]
+pub mod p1disk;
 pub mod p2bfs;
 pub mod radius1;
 pub mod relaxed;
