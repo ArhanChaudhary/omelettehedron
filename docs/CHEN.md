@@ -177,7 +177,9 @@ solution of at most 23 moves, any moves, on both face classes):
   positions gives exactly 3 positions, one orbit (class 1578), in none of layers 0, 24 and 26.
   A depth-26 position's block neighbours are at depth 25, and no block position is deeper than
   25, so these are the 3. Optimal distance 22 (`solve optimal --tier huge`: no solution of 21
-  moves), e.g. `B U F' BR' U' BR BL F' L BL' L R BR R' B' BL B U' BR F U BR`.
+  moves), e.g. `B U F' BR' U' BR BL F' L BL' L R BR R' B' BL B U' BR F U BR`. The depth-26
+  positions themselves are at optimal distance 21 (no solution of 20), e.g.
+  `U' BR' BL BR U' F L' U' F' BL' B' BR BL' B' R BR' BL R' B' BR' B`.
 * Each class is solved by the two-phase solver (`-l 23`, large tier; about 3.5 CPU-seconds a
   class). `conjugate-solutions` and `verify-side-b --depth 24` then give the certificates of
   both face classes. Each conjugated solution is checked and replayed on the Python sticker
