@@ -351,10 +351,13 @@ lower either maximum: 172,350,720 positions are at T1 distance 14 on both face c
 the 1,015,692 edge arrangements of the A-side 14s, 179,532 A-centre/edge/B-centre triples), and
 46,080 at oriented distance 15 on both (48 triples), every one confirmed by the table on both
 sides. The relaxed check (`chen_both_sides`) still gives 138,240. `both-classes` lists them up
-to the 24 symmetries (7,190,512 and 1,942 classes); a fast two-phase solution of each class
-(`-l 30`), conjugated to every position (`chen-p2bfs conjugate-solutions`) and replayed, gives
-the better-side phase-1 maximum 13 for T1 (phase 1 to the ball at most 9 moves) once every class
-is solved: the oriented 46,080 have solutions of at most 26 moves.
+to the 24 symmetries (7,190,512 and 1,942 classes). The oriented 46,080 have fast two-phase
+solutions of at most 26 moves (conjugated to every position, replayed). For T1, solutions of all
+classes would make the better-side phase-1 maximum 13 (phase 1 to the ball at most 9 moves),
+but with the deepest layer at 26 that gives 35 at best, so the solves were stopped after
+2,500,000 classes (59,871,645 positions, every solution conjugated and replayed, a sample and all
+27-move ones on the Python model itself: at most 27 moves, no failure;
+`/data3/oriented4/both14/README.txt`).
 
 ## Tables
 
