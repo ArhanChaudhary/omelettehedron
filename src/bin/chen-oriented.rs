@@ -162,6 +162,22 @@ enum Cmd {
         #[arg(long)]
         t1: PathBuf,
     },
+    /// Positions at the table's last level on both face classes: side A is the position's
+    /// A-centres and edges, side B the A-centres and edges of its `SWAP_AB` conjugate (the
+    /// conjugate's edges are a function `g` of the edges, its A-centres a bijection of the
+    /// B-centres). Positions are held with the front corner in place (960 corner states), as
+    /// the relaxed target's both-sides check: both sides at the maximum needs an edge
+    /// arrangement `ep` of a maximal state with `g(ep)` one too.
+    BothSides {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        level: Option<usize>,
+        /// Positions built from the maximal states (random corners, B-centres) whose side B is
+        /// read off the table
+        #[arg(long, default_value_t = 20_000)]
+        samples: usize,
+    },
     /// The exact strict table alone (two-phase index and moves): entries and states per
     /// distance
     Strict,
@@ -404,6 +420,11 @@ fn main() -> Result<()> {
                 bail!("{bad} states without one");
             }
         }
+        Cmd::BothSides {
+            dir,
+            level,
+            samples,
+        } => both_sides(&sp, &dir, level, samples)?,
         Cmd::Strict => {
             let t0 = std::time::Instant::now();
             let (_, strict, hist) = p1check::strict_exact();
@@ -602,6 +623,295 @@ fn level_cmd(
         );
         if bad > 0 {
             bail!("{bad} states without a solution of {l} moves");
+        }
+    }
+    Ok(())
+}
+
+/// The states of level `l`: from its bit plane, or (once the planes are removed) from the list
+/// that `level` wrote (`<dir>/level<l>.tsv`), checked against the level's count.
+fn level_states(sp: &P1Space, dir: &std::path::Path, l: usize) -> Result<Vec<State>> {
+    if dir.join(format!("L{l:02}.bits")).exists() {
+        return Ok(p1check::expand(sp, &p1check::level_slots(sp, dir, l)?));
+    }
+    let path = dir.join(format!("level{l}.tsv"));
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    let mut out = vec![];
+    for line in text.lines().filter(|x| !x.starts_with('#')) {
+        let st = line.split('\t').nth(1).context("a line without stickers")?;
+        let b = st.as_bytes();
+        if b.len() != 72 {
+            bail!("{}: a line of {} stickers", path.display(), b.len());
+        }
+        let s: [u8; 72] = std::array::from_fn(|i| b[i].wrapping_sub(b'0'));
+        let c = Cube::from_stickers(&s).context("not a position")?;
+        out.push((c.xa, c.ep));
+    }
+    let want = p1disk::levels(sp, dir)?.get(l).map_or(0, |x| x.states);
+    if out.len() as u128 != want {
+        bail!(
+            "{}: {} states, level {l} has {want}",
+            path.display(),
+            out.len()
+        );
+    }
+    Ok(out)
+}
+
+/// A position's parts (A-centres, edges, B-centres, corners), as a key for ordering.
+type PosKey = ([u8; 12], [u8; 12], [u8; 12], [u8; 6], [u8; 6]);
+
+/// A listed position's side-A and side-B distances and its class (key and representative).
+type Checked = (u8, u8, Option<(PosKey, Cube)>);
+
+/// A position conjugated by a class-preserving symmetry `m` and held again with the front
+/// corner in place (one of the 12 rotations does it).
+fn conj_held(c: &Cube, m: &omelettehedron::geometry::Mat, rots: &[Vec<usize>]) -> Option<Cube> {
+    use omelettehedron::geometry::{face_of_normal, mat_vec, FACES};
+    let d = omelettehedron::cube::defs();
+    let st = c.to_stickers();
+    let perm = d.sm.whole(m);
+    let mut n = [0u8; 72];
+    for i in 0..72 {
+        n[perm[i]] = face_of_normal(mat_vec(m, FACES[st[i] as usize])) as u8;
+    }
+    rots.iter().find_map(|r| {
+        let mut h = [0u8; 72];
+        for i in 0..72 {
+            h[r[i]] = n[i];
+        }
+        Cube::from_stickers(&h).filter(|x| x.cp[0] == 0 && x.co[0] == 0)
+    })
+}
+
+/// Every (A-centres, edges, B-centres) of a position with both sides at the maximum (corners
+/// solved; any of the 960 corner states goes with each), both distances read off the table for
+/// each, and their classes under the 24 class-preserving symmetries (conjugation, held again):
+/// `<dir>/both<l>.tsv`, one line per class (size, pattern with solved corners).
+fn both_list(
+    sp: &P1Space,
+    dir: &std::path::Path,
+    l: usize,
+    tab: &Nibbles,
+    both: &[[u8; 12]],
+    by_ep: &std::collections::HashMap<[u8; 12], Vec<[u8; 12]>>,
+) -> Result<()> {
+    use omelettehedron::cube::SWAP_AB;
+    use omelettehedron::geometry::{class_preserving_group, rotation_group, transpose};
+    let d = omelettehedron::cube::defs();
+    let rots: Vec<Vec<usize>> = rotation_group().iter().map(|r| d.sm.whole(r)).collect();
+    let syms = class_preserving_group();
+    let mut triples: Vec<Cube> = vec![];
+    for ep in both {
+        let gb = Cube {
+            ep: *ep,
+            ..Cube::solved()
+        }
+        .conjugate(&SWAP_AB)
+        .context("SWAP_AB")?
+        .ep;
+        for xa in by_ep.get(ep).map_or(&[][..], |v| &v[..]) {
+            for xa2 in by_ep.get(&gb).map_or(&[][..], |v| &v[..]) {
+                let xb = Cube {
+                    xa: *xa2,
+                    ..Cube::solved()
+                }
+                .conjugate(&transpose(&SWAP_AB))
+                .context("SWAP_AB^-1")?
+                .xb;
+                triples.push(Cube {
+                    ep: *ep,
+                    xa: *xa,
+                    xb,
+                    ..Cube::solved()
+                });
+            }
+        }
+    }
+    let key = |c: &Cube| -> PosKey { (c.xa, c.ep, c.xb, c.cp, c.co) };
+    let checked: Vec<Checked> = triples
+        .par_iter()
+        .map(|c| -> Result<_> {
+            let (ra, ca) = sp.slot_of(&c.xa, &c.ep);
+            let y = c.conjugate(&SWAP_AB).context("SWAP_AB")?;
+            let (rb, cb) = sp.slot_of(&y.xa, &y.ep);
+            let canon = syms
+                .iter()
+                .filter_map(|m| conj_held(c, m, &rots))
+                .map(|x| (key(&x), x))
+                .min_by_key(|x| x.0);
+            Ok((tab.get(ra, ca)?, tab.get(rb, cb)?, canon))
+        })
+        .collect::<Result<_>>()?;
+    let bad = checked
+        .iter()
+        .filter(|x| usize::from(x.0) != l || usize::from(x.1) != l || x.2.is_none())
+        .count();
+    let mut classes: std::collections::BTreeMap<_, (usize, Cube)> =
+        std::collections::BTreeMap::new();
+    for (_, _, c) in &checked {
+        if let Some((k, x)) = c {
+            classes.entry(*k).or_insert((0, *x)).0 += 1;
+        }
+    }
+    let path = dir.join(format!("both{l}.tsv"));
+    let mut f = std::io::BufWriter::new(std::fs::File::create(&path)?);
+    writeln!(
+        f,
+        "# positions with both sides at {l}, corners solved (each goes with all 960 corner states), \
+         up to the 24 class-preserving symmetries: class size, pattern"
+    )?;
+    for (n, x) in classes.values() {
+        writeln!(
+            f,
+            "{n}\t{}",
+            omelettehedron::pattern::format(&omelettehedron::pattern::of_cube(x))
+        )?;
+    }
+    f.flush()?;
+    println!(
+        "{} (A-centres, edges, B-centres) with both sides at {l} (x 960 corner states = {} \
+         positions); both distances read off the table for each: {} not both {l}; {} classes \
+         under the 24 symmetries, listed in {}",
+        triples.len(),
+        triples.len() * 960,
+        bad,
+        classes.len(),
+        path.display()
+    );
+    if bad > 0 {
+        bail!("{bad} triples are not at {l} on both sides");
+    }
+    Ok(())
+}
+
+fn both_sides(
+    sp: &P1Space,
+    dir: &std::path::Path,
+    level: Option<usize>,
+    samples: usize,
+) -> Result<()> {
+    use omelettehedron::cube::SWAP_AB;
+    use omelettehedron::geometry::transpose;
+    use rand::{Rng, SeedableRng};
+    use std::collections::{HashMap, HashSet};
+    let conj = |c: &Cube| {
+        c.conjugate(&SWAP_AB)
+            .context("SWAP_AB keeps the front corner")
+    };
+    let unconj = |c: &Cube| {
+        c.conjugate(&transpose(&SWAP_AB))
+            .context("SWAP_AB^-1 keeps the front corner")
+    };
+    let g = |ep: &[u8; 12]| -> Result<[u8; 12]> {
+        Ok(conj(&Cube {
+            ep: *ep,
+            ..Cube::solved()
+        })?
+        .ep)
+    };
+    // the conjugate's edges depend only on the edges, its A-centres only on the B-centres
+    let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+    for _ in 0..100_000 {
+        let x = Cube::random(&mut rng);
+        let y = conj(&x)?;
+        let ya = conj(&Cube {
+            xb: x.xb,
+            ..Cube::solved()
+        })?
+        .xa;
+        if y.ep != g(&x.ep)? || y.xa != ya || unconj(&y)? != x {
+            bail!("the conjugate does not split into edges and centres");
+        }
+    }
+    let l = resolve_level(sp, dir, level)?;
+    check_listable(sp, dir, l)?;
+    let states = level_states(sp, dir, l)?;
+    // A-colourings per edge arrangement among the maximal states
+    let mut by_ep: HashMap<[u8; 12], Vec<[u8; 12]>> = HashMap::new();
+    for (xa, ep) in &states {
+        by_ep.entry(*ep).or_default().push(*xa);
+    }
+    let eb: HashSet<[u8; 12]> = by_ep.keys().map(&g).collect::<Result<_>>()?;
+    let both: Vec<[u8; 12]> = by_ep
+        .keys()
+        .filter_map(|ep| g(ep).ok().filter(|e| by_ep.contains_key(e)).map(|_| *ep))
+        .collect();
+    let positions: u128 = both
+        .iter()
+        .map(|ep| -> Result<u128> {
+            let na = by_ep.get(ep).map_or(0, Vec::len) as u128;
+            let nb = by_ep.get(&g(ep)?).map_or(0, Vec::len) as u128;
+            Ok(na * nb * 960)
+        })
+        .sum::<Result<u128>>()?;
+    println!(
+        "level {l}: {} states (fixed frame) with {} edge arrangements EA; g(EA) {}; EA and \
+         g^-1(EA) in common: {}; positions (front corner held) with both sides at {l}: {positions}",
+        states.len(),
+        by_ep.len(),
+        eb.len(),
+        both.len()
+    );
+    // side B of positions built from the maximal states, by the table
+    let tab = Nibbles::open(dir, sp.rows(), false)?;
+    let picks: Vec<(usize, Cube)> = (0..samples)
+        .map(|_| {
+            let (xa, ep) = states[rng.gen_range(0..states.len())];
+            let r = Cube::random(&mut rng);
+            (0, Cube { ep, xa, ..r })
+        })
+        .collect();
+    let mut hist: std::collections::BTreeMap<(u8, u8), usize> = std::collections::BTreeMap::new();
+    let res: Vec<(u8, u8)> = picks
+        .par_iter()
+        .map(|(_, c)| -> Result<(u8, u8)> {
+            let (ra, ca) = sp.slot_of(&c.xa, &c.ep);
+            let y = conj(c)?;
+            let (rb, cb) = sp.slot_of(&y.xa, &y.ep);
+            Ok((tab.get(ra, ca)?, tab.get(rb, cb)?))
+        })
+        .collect::<Result<_>>()?;
+    for r in res {
+        *hist.entry(r).or_default() += 1;
+    }
+    println!("{samples} positions built from the states at {l} (random corners and B-centres): (side A, side B) {hist:?}");
+    if !both.is_empty() {
+        both_list(sp, dir, l, &tab, &both, &by_ep)?;
+        // a few positions with both sides at the maximum, both distances read off the table
+        for ep in both.iter().take(5) {
+            let gb = g(ep)?;
+            let xa = by_ep
+                .get(ep)
+                .and_then(|v| v.first())
+                .copied()
+                .unwrap_or_default();
+            let xa2 = by_ep
+                .get(&gb)
+                .and_then(|v| v.first())
+                .copied()
+                .unwrap_or_default();
+            let xb = unconj(&Cube {
+                xa: xa2,
+                ..Cube::solved()
+            })?
+            .xb;
+            let c = Cube {
+                ep: *ep,
+                xa,
+                xb,
+                ..Cube::solved()
+            };
+            let (ra, ca) = sp.slot_of(&c.xa, &c.ep);
+            let y = conj(&c)?;
+            let (rb, cb) = sp.slot_of(&y.xa, &y.ep);
+            println!(
+                "  both at {l}: {} (side A {}, side B {})",
+                omelettehedron::pattern::format(&omelettehedron::pattern::of_cube(&c)),
+                tab.get(ra, ca)?,
+                tab.get(rb, cb)?
+            );
         }
     }
     Ok(())
