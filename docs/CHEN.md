@@ -296,11 +296,65 @@ configuration stay in the set on average. Positions per depth 0-7 (1, 16, 208, 2
 over whole cube states (`positions --t1-radius 4`) and an independent search on the Python
 sticker model.
 
-**Run** (started 2026-11-19 07:28 UTC with 36 GB for a part, resumed at depth 15 with 30 GB to
-leave the machine 15 GB): `chen-p2bfs -j 48 run --t1 --radius 4 --ram-gb 30`,
-layers in `/data4/oriented4/store`; a watcher (`keep-layers.py`) hard-links each completed layer
-of at most 1.5 TB into `keep/` and keeps the 4 deepest, since the search deletes layer d - 2
-while it makes layer d.
+**Run** (2026-11-19 07:28-22:09 UTC, 14 h 41 min; 36 GB for a part, from depth 15 on 30 GB to
+leave the machine 15 GB): `chen-p2bfs -j 48 run --t1 --radius 4`, layers in `/data4/oriented4/store`;
+a watcher (`keep-layers.py`) hard-linked each completed layer of at most 1.5 TB into `keep/`,
+since the search deletes layer d - 2 while it makes layer d. Dense levels (18-23) took 52-134
+minutes, reading about 2 GB/s.
+
+**Result**: every one of the 625,218,435,072,000 positions is reached (26,050,768,253,496 up
+to symmetry); the deepest layer is 26.
+
+| depth | positions | at distance 0 | 1 | 2 | 3 | 4 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 1 | 1 | 0 | 0 | 0 | 0 |
+| 1 | 16 | 8 | 8 | 0 | 0 | 0 |
+| 2 | 208 | 0 | 112 | 96 | 0 | 0 |
+| 3 | 2,688 | 48 | 48 | 1,440 | 1,152 | 0 |
+| 4 | 34,752 | 144 | 1,104 | 1,440 | 18,144 | 13,920 |
+| 5 | 278,456 | 1,320 | 4,392 | 20,120 | 26,688 | 225,936 |
+| 6 | 845,016 | 5,664 | 33,132 | 89,160 | 331,244 | 385,816 |
+| 7 | 6,406,223 | 33,051 | 140,880 | 643,656 | 1,474,900 | 4,113,736 |
+| 8 | 32,066,647 | 88,551 | 692,812 | 2,621,752 | 9,821,908 | 18,841,624 |
+| 9 | 179,357,988 | 385,660 | 1,917,052 | 12,505,320 | 41,432,212 | 123,117,744 |
+| 10 | 788,991,173 | 1,578,529 | 10,155,996 | 43,789,608 | 202,518,056 | 530,948,984 |
+| 11 | 3,634,939,776 | 9,568,716 | 45,418,404 | 224,281,840 | 772,838,128 | 2,582,832,688 |
+| 12 | 14,731,108,054 | 37,084,710 | 226,541,936 | 934,631,768 | 3,678,724,136 | 9,854,125,504 |
+| 13 | 65,560,726,138 | 157,582,012 | 826,090,104 | 4,139,643,584 | 14,635,825,446 | 45,801,584,992 |
+| 14 | 265,143,743,344 | 488,373,296 | 3,200,056,964 | 14,914,034,304 | 63,084,382,324 | 183,456,896,456 |
+| 15 | 1,091,158,623,048 | 1,422,522,700 | 9,290,339,940 | 56,646,179,760 | 233,136,111,344 | 790,663,469,304 |
+| 16 | 3,953,536,780,749 | 3,669,861,189 | 27,695,016,188 | 168,302,043,696 | 857,515,797,356 | 2,896,354,062,320 |
+| 17 | 13,355,973,503,119 | 8,019,746,417 | 61,509,078,216 | 453,605,341,056 | 2,444,050,199,230 | 10,388,789,138,200 |
+| 18 | 36,263,681,311,148 | 10,269,356,526 | 105,854,734,828 | 887,548,198,152 | 6,149,920,663,986 | 29,110,088,357,656 |
+| 19 | 84,152,824,569,123 | 9,467,972,943 | 110,484,628,192 | 1,337,548,192,584 | 11,270,656,872,620 | 71,424,666,902,784 |
+| 20 | 143,008,361,815,519 | 4,130,985,445 | 72,186,497,124 | 1,137,125,891,576 | 15,045,169,289,190 | 126,749,749,152,184 |
+| 21 | 174,641,950,840,559 | 639,011,095 | 16,577,648,660 | 506,431,113,376 | 10,937,883,264,996 | 163,180,419,802,432 |
+| 22 | 120,350,810,998,954 | 5,969,944 | 838,506,452 | 64,038,352,376 | 3,999,348,577,534 | 116,286,579,592,648 |
+| 23 | 43,364,905,436,277 | 31 | 529,456 | 960,090,440 | 408,630,554,926 | 42,955,314,261,424 |
+| 24 | 4,621,347,370,912 | 0 | 0 | 28,896 | 5,388,472,720 | 4,615,958,869,296 |
+| 25 | 63,803,391,792 | 0 | 0 | 0 | 161,760 | 63,803,230,032 |
+| 26 | 1,930,320 | 0 | 0 | 0 | 0 | 1,930,320 |
+
+The deepest layer with a configuration at distance 0, 1, 2, 3, 4: 23, 23, 24, 25, 26 (deepest in
+`H'`: 23). Phase 1 descends to distance exactly 4 in at most 10 moves (T1 at most 14), so this
+split gives 10 + 26 = 36; a position already within 4 moves of T1 is at most 25 from solved.
+Depth 26 is 80,430 positions up to symmetry, all at distance 4.
+
+Kept in `/data3/oriented4/`: `status.txt`, `run.log`, `manifest.json`, layers 25 (6.9 GB) and 26
+(`layers/`, readable through `view/manifest.json`), and depth 26 as patterns (`lists/depth26.tsv`
+up to symmetry, `depth26-all.txt` all 1,930,320). Layers 23 (2.3 TB) and 24 (390 GB) were kept
+on the scratch disk only.
+
+**Both sides.** Side B (the `SWAP_AB` conjugate's A-centres and edges, `chen-oriented
+both-sides`, the relaxed target's convention: front corner held, 960 corner states) does not
+lower either maximum: 172,350,720 positions are at T1 distance 14 on both face classes (12,012 of
+the 1,015,692 edge arrangements of the A-side 14s, 179,532 A-centre/edge/B-centre triples), and
+46,080 at oriented distance 15 on both (48 triples), every one confirmed by the table on both
+sides. The relaxed check (`chen_both_sides`) still gives 138,240. `both-classes` lists them up
+to the 24 symmetries (7,190,512 and 1,942 classes); a fast two-phase solution of each class
+(`-l 30`), conjugated to every position (`chen-p2bfs conjugate-solutions`) and replayed, gives
+the better-side phase-1 maximum 13 for T1 (phase 1 to the ball at most 9 moves) once every class
+is solved: the oriented 46,080 have solutions of at most 26 moves.
 
 ## Tables
 
