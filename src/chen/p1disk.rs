@@ -830,7 +830,7 @@ pub fn build_nibbles(sp: &P1Space, dir: &Path) -> Res<Vec<u64>> {
             planes[d].read(row, &mut b)?;
             let dd = d as u8;
             let clash = nb[..N_EPERM / 2]
-                .par_chunks_mut(4096)
+                .par_chunks_mut(8192)
                 .zip(b[..ROW_BYTES].par_chunks(2048))
                 .zip(seen[..ROW_BYTES].par_chunks_mut(2048))
                 .map(|((nc, bc), sc)| {
