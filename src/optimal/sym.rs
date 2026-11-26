@@ -246,10 +246,78 @@ impl Sym48 {
     }
 }
 
+/// The symmetries (indices as in [`sym48`], identity excluded) that fix `cube`, from the
+/// sticker model alone ([`Sym48::conj_cube`]'s method without the coordinate maps): about a
+/// millisecond on one thread, against tens for building [`sym48`], so the two-phase solver can
+/// ask for every root and build the maps only for a symmetric one.
+pub fn fixing(cube: &Cube) -> Vec<usize> {
+    let sm = &defs().sm;
+    let cp = class_preserving_group();
+    let mut mats = cp.clone();
+    mats.extend(cp.iter().map(|g| mat_mul(&SWAP_AB, g)));
+    let rots: Vec<Vec<usize>> = (0..N_SYM_CP)
+        .filter(|&r| det(&mats[r]) == 1)
+        .map(|r| sm.whole(&mats[r]))
+        .collect();
+    let st = cube.to_stickers();
+    (1..N_SYM)
+        .filter(|&s| {
+            let m = &mats[s];
+            let wp = sm.whole(m);
+            let mut n = [0u8; 72];
+            for i in 0..72 {
+                n[wp[i]] = face_of_normal(mat_vec(m, FACES[st[i] as usize])) as u8;
+            }
+            // the one rotation that brings the front corner home (see `conj_cube`)
+            rots.iter().any(|rp| {
+                let mut n2 = [0u8; 72];
+                for i in 0..72 {
+                    n2[rp[i]] = n[i];
+                }
+                Cube::from_stickers(&n2).is_some_and(|c| c.cp[0] == 0 && c.co[0] == 0 && c == *cube)
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rand::SeedableRng;
+
+    /// [`fixing`] finds the same symmetries as the coordinate maps: none for random positions,
+    /// all for solved, and the stabiliser of positions of every subgroup of 6 or more.
+    #[test]
+    fn fixing_matches_maps() {
+        let s = sym48();
+        let by_maps = |c: &Cube| -> Vec<usize> {
+            (1..N_SYM).filter(|&k| s.conj_by_maps(c, k) == *c).collect()
+        };
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(50);
+        for _ in 0..40 {
+            let c = Cube::random(&mut rng);
+            assert_eq!(fixing(&c), by_maps(&c));
+        }
+        assert_eq!(fixing(&Cube::solved()), (1..N_SYM).collect::<Vec<_>>());
+        let mut checked = 0;
+        for set in crate::symsearch::subgroups() {
+            if set.count_ones() < 6 {
+                continue;
+            }
+            let Some(fixed) = crate::symsearch::fixed(set) else {
+                continue;
+            };
+            for c in fixed
+                .iter()
+                .flat_map(crate::symsearch::Fixed::cubes)
+                .take(12)
+            {
+                assert_eq!(fixing(&c), by_maps(&c));
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "{checked} symmetric positions checked");
+    }
 
     #[test]
     fn group_structure() {
