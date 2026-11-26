@@ -800,7 +800,11 @@ pub fn bfs5<G: Graph>(
             t0.elapsed().as_secs_f64()
         );
     }
-    Ok(Some(Table5 { data, n, hist }))
+    Ok(Some(Table5 {
+        data: data.into(),
+        n,
+        hist,
+    }))
 }
 
 #[cfg(test)]

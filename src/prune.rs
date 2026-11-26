@@ -3,7 +3,7 @@
 //! A search tracks the exact distance of the parent; since one move changes the distance by at
 //! most one, the child's exact distance follows from its value mod 3.
 
-use crate::mem::HugeBuf;
+use crate::mem::{HugeBuf, TableWords};
 use crate::tables::prefetch;
 use rayon::prelude::*;
 use std::io::{Read, Write};
@@ -46,7 +46,8 @@ impl Prun for Table2 {
 /// per entry instead of [`Table2`]'s 2, for the largest tables (0.8x the memory, the same
 /// values). Made from a complete [`Table2`] ([`Table5::pack`]), read-only.
 pub struct Table5 {
-    pub data: HugeBuf<u64>,
+    /// the packed words: owned, or mapped read-only from a sealed file (see [`Table5::load`])
+    pub data: TableWords,
     pub n: usize,
     /// number of entries at each distance
     pub hist: Vec<u64>,
@@ -130,7 +131,11 @@ impl Table5 {
             w0 = w1;
         }
         data.truncate(words);
-        Table5 { data, n, hist }
+        Table5 {
+            data: data.into(),
+            n,
+            hist,
+        }
     }
 
     /// Write the table to `path` (through a temporary file, renamed when complete).
@@ -147,8 +152,34 @@ impl Table5 {
     /// # Errors
     ///
     /// If the file cannot be read, or has the wrong format, size or checksum.
+    /// Read a table file; with `FTO_MMAP_READONLY=1`, map it read-only instead (the file must
+    /// be sealed against writing and resizing, such as a memfd a cache process holds), so the
+    /// table takes no heap memory: for machines whose per-process memory limit is below the
+    /// table's size. `FTO_MMAP_COLLAPSE=1` also asks for huge pages on the mapping.
+    ///
+    /// # Errors
+    ///
+    /// If the file cannot be read, or has the wrong format, size or checksum; mapped, also if
+    /// it is not sealed.
     pub fn load(path: &Path, n: usize) -> std::io::Result<Table5> {
+        if std::env::var("FTO_MMAP_READONLY").is_ok_and(|s| s == "1") {
+            return Self::load_mapped(path, n);
+        }
         let (data, hist) = load_file(path, MAGIC5, n, n.div_ceil(PER5))?;
+        Ok(Table5 {
+            data: data.into(),
+            n,
+            hist,
+        })
+    }
+
+    /// [`Table5::load`] mapped read-only, whatever `FTO_MMAP_READONLY` says.
+    ///
+    /// # Errors
+    ///
+    /// As [`Table5::load`], and if the file is not sealed against writing and resizing.
+    pub fn load_mapped(path: &Path, n: usize) -> std::io::Result<Table5> {
+        let (data, hist) = load_mapped(path, MAGIC5, n, n.div_ceil(PER5))?;
         Ok(Table5 { data, n, hist })
     }
 }
@@ -257,6 +288,67 @@ fn load_file(
         .collect();
     if sums?.into_iter().fold(0, |a, b| a ^ b) != sum {
         return Err(err("checksum mismatch"));
+    }
+    Ok((data, hist))
+}
+
+/// [`load_file`] without reading the words: the file (sealed against writing and resizing) is
+/// mapped read-only and its checksum checked on the mapping.
+fn load_mapped(
+    path: &Path,
+    magic: [u8; 8],
+    n: usize,
+    words: usize,
+) -> std::io::Result<(TableWords, Vec<u64>)> {
+    let err = |m: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{}: {m}", path.display()),
+        )
+    };
+    if cfg!(target_endian = "big") {
+        return Err(err("mapped table loading needs little-endian words"));
+    }
+    let mut f = std::io::BufReader::with_capacity(1 << 16, std::fs::File::open(path)?);
+    let mut b8 = [0u8; 8];
+    f.read_exact(&mut b8)?;
+    if b8 != magic {
+        return Err(err("bad magic"));
+    }
+    f.read_exact(&mut b8)?;
+    if u64::from_le_bytes(b8) as usize != n {
+        return Err(err("size mismatch (table from a different version?)"));
+    }
+    f.read_exact(&mut b8)?;
+    let nh = u64::from_le_bytes(b8) as usize;
+    let offset = nh
+        .checked_mul(8)
+        .and_then(|v| v.checked_add(32))
+        .ok_or_else(|| err("header size overflow"))?;
+    let expected = words
+        .checked_mul(8)
+        .and_then(|v| v.checked_add(offset))
+        .ok_or_else(|| err("table size overflow"))?;
+    if f.get_ref().metadata()?.len() != expected as u64 {
+        return Err(err("file size mismatch"));
+    }
+    let mut hist = vec![];
+    hist.try_reserve_exact(nh).map_err(std::io::Error::other)?;
+    for _ in 0..nh {
+        f.read_exact(&mut b8)?;
+        hist.push(u64::from_le_bytes(b8));
+    }
+    f.read_exact(&mut b8)?;
+    let sum = u64::from_le_bytes(b8);
+    let file = f.into_inner();
+    let data = TableWords::from_sealed_file(&file, offset as u64, words)?;
+    if checksum(&data) != sum {
+        return Err(err("checksum mismatch"));
+    }
+    if std::env::var("FTO_MMAP_COLLAPSE").is_ok_and(|v| v == "1") {
+        if let Err(e) = data.promote_large_pages() {
+            eprintln!("warning: {}: large-page promotion: {e}", path.display());
+        }
     }
     Ok((data, hist))
 }

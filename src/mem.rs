@@ -13,6 +13,179 @@ use std::sync::atomic::AtomicU64;
 
 const HUGE: usize = 2 << 20;
 
+/// Immutable table words. Generated/ordinary tables own a huge-page buffer; mapped tables
+/// hold a read-only view of a kernel-sealed file. No mutable slice can escape this type.
+pub struct TableWords {
+    ptr: *const u64,
+    len: usize,
+    storage: WordStorage,
+}
+
+enum WordStorage {
+    Owned {
+        _buffer: HugeBuf<u64>,
+    },
+    #[cfg(all(target_os = "linux", not(miri)))]
+    Mapped {
+        base: *mut libc::c_void,
+        bytes: usize,
+    },
+}
+
+// SAFETY: owned words have no mutable aliases; mapped words are kernel-sealed against
+// writes and resizing before creating a shared slice. Storage outlives every borrowed view.
+unsafe impl Send for TableWords {}
+unsafe impl Sync for TableWords {}
+
+impl From<HugeBuf<u64>> for TableWords {
+    fn from(buffer: HugeBuf<u64>) -> Self {
+        Self {
+            ptr: buffer.as_ptr(),
+            len: buffer.len(),
+            storage: WordStorage::Owned { _buffer: buffer },
+        }
+    }
+}
+
+impl TableWords {
+    /// Map the payload of a sealed file. Requiring WRITE/GROW/SHRINK seals makes the Rust
+    /// immutable-slice invariant independent of permission bits or cooperating writers.
+    ///
+    /// # Errors
+    /// If the file is unsealed, its payload is misaligned/out of bounds, or mapping fails.
+    #[cfg(all(target_os = "linux", not(miri)))]
+    pub fn from_sealed_file(
+        file: &std::fs::File,
+        offset: u64,
+        words: usize,
+    ) -> std::io::Result<Self> {
+        use std::os::fd::AsRawFd;
+        #[cfg(target_pointer_width = "64")]
+        static NEXT_HINT: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(1usize << 40);
+        let invalid = |s: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, s);
+        // SAFETY: F_GET_SEALS only queries the valid descriptor; it changes no state.
+        let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
+        let required = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK;
+        if seals < 0 || seals & required != required {
+            return Err(invalid(
+                "read-only mapping requires a WRITE/GROW/SHRINK-sealed file",
+            ));
+        }
+        let bytes = usize::try_from(file.metadata()?.len())
+            .map_err(|_| invalid("mapped file exceeds the address space"))?;
+        let offset = usize::try_from(offset).map_err(|_| invalid("payload offset overflow"))?;
+        let payload = words
+            .checked_mul(8)
+            .ok_or_else(|| invalid("payload size overflow"))?;
+        if bytes == 0
+            || bytes > isize::MAX as usize
+            || !offset.is_multiple_of(std::mem::align_of::<u64>())
+            || offset.checked_add(payload) != Some(bytes)
+        {
+            return Err(invalid("invalid mapped payload size or alignment"));
+        }
+        // A non-fixed, huge-page-aligned hint permits PMD mappings of sealed shmem.
+        // The kernel may choose another address; no existing mapping is replaced.
+        let mut hint = std::ptr::null_mut();
+        #[cfg(target_pointer_width = "64")]
+        if let Some(span) = bytes.checked_add(HUGE - 1).map(|n| n & !(HUGE - 1)) {
+            if let Ok(address) = NEXT_HINT.try_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |n| n.checked_add(span),
+            ) {
+                hint = address as *mut libc::c_void;
+            }
+        }
+        // SAFETY: the file cannot be written, grown or truncated (verified seals). Mapping
+        // the whole file keeps the mmap offset page-aligned; the payload offset is u64-aligned.
+        let base = unsafe {
+            libc::mmap(
+                hint,
+                bytes,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if base == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
+        }
+        if base.is_null() {
+            // SAFETY: even a valid mapping at zero cannot back a Rust slice; release it.
+            unsafe { libc::munmap(base, bytes) };
+            return Err(invalid("mapping returned a null address"));
+        }
+        // SAFETY: the checked payload is within this live mapping, including a zero-length
+        // payload at its end. u64 accepts every bit pattern; the file uses native LE on x86.
+        let ptr = unsafe { base.cast::<u64>().add(offset / std::mem::size_of::<u64>()) };
+        Ok(Self {
+            ptr,
+            len: words,
+            storage: WordStorage::Mapped { base, bytes },
+        })
+    }
+
+    /// Best-effort promotion of already populated mappings; contents and seals stay intact.
+    /// Call after reading/checksumming, so every eligible region has resident pages.
+    ///
+    /// # Errors
+    /// Returns the kernel error if large-page advice or promotion is unavailable or fails.
+    pub fn promote_large_pages(&self) -> std::io::Result<()> {
+        #[cfg(all(target_os = "linux", not(miri)))]
+        if let WordStorage::Mapped { base, bytes } = self.storage {
+            if bytes < HUGE {
+                return Ok(());
+            }
+            // SAFETY: advice operates only on our live mapping and does not alter its
+            // contents or access rights. MADV_COLLAPSE clamps to huge-page boundaries.
+            unsafe {
+                if libc::madvise(base, bytes, libc::MADV_HUGEPAGE) != 0
+                    || libc::madvise(base, bytes, libc::MADV_COLLAPSE) != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(not(all(target_os = "linux", not(miri))))]
+    pub fn from_sealed_file(
+        _file: &std::fs::File,
+        _offset: u64,
+        _words: usize,
+    ) -> std::io::Result<Self> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "sealed mapping needs Linux",
+        ))
+    }
+}
+
+impl Deref for TableWords {
+    type Target = [u64];
+    #[inline(always)]
+    fn deref(&self) -> &[u64] {
+        // SAFETY: storage owns initialized, aligned words and stays alive for this borrow.
+        // Mapped storage is immutable by kernel seals; neither variant exposes DerefMut.
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+impl Drop for TableWords {
+    fn drop(&mut self) {
+        #[cfg(all(target_os = "linux", not(miri)))]
+        if let WordStorage::Mapped { base, bytes } = self.storage {
+            // SAFETY: this mapping was made with exactly this base/length and is owned here.
+            unsafe { libc::munmap(base, bytes) };
+        }
+        // Owned storage drops its HugeBuf normally after this method.
+    }
+}
+
 /// Fixed-size buffer of plain-old-data elements, zero-initialised, huge-page aligned.
 pub struct HugeBuf<T: Copy> {
     ptr: NonNull<T>,
@@ -276,6 +449,15 @@ impl<T: Copy> Drop for HugeBuf<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn table_words_owned() {
+        let expected: Vec<u64> = (0..1000).map(|i| i * 17).collect();
+        let words = TableWords::from(HugeBuf::from_slice(&expected));
+        assert_eq!(&*words, expected.as_slice());
+        let empty = TableWords::from(HugeBuf::zeroed(0));
+        assert!(empty.is_empty());
+    }
 
     #[test]
     fn huge_buf_contents() {

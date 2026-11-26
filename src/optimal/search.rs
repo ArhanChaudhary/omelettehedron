@@ -271,6 +271,9 @@ struct Shared<'a, B: Bounds, const N: usize> {
     cube: Cube,
     limits: Limits,
     start: Instant,
+    /// `FTO_CPU_CLOCK`: the time limit counts the process's CPU time since the start divided
+    /// by the threads (see [`process_cpu_secs`]): (CPU seconds at the start, threads)
+    cpu0: Option<(f64, f64)>,
     /// the search's own flag, or one shared with other searches (`Watch::stop`)
     stop: &'a AtomicBool,
     nodes: AtomicU64,
@@ -285,9 +288,37 @@ struct Shared<'a, B: Bounds, const N: usize> {
     symmetries: Vec<usize>,
 }
 
+/// CPU time of the whole process in seconds (0 if it cannot be read). With `FTO_CPU_CLOCK`
+/// set, the time limit (`-t`) is measured with it, divided by the threads: on an idle
+/// machine that is the wall time, and on a busy one the search gets the same CPU budget
+/// however long that takes, so a limit cannot end it early just because the machine is busy
+/// (research runs that share a machine, such as the proofs that positions need at most 23
+/// moves: a stopped proof is reported as no solution found).
+fn process_cpu_secs() -> f64 {
+    #[cfg(unix)]
+    {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `clock_gettime` only writes the `timespec` it is given, which is valid.
+        if unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &raw mut ts) } == 0 {
+            #[allow(clippy::cast_precision_loss)]
+            return ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9;
+        }
+    }
+    0.0
+}
+
 impl<B: Bounds, const N: usize> Shared<'_, B, N> {
     fn time_up(&self) -> bool {
-        if self.limits.time.is_some_and(|t| self.start.elapsed() >= t) {
+        let used = || match self.cpu0 {
+            Some((c0, threads)) => {
+                std::time::Duration::from_secs_f64(((process_cpu_secs() - c0) / threads).max(0.0))
+            }
+            None => self.start.elapsed(),
+        };
+        if self.limits.time.is_some_and(|t| used() >= t) {
             self.stop.store(true, Ordering::Relaxed);
             return true;
         }
@@ -746,6 +777,11 @@ fn solve_n<B: Bounds, const N: usize>(
         cube,
         limits: limits.clone(),
         start,
+        cpu0: (std::env::var_os("FTO_CPU_CLOCK").is_some()).then(|| {
+            #[allow(clippy::cast_precision_loss)]
+            let threads = rayon::current_num_threads().max(1) as f64;
+            (process_cpu_secs(), threads)
+        }),
         stop: watch.stop.unwrap_or(&own_stop),
         nodes: AtomicU64::new(0),
         lookups: AtomicU64::new(0),
