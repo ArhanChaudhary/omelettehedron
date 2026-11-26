@@ -13,6 +13,7 @@ use crate::cube::*;
 use crate::fast::*;
 use crate::geometry::{transpose, Mat, IDENTITY};
 use crate::notation::*;
+use crate::optimal::sym::sym48;
 use crate::progress::{rate, tasks, with_heartbeat, Bound, Watch};
 use crate::prune::decode;
 use crate::tables::*;
@@ -166,6 +167,9 @@ struct Shared<'a, I: AeIndex, const N: usize> {
         &'a std::sync::Arc<crate::cbe::LazyCbs>,
         &'a crate::cbe::CbeTable,
     )>,
+    /// symmetric start: the symmetries of the octahedron (other than the identity) that fix
+    /// the root, once looked for (see [`Shared::dedup`]); unset or empty: no filter
+    symmetries: std::sync::OnceLock<Vec<usize>>,
 }
 
 /// A node of the top levels of the search tree (see [`Shared::tasks`]).
@@ -1483,10 +1487,75 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
                 }
             }
             front = next;
+            if let Some(syms) = self.symmetries.get().filter(|s| !s.is_empty()) {
+                front = self.dedup(tree, front, syms);
+            }
             k += 1;
         }
         front
     }
+
+    /// Symmetric start: of the nodes of one task level (in the order of their move prefixes)
+    /// whose positions are conjugate under the root's symmetries, keep the first. Conjugate
+    /// positions have the same distances on swapped sides (a class-swapping symmetry exchanges
+    /// `H_A` and `H_B`), so one per class is enough. The optimal solver's argument
+    /// (`optimal::search`, `dedup`) carries over to phase-1 paths: of the phase-1 paths of the
+    /// iteration that give a solution within the bound, let `g` be the smallest in move order,
+    /// and `q` an earlier node of its level conjugate to `g`'s prefix. `q` followed by the
+    /// conjugate of the rest of `g` reaches a phase-1 leaf on the conjugate side with the same
+    /// phase-2 length; its canonical form starts with `q`, or with `q`'s last move replaced by a
+    /// smaller one (a wide turn followed by the single turn of its axis is reordered); a merge
+    /// would give a shorter phase-1 path, and a reordering that ends the path in a move of the
+    /// leaf's own class leaves a shorter phase-1 path to the same subgroup, both found in an
+    /// earlier iteration. So it is a smaller path than `g` that solves within the bound, a
+    /// contradiction: `g`'s prefix is the first of its class at every level. Off when solutions
+    /// are counted (`-n`) and with slices; `FTO_SYMSTART=0` turns it off.
+    ///
+    /// Measured when added (one thread per position, `--batch`): 512 order-3 positions that
+    /// need more than 5 s, `-l 23 -t 1440`, large tier on an 8-core aarch64 laptop: 0.41x CPU
+    /// time and 0.41x nodes (2.41x faster; median per position 0.38x), all 512 solved either
+    /// way; 20 of them on the huge tier on a 208-thread Xeon, both builds side by side: 0.38x
+    /// (2.66x). Optimal lengths on 244 positions of every symmetry order (2 to 48): the 221
+    /// proven either way are identical, 5 more proven within 120 s, time on the 221 0.37x;
+    /// with the filter starting after `SYMSTART_NODES`, 100 of them (orders 4 to 48): all
+    /// proven, identical, 0.26x CPU. Random positions (no symmetry): identical results.
+    fn dedup(&self, tree: &Tree, front: Vec<(u32, u8)>, syms: &[usize]) -> Vec<(u32, u8)> {
+        let sym = sym48();
+        let root = self.sides[0].cube;
+        let f = self.f;
+        let mut seen = std::collections::HashSet::with_capacity(front.len());
+        let mut out = Vec::with_capacity(front.len());
+        for &(id, sides) in &front {
+            let node = &tree.nodes[id as usize];
+            let c = root.apply_seq(&node.path);
+            // (the node's position from its path, as the search holds it; a mismatch would
+            // mean the move numbering differs: then nothing is filtered)
+            if f.of(&c) != node.x[0] {
+                eprintln!("symmetric start: task position mismatch; filter off");
+                return front;
+            }
+            let key = syms
+                .iter()
+                .map(|&k| sym.conj_by_maps(&c, k))
+                .chain([c])
+                .map(|x| (x.cp, x.co, x.ep, x.xa, x.xb))
+                .min();
+            if seen.insert(key) {
+                out.push((id, sides));
+            }
+        }
+        out
+    }
+}
+
+/// Symmetric start begins with the first iteration after one of at least this many nodes
+/// (about 10-20 ms on one thread; looking for the symmetries takes about 1 ms).
+const SYMSTART_NODES: u64 = 200_000;
+
+/// Symmetric start of the two-phase search (see [`Shared::dedup`]); `FTO_SYMSTART=0` turns it
+/// off (to compare).
+fn sym_start() -> bool {
+    std::env::var("FTO_SYMSTART").map_or(true, |v| v != "0")
 }
 
 /// The top levels of the search tree, kept across the iterations of one solve.
@@ -1605,6 +1674,15 @@ fn solve_n<I: AeIndex, const N: usize>(
         h_ae: [h0.0, h1.0],
         h_cb: [h0.1, h1.1],
     };
+    // Symmetric start (`Shared::dedup`): with the symmetries of the octahedron that fix the
+    // root, the task levels keep one node per class of conjugate positions. They are looked
+    // for (from the sticker model, about 1 ms) once an iteration has evaluated
+    // `SYMSTART_NODES` nodes, so quick solves pay nothing; the filter holds iteration by
+    // iteration, so it can start at any one.
+    let symstart = limits.max_solutions.is_none() && !t.moves.slice && N == N_MOVES && sym_start();
+    if !symstart && std::env::var_os("FTO_DEBUG").is_some() {
+        eprintln!("  symmetric start: off");
+    }
     // Every solution is a prefix followed by class-A moves, so one side would suffice to
     // prove optimality; both are kept because the earlier a short solution is found, the more
     // the class-B bound prunes (measured: one variant was 1.9-3.9x slower in optimal mode),
@@ -1659,6 +1737,7 @@ fn solve_n<I: AeIndex, const N: usize>(
             }
             _ => None,
         },
+        symmetries: std::sync::OnceLock::new(),
     };
     let lo = (0..2)
         .map(|s| sh.root.h_ae[s].max(sh.root.h_cb[s]) as usize)
@@ -1836,6 +1915,24 @@ fn solve_n<I: AeIndex, const N: usize>(
         } else {
             ((predicted / task_nodes()) as usize).clamp(threads, 64 * threads)
         };
+        if symstart
+            && sh.symmetries.get().is_none()
+            && prev_nodes.is_some_and(|n| n >= SYMSTART_NODES)
+        {
+            let syms = crate::optimal::sym::fixing(&sh.sides[0].cube);
+            if std::env::var_os("FTO_DEBUG").is_some() {
+                eprintln!(
+                    "  symmetric start from depth {depth}: {} of the 48 symmetries fix the position{}",
+                    syms.len() + 1,
+                    if syms.is_empty() {
+                        ""
+                    } else {
+                        " (task levels filtered)"
+                    }
+                );
+            }
+            let _ = sh.symmetries.set(syms);
+        }
         let mut ids = sh.tasks(&mut tree, depth, threads, want);
         // Order the tasks by the statistics of the same prefixes in the previous iteration, so
         // that the most promising subtrees are searched first (48T 5 s mean length -0.225
