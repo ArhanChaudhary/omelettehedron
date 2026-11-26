@@ -1518,7 +1518,7 @@ impl<I: AeIndex, const N: usize> Shared<'_, I, N> {
     /// (2.66x). Optimal lengths on 244 positions of every symmetry order (2 to 48): the 221
     /// proven either way are identical, 5 more proven within 120 s, time on the 221 0.37x;
     /// with the filter starting after `SYMSTART_NODES`, 100 of them (orders 4 to 48): all
-    /// proven, identical, 0.26x CPU. Random positions (no symmetry): identical results.
+    /// proven, identical, 0.30x CPU. Random positions (no symmetry): identical results.
     fn dedup(&self, tree: &Tree, front: Vec<(u32, u8)>, syms: &[usize]) -> Vec<(u32, u8)> {
         let sym = sym48();
         let root = self.sides[0].cube;
